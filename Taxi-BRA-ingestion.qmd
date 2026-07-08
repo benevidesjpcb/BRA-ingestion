@@ -95,9 +95,9 @@ This prevents a column shift in the 2024 data while leaving the supplied KPI cal
 The following chunk is the reproducible preparation script used to create the filtered parquet extracts and the daily taxi-time outputs.
 It is not evaluated during normal rendering because it reads the large transient source archive.
 
-The script is portable: every machine-specific location is read from an environment variable with a project-relative fallback, so it runs from the project root on any machine without editing the code.
+The taxi-time metric (GANP 20th-percentile reference and daily additional time) is computed in-chunk with base tidyverse, so the script no longer depends on the private PBWG package and runs from the project root on any machine.
+Every machine-specific location is read from an environment variable with a project-relative fallback:
 
-- `PBWG_SRC` — path to a local source checkout of the PBWG package (optional; when unset, the installed `PBWG` package is used).
 - `BRA_TAXI_ZIP` — path to the source zip archive (optional; when unset, the extracted `dsTaxiYYYY.csv` files in `data-raw/` are used as the source).
 - `BRA_REPORT_DATA` — data directory of the sibling report project that receives the combined analytic CSVs (defaults to this project's `data/`).
 
@@ -107,19 +107,10 @@ The script is portable: every machine-specific location is read from an environm
 
 
 # ---- dependencies -----------------------------------------------------------
-# Local project setup (study airports, libraries, defaults).
+# Local project setup (study airports, libraries, defaults). The taxi-time
+# metric is computed in this chunk, so the PBWG package is no longer required.
 source(here::here("_chapter-setup.R"))
 library(fs)
-
-# The taxi-time helpers live in the PBWG package. Either install it (loaded here
-# with library(PBWG)), or point the PBWG_SRC environment variable at a local
-# source checkout to load it with devtools::load_all().
-pbwg_src <- Sys.getenv("PBWG_SRC", unset = "")
-if (nzchar(pbwg_src)) {
-  devtools::load_all(pbwg_src, quiet = TRUE)
-} else {
-  library(PBWG)
-}
 
 # ---- configuration (portable; override with environment variables) ----------
 # Optional transient source archive (zip). When empty, the extracted
@@ -136,12 +127,13 @@ report_data_dir <- Sys.getenv("BRA_REPORT_DATA", unset = here("data"))
 variant        <- "icao_ganp_p20"
 ref_year       <- 2024L
 data_years     <- 2023:2025
-min_n          <- 5L
-max_txxt       <- 120
+min_n          <- 5L                 # minimum samples per reference group
+max_txxt       <- 120                # taxi-time cap (minutes)
+p_ref          <- 0.20               # GANP 20th-percentile reference
+ref_key        <- c("ICAO", "PHASE", "STND", "RWY")
 study_airports <- bra_apts
 
 dir_create(path(archive_root, "data", "apdf"))
-dir_create(path(archive_root, "outputs", "txxt-reference-2024"))
 walk(data_years, ~ dir_create(path(archive_root, "outputs", paste0("txxt-daily-", .x))))
 
 normalise_text <- function(x) {
@@ -221,77 +213,106 @@ read_bra_taxi_year <- function(year) {
   harmonised
 }
 
-samples_by_year <- map(data_years, function(year) {
-  read_bra_taxi_year(year) |>
-    prepare_txxt_reference_input(max_txxt = max_txxt) |>
-    mutate(YEAR = year)
-}) |>
+# ---- taxi-time metric (reproduces the PBWG GANP p20 methodology) ------------
+# Per-movement taxi time (minutes): arrivals = on-block - landing,
+# departures = take-off - off-block. The movement date falls back to the
+# movement time when the block time is absent.
+prepare_txxt <- function(df) {
+  df |>
+    mutate(
+      TXXT = if_else(
+        PHASE == "ARR",
+        as.numeric(difftime(BLOCK_TIME, MVT_TIME, units = "mins")),
+        as.numeric(difftime(MVT_TIME, BLOCK_TIME, units = "mins"))
+      ),
+      DATE = as_date(coalesce(BLOCK_TIME, MVT_TIME)),
+      VALID_TXXT = !is.na(TXXT) & TXXT > 0 & TXXT <= max_txxt
+    )
+}
+
+# Reference: 20th-percentile taxi time per ICAO+PHASE+STND+RWY group, built from
+# valid reference-year movements with a known stand and runway, keeping only
+# groups with at least min_n samples.
+build_txxt_reference <- function(mov_ref) {
+  ref_start <- ymd_hms(paste0(ref_year, "-01-01 00:00:00"), tz = "UTC")
+  ref_end   <- ymd_hms(paste0(ref_year, "-12-31 23:59:59"), tz = "UTC")
+
+  mov_ref |>
+    filter(
+      VALID_TXXT,
+      if_all(all_of(ref_key), ~ !is.na(.x)),
+      BLOCK_TIME >= ref_start, BLOCK_TIME <= ref_end
+    ) |>
+    group_by(across(all_of(ref_key))) |>
+    summarise(
+      N = n(),
+      TXXT_REF = quantile(TXXT, p_ref, type = 7, names = FALSE),
+      .groups = "drop"
+    ) |>
+    filter(N >= min_n) |>
+    select(all_of(ref_key), TXXT_REF)
+}
+
+# Apply the reference and aggregate to the daily analytic table. A movement is
+# valid when it has a usable taxi time and its group has a reference value.
+summarise_txxt_daily <- function(mov, reference) {
+  mov |>
+    filter(!is.na(DATE)) |>
+    left_join(reference, by = ref_key) |>
+    mutate(VALID = VALID_TXXT & !is.na(TXXT_REF)) |>
+    group_by(ICAO, PHASE, DATE) |>
+    summarise(
+      MVTS_VALID   = sum(VALID),
+      MVTS_NA      = sum(!VALID),
+      TOT_TXXT     = sum(TXXT[VALID]),
+      TOT_REF      = sum(TXXT_REF[VALID]),
+      TOT_ADD_TIME = sum(TXXT[VALID] - TXXT_REF[VALID]),
+      .groups = "drop"
+    ) |>
+    arrange(ICAO, PHASE, DATE)
+}
+
+# ---- run the pipeline -------------------------------------------------------
+movements_by_year <- map(data_years, ~ prepare_txxt(read_bra_taxi_year(.x))) |>
   set_names(as.character(data_years))
 
-reference_samples <- samples_by_year[[as.character(ref_year)]]
-ref_start <- ymd_hms(paste0(ref_year, "-01-01 00:00:00"), tz = "UTC")
-ref_end <- ymd_hms(paste0(ref_year, "-12-31 23:59:59"), tz = "UTC")
+reference_data <- build_txxt_reference(movements_by_year[[as.character(ref_year)]])
 
-reference_data <- build_txxt_reference(
-  txxt_samples = reference_samples,
-  ref_start = ref_start,
-  ref_end = ref_end,
-  variant = variant,
-  min_n = min_n,
-  keep_below_threshold = TRUE,
-  include_unknown = FALSE
-)
-
-walk(unique(reference_data$ICAO), function(airport) {
-  write_pbwg_txxt_reference(
-    data = reference_data,
-    airport = airport,
-    ref_period = as.character(ref_year),
-    variant = variant,
-    min_n = min_n,
-    output_dir = path(archive_root, "outputs", "txxt-reference-2024"),
-    region = "BRA"
-  )
-})
-
-daily_by_year <- imap(samples_by_year, function(samples, year_chr) {
+daily_by_year <- imap(movements_by_year, function(mov, year_chr) {
   year <- as.integer(year_chr)
-  message("Applying 2024 reference to ", year)
+  message("Applying ", ref_year, " reference to ", year)
 
-  augmented <- apply_txxt_reference(
-    txxt_samples = samples,
-    reference_data = reference_data,
-    valid_reference_only = TRUE
-  )
+  daily <- summarise_txxt_daily(mov, reference_data)
 
-  daily <- summarise_pbwg_txxt_daily(augmented, year = year)
+  out_name  <- paste0("PBWG-BRA-txxt-analytic-", year, "-ref", ref_year, "-", variant, ".csv")
   daily_dir <- path(archive_root, "outputs", paste0("txxt-daily-", year))
-
-  walk(unique(daily$ICAO), function(airport) {
-    write_pbwg_txxt(
-      data = daily,
-      year = year,
-      ref_period = ref_year,
-      variant = variant,
-      output_dir = daily_dir,
-      airport = airport,
-      region = "BRA"
-    )
-  })
-
-  combined_path <- write_pbwg_txxt(
-    data = daily,
-    year = year,
-    ref_period = ref_year,
-    variant = variant,
-    output_dir = daily_dir,
-    airport = NULL,
-    region = "BRA"
-  )
-
-  file_copy(combined_path, path(report_data_dir, basename(combined_path)), overwrite = TRUE)
+  write_csv(daily, path(daily_dir, out_name))
+  write_csv(daily, path(report_data_dir, out_name))
   daily
 })
+
+# ---- coverage summary (per year and phase) ----------------------------------
+coverage_summary <- imap(daily_by_year, function(daily, year_chr) {
+  daily |>
+    group_by(PHASE) |>
+    summarise(
+      MVTS_VALID   = sum(MVTS_VALID),
+      MVTS_NA      = sum(MVTS_NA),
+      TOT_TXXT     = sum(TOT_TXXT),
+      TOT_REF      = sum(TOT_REF),
+      TOT_ADD_TIME = sum(TOT_ADD_TIME),
+      .groups = "drop"
+    ) |>
+    mutate(YEAR = as.integer(year_chr), MVTS_TOTAL = MVTS_VALID + MVTS_NA)
+}) |>
+  list_rbind() |>
+  select(YEAR, PHASE, MVTS_TOTAL, MVTS_VALID, MVTS_NA,
+         TOT_TXXT, TOT_REF, TOT_ADD_TIME)
+
+write_csv(
+  coverage_summary,
+  path(report_data_dir, "BRA-txxt-coverage-summary-2023-2025.csv")
+)
 ```
 
 ## Retained Artefacts
