@@ -21,6 +21,7 @@ bra_raw_data_dir <- here("data-raw")
 
 ```{r}
 #| label: tbl-bra-source-inventory
+#| tbl-cap: "Inventory of the raw taxi-time source files (dsTaxi)"
 
 files <- list.files(
   bra_raw_data_dir,
@@ -28,7 +29,7 @@ files <- list.files(
   full.names = TRUE
 )
 
-inventory <- purrr::map_dfr(files, function(file) {
+inventory <- purrr::map(files, function(file) {
 
   year <- stringr::str_extract(basename(file), "\\d{4}") |>
     as.integer()
@@ -41,6 +42,7 @@ inventory <- purrr::map_dfr(files, function(file) {
     file,
     delim = ";",
     col_select = "dh_bimtra",
+    col_types = vroom::cols(dh_bimtra = vroom::col_datetime()),
     show_col_types = FALSE
   )
 
@@ -53,7 +55,8 @@ inventory <- purrr::map_dfr(files, function(file) {
     `Size (MB)` = round(file.info(file)$size / 1024^2, 1)
   )
 
-})
+}) |>
+  purrr::list_rbind()
 
 inventory |>
   dplyr::arrange(Year) |>
