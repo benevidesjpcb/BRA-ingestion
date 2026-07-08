@@ -29,6 +29,7 @@ library(here)
 library(gt)
 library(kableExtra)
 library(data.table)
+library(fs)
 
 # ============== DEFAULTS and DEFINITIONS =====================================
 # study year
@@ -39,6 +40,32 @@ max_date <- lubridate::ymd("2025-12-31")
 
 # dstaxi_years
 dsTaxi_years <- 2023:2026
+
+# taxi-time ingestion: project paths ==========================================
+bra_apdf_dir     <- here::here("data", "apdf")
+bra_output_dir   <- here::here("outputs")
+bra_report_data  <- here::here("data")
+bra_raw_data_dir <- here::here("data-raw")
+
+# taxi-time ingestion: analysis parameters ====================================
+variant    <- "icao_ganp_p20"                     # reference variant (GANP p20)
+ref_year   <- 2024L                               # reference year
+data_years <- 2023:2025                            # years processed by pipeline
+min_n      <- 5L                                  # min samples per ref group
+max_txxt   <- 120                                 # taxi-time cap (minutes)
+p_ref      <- 0.20                                # reference percentile
+ref_key    <- c("ICAO", "PHASE", "STND", "RWY")   # reference grouping key
+
+# taxi-time ingestion: output file names ======================================
+bra_txxt_analytic_file <- function(year) {
+  paste0("PBWG-BRA-txxt-analytic-", year, "-ref", ref_year, "-", variant, ".csv")
+}
+bra_txxt_analytic_pattern <- paste0(
+  "^PBWG-BRA-txxt-analytic-20[0-9]{2}-ref", ref_year, "-", variant, "\\.csv$"
+)
+bra_coverage_file <- paste0(
+  "BRA-txxt-coverage-summary-", min(data_years), "-", max(data_years), ".csv"
+)
 
 # set ggplot2 default theme
 ggplot2::theme_set(theme_minimal())

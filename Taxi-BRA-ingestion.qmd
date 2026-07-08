@@ -8,14 +8,8 @@ This note documents the preparation of the Brazilian taxi-time files used for th
 The raw taxi files were downloaded from the SharePoint (`Datalake-Rafael/decea-2025/TAXI`) to the local Downloads folder as a transient source archive.
 To save local storage, the raw CSV files and the raw zip archive are not copied into the project archive.
 
-The retained archive artefacts are filtered, study-airport extracts in an APDF-like parquet format, stored in:
-
-```{r}
-bra_apdf_dir    <- here("data", "apdf")
-bra_output_dir  <- here("outputs")
-bra_report_data <- here("data")
-bra_raw_data_dir <- here("data-raw")
-```
+The retained archive artefacts are filtered, study-airport extracts in an APDF-like parquet format, stored in `data/apdf`.
+The project paths and analysis parameters are defined once in `_chapter-setup.R`.
 
 ## Source Inventory
 
@@ -107,34 +101,21 @@ Every machine-specific location is read from an environment variable with a proj
 
 
 # ---- dependencies -----------------------------------------------------------
-# Local project setup (study airports, libraries, defaults). The taxi-time
-# metric is computed in this chunk, so the PBWG package is no longer required.
+# Project setup: libraries, project paths and analysis parameters (variant,
+# ref_year, data_years, min_n, max_txxt, p_ref, ref_key). The taxi-time metric
+# is computed in this chunk, so the PBWG package is no longer required.
 source(here::here("_chapter-setup.R"))
-library(fs)
 
-# ---- configuration (portable; override with environment variables) ----------
+# ---- source/report locations (override with environment variables) ----------
 # Optional transient source archive (zip). When empty, the extracted
 # dsTaxiYYYY.csv files in data-raw/ are used as the source instead.
 zip_path        <- Sys.getenv("BRA_TAXI_ZIP", unset = "")
-# Fallback source: already-extracted CSV files.
-raw_data_dir    <- here("data-raw")
-# Project root that receives the parquet extracts and daily outputs.
-archive_root    <- here()
-# Report project data dir that receives the combined analytic CSVs. Defaults to
-# this project's data/ folder; override for a sibling report project.
-report_data_dir <- Sys.getenv("BRA_REPORT_DATA", unset = here("data"))
+# Report project data dir that receives the combined analytic CSVs; defaults to
+# this project's data/ folder (override for a sibling report project).
+report_data_dir <- Sys.getenv("BRA_REPORT_DATA", unset = bra_report_data)
 
-variant        <- "icao_ganp_p20"
-ref_year       <- 2024L
-data_years     <- 2023:2025
-min_n          <- 5L                 # minimum samples per reference group
-max_txxt       <- 120                # taxi-time cap (minutes)
-p_ref          <- 0.20               # GANP 20th-percentile reference
-ref_key        <- c("ICAO", "PHASE", "STND", "RWY")
-study_airports <- bra_apts
-
-dir_create(path(archive_root, "data", "apdf"))
-walk(data_years, ~ dir_create(path(archive_root, "outputs", paste0("txxt-daily-", .x))))
+dir_create(bra_apdf_dir)
+walk(data_years, ~ dir_create(path(bra_output_dir, paste0("txxt-daily-", .x))))
 
 normalise_text <- function(x) {
   x <- as.character(x)
@@ -150,7 +131,7 @@ parse_bra_datetime <- function(x) {
 
 read_bra_taxi_year <- function(year) {
   member   <- paste0("dsTaxi", year, ".csv")
-  csv_path <- path(raw_data_dir, member)
+  csv_path <- path(bra_raw_data_dir, member)
 
   if (file.exists(csv_path)) {
     message("Reading ", csv_path)
@@ -203,11 +184,11 @@ read_bra_taxi_year <- function(year) {
         TRUE ~ NA_character_
       )
     ) |>
-    filter(ICAO %in% study_airports)
+    filter(ICAO %in% bra_apts)
 
   write_parquet(
     harmonised,
-    path(archive_root, "data", "apdf", paste0("PBWG-BRA-dsTaxi-apdf-", year, ".parquet"))
+    path(bra_apdf_dir, paste0("PBWG-BRA-dsTaxi-apdf-", year, ".parquet"))
   )
 
   harmonised
@@ -284,8 +265,8 @@ daily_by_year <- imap(movements_by_year, function(mov, year_chr) {
 
   daily <- summarise_txxt_daily(mov, reference_data)
 
-  out_name  <- paste0("PBWG-BRA-txxt-analytic-", year, "-ref", ref_year, "-", variant, ".csv")
-  daily_dir <- path(archive_root, "outputs", paste0("txxt-daily-", year))
+  out_name  <- bra_txxt_analytic_file(year)
+  daily_dir <- path(bra_output_dir, paste0("txxt-daily-", year))
   write_csv(daily, path(daily_dir, out_name))
   write_csv(daily, path(report_data_dir, out_name))
   daily
@@ -311,7 +292,7 @@ coverage_summary <- imap(daily_by_year, function(daily, year_chr) {
 
 write_csv(
   coverage_summary,
-  path(report_data_dir, "BRA-txxt-coverage-summary-2023-2025.csv")
+  path(report_data_dir, bra_coverage_file)
 )
 ```
 
@@ -338,7 +319,7 @@ The daily analytic outputs copied into the report project are:
 
 report_output_files <- list.files(
   bra_report_data,
-  pattern = "^PBWG-BRA-txxt-analytic-20[0-9]{2}-ref2024-icao_ganp_p20\\.csv$",
+  pattern = bra_txxt_analytic_pattern,
   full.names = FALSE
 )
 
@@ -355,7 +336,7 @@ The observed taxi-time total (`TOT_TXXT`), reference total (`TOT_REF`), and addi
 #| label: tbl-bra-txxt-coverage
 
 readr::read_csv(
-  here::here("data", "BRA-txxt-coverage-summary-2023-2025.csv"),
+  here::here("data", bra_coverage_file),
   show_col_types = FALSE
 ) |>
   dplyr::mutate(
