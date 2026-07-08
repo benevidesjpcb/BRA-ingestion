@@ -1,0 +1,289 @@
+# Brazil Taxi Data Ingestion
+
+```{r}
+source(here::here("_chapter-setup.R"))
+```
+
+This note documents the preparation of the Brazilian taxi-time files used for the 2025 Brazil-Europe operational efficiency update.
+The raw taxi files were downloaded from the DECEA datalake folder on OneDrive/SharePoint (`Datalake-Rafael/decea-2025/TAXI`) to the local Downloads folder as a transient source archive.
+To save local storage, the raw CSV files and the raw zip archive are not copied into the project archive.
+
+The retained archive artefacts are filtered, study-airport extracts in an APDF-like parquet format, stored in:
+
+```{r}
+bra_apdf_dir <- "/Users/rainerkoelle/RProjects/PBWG-BRA/data/apdf"
+bra_output_dir <- "/Users/rainerkoelle/RProjects/PBWG-BRA/outputs"
+bra_report_data <- here::here("data")
+```
+
+## Source Inventory
+
+```{r}
+#| label: tbl-bra-source-inventory
+
+zip_path <- "/Users/rainerkoelle/Downloads/OneDrive_1_20-04-2026.zip"
+
+if (file.exists(zip_path)) {
+  utils::unzip(zip_path, list = TRUE) |>
+    dplyr::filter(grepl("^dsTaxi20[0-9]{2}\\.csv$", Name)) |>
+    dplyr::mutate(Size_MB = round(Length / 1024^2, 1)) |>
+    dplyr::select(Name, Size_MB, Date) |>
+    knitr::kable()
+} else {
+  tibble::tibble(
+    Name = c("dsTaxi2023.csv", "dsTaxi2024.csv", "dsTaxi2025.csv"),
+    Note = "Raw source archive is not retained locally in the project archive."
+  ) |>
+    knitr::kable()
+}
+```
+
+The source files use semicolon-separated fields and include Brazilian airport movements beyond the Brazil-Europe study scope.
+The harmonised parquet extracts retain only the airports defined in `_chapter-setup.R`.
+
+## Harmonisation
+
+The payload columns are mapped to the APDF-like fields required by the taxi-time pipeline.
+For arrivals, the airport is derived from `addestino`; for departures, the airport is derived from `adpartida`.
+
+| Source field | Harmonised field | Note |
+| --- | --- | --- |
+| `indicativo` | `FLTID` | Flight identifier |
+| `matricula` | `REG` | Aircraft registration |
+| `adpartida` | `ADEP` | Departure aerodrome |
+| `addestino` | `ADES` | Destination aerodrome |
+| `mov` | `PHASE` | `Arr` to `ARR`, `Dep` to `DEP` |
+| `dh_bimtra` | `MVT_TIME` | Movement time |
+| `dh_vra` | `BLOCK_TIME` | Block time |
+| `tipoaeronave` | `ARCTYP` | Aircraft type |
+| `box` | `STND` | Stand or gate position |
+| `pista` | `RWY` | Runway |
+| `match_vra` | `MATCH_VRA` | Payload match flag |
+| trailing field when present | `KPI_PAYLOAD` | Retained for later diagnostic checks, not used in the harmonised metric |
+
+The 2024 source file contains a trailing payload field on many rows.
+The ingestion therefore reads up to 15 semicolon-separated fields and keeps the additional value as `KPI_PAYLOAD`.
+This prevents a column shift in the 2024 data while leaving the supplied KPI calculation out of the PBWG taxi-time metric.
+
+## Preparation Code
+
+The following chunk is the reproducible preparation script used to create the filtered parquet extracts and the daily taxi-time outputs.
+It is not evaluated during normal rendering because it reads the large transient source archive from Downloads.
+
+```{r}
+#| label: prepare-bra-taxi-data
+#| eval: false
+
+library(dplyr)
+library(readr)
+library(lubridate)
+library(purrr)
+library(fs)
+library(arrow)
+library(data.table)
+
+devtools::load_all("/Users/rainerkoelle/RProjects/PBWG", quiet = TRUE)
+source("/Users/rainerkoelle/RProjects/BRA-EUR-2025/_chapter-setup.R")
+
+zip_path <- "/Users/rainerkoelle/Downloads/OneDrive_1_20-04-2026.zip"
+archive_root <- "/Users/rainerkoelle/RProjects/PBWG-BRA"
+report_data_dir <- "/Users/rainerkoelle/RProjects/BRA-EUR-2025/data"
+variant <- "icao_ganp_p20"
+ref_year <- 2024L
+min_n <- 5L
+max_txxt <- 120
+study_airports <- bra_apts
+
+dir_create(path(archive_root, "data", "apdf"))
+dir_create(path(archive_root, "outputs", "txxt-reference-2024"))
+walk(2023:2025, ~ dir_create(path(archive_root, "outputs", paste0("txxt-daily-", .x))))
+
+normalise_text <- function(x) {
+  x <- as.character(x)
+  x <- trimws(x)
+  x[x == ""] <- NA_character_
+  x
+}
+
+parse_bra_datetime <- function(x) {
+  x <- normalise_text(x)
+  parse_date_time(x, orders = c("ymd HMS", "ymd HMS OS"), tz = "UTC", quiet = TRUE)
+}
+
+read_bra_taxi_year <- function(year) {
+  member <- paste0("dsTaxi", year, ".csv")
+  message("Reading ", member)
+
+  raw <- fread(
+    cmd = sprintf("unzip -p %s %s", shQuote(zip_path), shQuote(member)),
+    sep = ";",
+    fill = 15,
+    colClasses = "character",
+    showProgress = FALSE
+  ) |>
+    as_tibble()
+
+  if (!"V15" %in% names(raw)) {
+    raw$V15 <- NA_character_
+  }
+
+  harmonised <- raw |>
+    transmute(
+      FLTID = normalise_text(indicativo),
+      REG = normalise_text(matricula),
+      ADEP = normalise_text(adpartida),
+      ADES = normalise_text(addestino),
+      PHASE = recode(normalise_text(mov), Arr = "ARR", Dep = "DEP", .default = NA_character_),
+      MVT_TIME = parse_bra_datetime(dh_bimtra),
+      BLOCK_TIME = parse_bra_datetime(dh_vra),
+      ARCTYP = normalise_text(tipoaeronave),
+      STND = normalise_text(box),
+      RWY = normalise_text(pista),
+      MATCH_VRA = normalise_text(match_vra),
+      KPI_PAYLOAD = normalise_text(V15),
+      ICAO = case_when(
+        PHASE == "ARR" ~ ADES,
+        PHASE == "DEP" ~ ADEP,
+        TRUE ~ NA_character_
+      )
+    ) |>
+    filter(ICAO %in% study_airports)
+
+  write_parquet(
+    harmonised,
+    path(archive_root, "data", "apdf", paste0("PBWG-BRA-dsTaxi-apdf-", year, ".parquet"))
+  )
+
+  harmonised
+}
+
+samples_by_year <- map(2023:2025, function(year) {
+  read_bra_taxi_year(year) |>
+    prepare_txxt_reference_input(max_txxt = max_txxt) |>
+    mutate(YEAR = year)
+}) |>
+  set_names(as.character(2023:2025))
+
+reference_samples <- samples_by_year[[as.character(ref_year)]]
+ref_start <- ymd_hms(paste0(ref_year, "-01-01 00:00:00"), tz = "UTC")
+ref_end <- ymd_hms(paste0(ref_year, "-12-31 23:59:59"), tz = "UTC")
+
+reference_data <- build_txxt_reference(
+  txxt_samples = reference_samples,
+  ref_start = ref_start,
+  ref_end = ref_end,
+  variant = variant,
+  min_n = min_n,
+  keep_below_threshold = TRUE,
+  include_unknown = FALSE
+)
+
+walk(unique(reference_data$ICAO), function(airport) {
+  write_pbwg_txxt_reference(
+    data = reference_data,
+    airport = airport,
+    ref_period = as.character(ref_year),
+    variant = variant,
+    min_n = min_n,
+    output_dir = path(archive_root, "outputs", "txxt-reference-2024"),
+    region = "BRA"
+  )
+})
+
+daily_by_year <- imap(samples_by_year, function(samples, year_chr) {
+  year <- as.integer(year_chr)
+  message("Applying 2024 reference to ", year)
+
+  augmented <- apply_txxt_reference(
+    txxt_samples = samples,
+    reference_data = reference_data,
+    valid_reference_only = TRUE
+  )
+
+  daily <- summarise_pbwg_txxt_daily(augmented, year = year)
+  daily_dir <- path(archive_root, "outputs", paste0("txxt-daily-", year))
+
+  walk(unique(daily$ICAO), function(airport) {
+    write_pbwg_txxt(
+      data = daily,
+      year = year,
+      ref_period = ref_year,
+      variant = variant,
+      output_dir = daily_dir,
+      airport = airport,
+      region = "BRA"
+    )
+  })
+
+  combined_path <- write_pbwg_txxt(
+    data = daily,
+    year = year,
+    ref_period = ref_year,
+    variant = variant,
+    output_dir = daily_dir,
+    airport = NULL,
+    region = "BRA"
+  )
+
+  file_copy(combined_path, path(report_data_dir, basename(combined_path)), overwrite = TRUE)
+  daily
+})
+```
+
+## Retained Artefacts
+
+```{r}
+#| label: tbl-bra-retained-artefacts
+
+parquet_files <- list.files(bra_apdf_dir, pattern = "\\.parquet$", full.names = TRUE)
+
+tibble::tibble(path = parquet_files) |>
+  dplyr::mutate(
+    file = basename(path),
+    size_mb = round(file.info(path)$size / 1024^2, 1)
+  ) |>
+  dplyr::select(file, size_mb) |>
+  knitr::kable()
+```
+
+The daily analytic outputs copied into the report project are:
+
+```{r}
+#| label: tbl-bra-report-outputs
+
+report_output_files <- list.files(
+  bra_report_data,
+  pattern = "^PBWG-BRA-txxt-analytic-20[0-9]{2}-ref2024-icao_ganp_p20\\.csv$",
+  full.names = FALSE
+)
+
+tibble::tibble(file = report_output_files) |>
+  knitr::kable()
+```
+
+## Coverage Check
+
+The pipeline records the number of valid taxi-time movements (`MVTS_VALID`) and the number of movements that could not be used for the metric (`MVTS_NA`).
+The observed taxi-time total (`TOT_TXXT`), reference total (`TOT_REF`), and additional-time total (`TOT_ADD_TIME`) are calculated only over `MVTS_VALID`.
+
+```{r}
+#| label: tbl-bra-txxt-coverage
+
+readr::read_csv(
+  here::here("data", "BRA-txxt-coverage-summary-2023-2025.csv"),
+  show_col_types = FALSE
+) |>
+  dplyr::mutate(
+    MVTS_NA_SHARE = MVTS_NA / MVTS_TOTAL,
+    AVG_TXXT = TOT_TXXT / MVTS_VALID,
+    AVG_ADD_TIME = TOT_ADD_TIME / MVTS_VALID
+  ) |>
+  dplyr::select(YEAR, PHASE, MVTS_TOTAL, MVTS_VALID, MVTS_NA, MVTS_NA_SHARE, AVG_TXXT, AVG_ADD_TIME) |>
+  dplyr::mutate(
+    dplyr::across(c(MVTS_NA_SHARE, AVG_TXXT, AVG_ADD_TIME), ~ round(.x, 3))
+  ) |>
+  knitr::kable()
+```
+
+The current extracts retain the source KPI payload in the harmonised parquet files for later diagnostic comparison.
+It is not used in the 2024 GANP 20th percentile PBWG reference calculation.
