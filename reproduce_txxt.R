@@ -1,16 +1,14 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# reproduce_txxt.R  (v2)
+# reproduce_txxt.R  (v3)
 #
 # Reproduz os analiticos diarios de taxi-time (PBWG-BRA-txxt-analytic-*) SEM o
 # pacote PBWG, e VALIDA contra os CSVs de resultado (golden).
 #
-# v2: 4 parametros ja confirmados estao TRAVADOS (ver bloco LOCKED). O foco agora
-# e' fechar (1) a contagem MVTS_NA e (2) a soma da referencia TOT_REF. O script
-# testa poucas variacoes de DATE (com fallback) e do tratamento de chave NA,
-# e imprime um DIAGNOSTICO detalhado apontando a direcao do erro.
-#
-# Rode na maquina com os dsTaxiYYYY.csv brutos. Ajuste os caminhos se preciso.
+# ESTADO: MVTS_VALID, MVTS_NA e TOT_TXXT ja batem EXATO nos 3 anos.
+# Falta so TOT_REF (~90%), com erro minusculo. v3 testa o recorte do periodo
+# de referencia (o codigo original limita a ref a [ref_start, ref_end] de 2024)
+# e imprime um diagnostico do que sobrar.
 # =============================================================================
 
 suppressPackageStartupMessages({
@@ -32,14 +30,14 @@ ref_year   <- 2024L
 data_years <- 2023:2025
 tol        <- 1e-6
 
-# ---- LOCKED (confirmado pelo sweep anterior) --------------------------------
+# ---- LOCKED (tudo confirmado) -----------------------------------------------
 max_txxt <- 120
 min_n    <- 5L
 p_ref    <- 0.20
-qtype    <- 7L                              # tipo de quantile
+qtype    <- 7L
 ref_key  <- c("ICAO", "PHASE", "STND", "RWY")
 
-# ---- helpers: leitura + harmonizacao ----------------------------------------
+# ---- helpers ----------------------------------------------------------------
 normalise_text <- function(x) {
   x <- as.character(x); x <- trimws(x); x[x == ""] <- NA_character_; x
 }
@@ -69,43 +67,47 @@ read_harmonised <- function(year) {
     filter(ICAO %in% study_airports, !is.na(PHASE))
 }
 
-# taxi-time confirmado: ARR = block - mvt ; DEP = mvt - block
 txxt_fn <- function(d) if_else(
   d$PHASE == "ARR",
   as.numeric(difftime(d$BLOCK_TIME, d$MVT_TIME, units = "mins")),
   as.numeric(difftime(d$MVT_TIME, d$BLOCK_TIME, units = "mins"))
 )
 
-# variacoes de DATE a testar (para fechar MVTS_NA)
-date_variants <- list(
-  "BLOCK"        = function(d) as_date(d$BLOCK_TIME),
-  "MVT"          = function(d) as_date(d$MVT_TIME),
-  "COALESCE_B_M" = function(d) as_date(coalesce(d$BLOCK_TIME, d$MVT_TIME)),
-  "COALESCE_M_B" = function(d) as_date(coalesce(d$MVT_TIME, d$BLOCK_TIME))
-)
-
-prep <- function(df, date_key) {
+prep <- function(df) {
   df |>
     mutate(
       TXXT = txxt_fn(pick(everything())),
-      DATE = date_variants[[date_key]](pick(everything())),
+      DATE = as_date(coalesce(BLOCK_TIME, MVT_TIME)),   # confirmado
       VALID_TXXT = !is.na(TXXT) & TXXT > 0 & TXXT <= max_txxt
     )
 }
 
-build_daily <- function(mov_ref, mov_all, exclude_na_key) {
-  ref_src <- mov_ref |> filter(VALID_TXXT)
-  if (exclude_na_key) {
-    ref_src <- ref_src |> filter(if_all(all_of(ref_key), ~ !is.na(.x)))
-  }
-  ref_tbl <- ref_src |>
+# recorte do universo da referencia (2024) -- eixo em teste
+ref_start <- ymd_hms(sprintf("%d-01-01 00:00:00", ref_year), tz = "UTC")
+ref_end   <- ymd_hms(sprintf("%d-12-31 23:59:59", ref_year), tz = "UTC")
+ref_filters <- list(
+  "none"          = function(d) rep(TRUE, nrow(d)),
+  "date_in_year"  = function(d) year(d$DATE) == ref_year,
+  "mvt_in_year"   = function(d) d$MVT_TIME >= ref_start & d$MVT_TIME <= ref_end,
+  "block_in_year" = function(d) d$BLOCK_TIME >= ref_start & d$BLOCK_TIME <= ref_end
+)
+
+build_reference <- function(mov_ref, ref_filter) {
+  ref_src <- mov_ref |>
+    filter(VALID_TXXT, if_all(all_of(ref_key), ~ !is.na(.x)))
+  keep <- ref_filters[[ref_filter]](ref_src)
+  keep[is.na(keep)] <- FALSE
+  ref_src |>
+    filter(keep) |>
     group_by(across(all_of(ref_key))) |>
     summarise(N = n(),
               TXXT_REF = quantile(TXXT, p_ref, type = qtype, names = FALSE),
               .groups = "drop") |>
     filter(N >= min_n) |>
     select(all_of(ref_key), TXXT_REF)
+}
 
+build_daily <- function(ref_tbl, mov_all) {
   mov_all |>
     filter(!is.na(DATE)) |>
     left_join(ref_tbl, by = ref_key) |>
@@ -125,100 +127,76 @@ read_gold <- function(y) {
   read_csv(golden_paths[[as.character(y)]], show_col_types = FALSE) |>
     mutate(DATE = as_date(DATE))
 }
-
 score <- function(daily, gold) {
   gold |>
     rename_with(~ paste0(.x, "_g"), -c(ICAO, PHASE, DATE)) |>
     left_join(daily, by = c("ICAO", "PHASE", "DATE")) |>
     summarise(
-      rows      = n(),
-      missing   = sum(is.na(MVTS_VALID)),
-      valid_ok  = sum(MVTS_VALID == MVTS_VALID_g, na.rm = TRUE),
-      na_ok     = sum(MVTS_NA == MVTS_NA_g, na.rm = TRUE),
-      txxt_ok   = sum(abs(TOT_TXXT - TOT_TXXT_g) < tol, na.rm = TRUE),
-      ref_ok    = sum(abs(TOT_REF  - TOT_REF_g)  < tol, na.rm = TRUE)
+      rows = n(),
+      valid_ok = sum(MVTS_VALID == MVTS_VALID_g, na.rm = TRUE),
+      na_ok    = sum(MVTS_NA == MVTS_NA_g, na.rm = TRUE),
+      txxt_ok  = sum(abs(TOT_TXXT - TOT_TXXT_g) < tol, na.rm = TRUE),
+      ref_ok   = sum(abs(TOT_REF  - TOT_REF_g)  < tol, na.rm = TRUE)
     )
 }
 
 # =============================================================================
-# 1) Mini-sweep sobre 2024: DATE x (excluir chave NA na referencia)
+# 1) Testa o recorte do periodo de referencia (2024)
 # =============================================================================
 message("Lendo dsTaxi", ref_year, "...")
-raw2024 <- read_harmonised(ref_year)
+mov2024 <- prep(read_harmonised(ref_year))
 gold2024 <- read_gold(ref_year)
 
-grid <- expand_grid(date_key = names(date_variants), exclude_na_key = c(FALSE, TRUE))
-sb <- pmap_dfr(grid, function(date_key, exclude_na_key) {
-  mov <- prep(raw2024, date_key)
-  daily <- build_daily(mov, mov, exclude_na_key)
-  score(daily, gold2024) |>
-    mutate(date_key = date_key, exclude_na_key = exclude_na_key, .before = 1)
-}) |>
-  arrange(desc(na_ok + valid_ok + txxt_ok + ref_ok))
+cat("\n---- Quantos movimentos-referencia caem FORA de 2024? ----\n")
+rs <- mov2024 |> filter(VALID_TXXT, if_all(all_of(ref_key), ~ !is.na(.x)))
+cat("por DATE:      ", sum(year(rs$DATE) != ref_year, na.rm = TRUE), "\n")
+cat("por MVT_TIME:  ", sum(rs$MVT_TIME < ref_start | rs$MVT_TIME > ref_end, na.rm = TRUE), "\n")
+cat("por BLOCK_TIME:", sum(rs$BLOCK_TIME < ref_start | rs$BLOCK_TIME > ref_end, na.rm = TRUE), "\n")
 
-cat("\n==== Scoreboard 2024 (LOCKED: block-mvt, STND+RWY, qtype 7) ====\n")
+cat("\n==== Scoreboard 2024 por recorte de referencia ====\n")
+sb <- map_dfr(names(ref_filters), function(rf) {
+  ref_tbl <- build_reference(mov2024, rf)
+  score(build_daily(ref_tbl, mov2024), gold2024) |>
+    mutate(ref_filter = rf, .before = 1)
+}) |>
+  arrange(desc(ref_ok))
 print(as.data.frame(sb))
 
-best <- sb |> slice(1)
-cat(sprintf("\nMELHOR: date=%s  exclude_na_key=%s\n", best$date_key, best$exclude_na_key))
+best_rf <- sb$ref_filter[1]
+cat(sprintf("\nMELHOR recorte: %s\n", best_rf))
 
 # =============================================================================
-# 2) DIAGNOSTICO detalhado da melhor config (2024)
+# 2) Diagnostico do TOT_REF que ainda nao bate (melhor recorte)
 # =============================================================================
-mov_best <- prep(raw2024, best$date_key)
-daily_best <- build_daily(mov_best, mov_best, best$exclude_na_key)
+ref_tbl_best <- build_reference(mov2024, best_rf)
 diag <- gold2024 |>
   rename_with(~ paste0(.x, "_g"), -c(ICAO, PHASE, DATE)) |>
-  left_join(daily_best, by = c("ICAO", "PHASE", "DATE")) |>
-  mutate(
-    tot_our  = MVTS_VALID + MVTS_NA,
-    tot_gold = MVTS_VALID_g + MVTS_NA_g,
-    d_total  = tot_our - tot_gold,
-    d_valid  = MVTS_VALID - MVTS_VALID_g,
-    d_na     = MVTS_NA - MVTS_NA_g
-  )
+  left_join(build_daily(ref_tbl_best, mov2024), by = c("ICAO", "PHASE", "DATE")) |>
+  mutate(d_ref = TOT_REF - TOT_REF_g)
 
-cat("\n---- Direcao do erro no TOTAL de movimentos (our - gold) ----\n")
-cat("linhas com total  MENOR  que o gold:", sum(diag$d_total < 0, na.rm = TRUE), "\n")
-cat("linhas com total  IGUAL  ao gold  :", sum(diag$d_total == 0, na.rm = TRUE), "\n")
-cat("linhas com total  MAIOR  que o gold:", sum(diag$d_total > 0, na.rm = TRUE), "\n")
-cat("resumo de (our-gold) no total:\n"); print(summary(diag$d_total))
-cat("resumo de (our-gold) em MVTS_VALID:\n"); print(summary(diag$d_valid))
-cat("resumo de (our-gold) em MVTS_NA:\n"); print(summary(diag$d_na))
+cat("\n---- Residuo em TOT_REF ----\n")
+cat("linhas com ref OK:", sum(abs(diag$d_ref) < tol, na.rm = TRUE),
+    "de", nrow(diag), "\n")
+cat("resumo de |d_ref| nas que NAO batem:\n")
+print(summary(abs(diag$d_ref[abs(diag$d_ref) >= tol])))
 
-cat("\n---- Diferenca media por aeroporto (|d_total|, |d_na|, |d_ref|) ----\n")
+cat("\n---- 12 exemplos onde TOT_REF nao bate ----\n")
 diag |>
-  mutate(d_ref = abs(TOT_REF - TOT_REF_g)) |>
-  group_by(ICAO) |>
-  summarise(n = n(),
-            d_total = round(mean(abs(d_total), na.rm = TRUE), 2),
-            d_na    = round(mean(abs(d_na), na.rm = TRUE), 2),
-            d_ref   = round(mean(d_ref, na.rm = TRUE), 2),
-            .groups = "drop") |>
-  arrange(desc(d_total)) |>
-  as.data.frame() |>
-  print()
-
-cat("\n---- 12 exemplos onde MVTS_NA nao bate ----\n")
-diag |>
-  filter(MVTS_NA != MVTS_NA_g) |>
-  transmute(ICAO, PHASE, DATE,
-            V_our = MVTS_VALID, V_g = MVTS_VALID_g,
-            NA_our = MVTS_NA, NA_g = MVTS_NA_g,
-            REF_our = round(TOT_REF, 2), REF_g = round(TOT_REF_g, 2)) |>
+  filter(abs(d_ref) >= tol) |>
+  transmute(ICAO, PHASE, DATE, MVTS_VALID,
+            REF_our = round(TOT_REF, 4), REF_g = round(TOT_REF_g, 4),
+            d_ref = round(d_ref, 4)) |>
   head(12) |>
   as.data.frame() |>
   print()
 
 # =============================================================================
-# 3) Validacao final da melhor config nos 3 anos
+# 3) Validacao final nos 3 anos (ref sempre de 2024)
 # =============================================================================
-cat("\n==== Validacao por ano (melhor config) ====\n")
-mov_ref <- prep(raw2024, best$date_key)
+cat("\n==== Validacao por ano (recorte:", best_rf, ") ====\n")
 for (y in data_years) {
-  movy <- if (y == ref_year) mov_ref else prep(read_harmonised(y), best$date_key)
-  daily <- build_daily(mov_ref, movy, best$exclude_na_key)
-  s <- score(daily, read_gold(y))
-  cat(sprintf("%d: rows=%d missing=%d valid_ok=%d na_ok=%d txxt_ok=%d ref_ok=%d\n",
-              y, s$rows, s$missing, s$valid_ok, s$na_ok, s$txxt_ok, s$ref_ok))
+  movy <- if (y == ref_year) mov2024 else prep(read_harmonised(y))
+  s <- score(build_daily(ref_tbl_best, movy), read_gold(y))
+  cat(sprintf("%d: rows=%d valid_ok=%d na_ok=%d txxt_ok=%d ref_ok=%d\n",
+              y, s$rows, s$valid_ok, s$na_ok, s$txxt_ok, s$ref_ok))
 }
