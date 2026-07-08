@@ -14,6 +14,7 @@ The retained archive artefacts are filtered, study-airport extracts in an APDF-l
 bra_apdf_dir    <- here("data", "apdf")
 bra_output_dir  <- here("outputs")
 bra_report_data <- here("data")
+bra_raw_data_dir <- here("data-raw")
 ```
 
 ## Source Inventory
@@ -21,21 +22,42 @@ bra_report_data <- here("data")
 ```{r}
 #| label: tbl-bra-source-inventory
 
-zip_path <- "/Users/rainerkoelle/Downloads/OneDrive_1_20-04-2026.zip"
+files <- list.files(
+  bra_raw_data_dir,
+  pattern = "^dsTaxi20\\d{2}\\.csv$",
+  full.names = TRUE
+)
 
-if (file.exists(zip_path)) {
-  utils::unzip(zip_path, list = TRUE) |>
-    dplyr::filter(grepl("^dsTaxi20[0-9]{2}\\.csv$", Name)) |>
-    dplyr::mutate(Size_MB = round(Length / 1024^2, 1)) |>
-    dplyr::select(Name, Size_MB, Date) |>
-    knitr::kable()
-} else {
+inventory <- purrr::map_dfr(files, function(file) {
+
+  year <- stringr::str_extract(basename(file), "\\d{4}") |>
+    as.integer()
+
+  if (!(year %in% dsTaxi_years)) {
+    return(NULL)
+  }
+
+  dates <- vroom::vroom(
+    file,
+    delim = ";",
+    col_select = "dh_bimtra",
+    show_col_types = FALSE
+  )
+
   tibble::tibble(
-    Name = c("dsTaxi2023.csv", "dsTaxi2024.csv", "dsTaxi2025.csv"),
-    Note = "Raw source archive is not retained locally in the project archive."
-  ) |>
-    knitr::kable()
-}
+    Year = year,
+    File = basename(file),
+    `Start date` = min(dates$dh_bimtra, na.rm = TRUE),
+    `End date` = max(dates$dh_bimtra, na.rm = TRUE),
+    Records = scales::comma(nrow(dates)),
+    `Size (MB)` = round(file.info(file)$size / 1024^2, 1)
+  )
+
+})
+
+inventory |>
+  dplyr::arrange(Year) |>
+  knitr::kable()
 ```
 
 The source files use semicolon-separated fields and include Brazilian airport movements beyond the Brazil-Europe study scope.
@@ -74,13 +96,6 @@ It is not evaluated during normal rendering because it reads the large transient
 #| label: prepare-bra-taxi-data
 #| eval: false
 
-library(dplyr)
-library(readr)
-library(lubridate)
-library(purrr)
-library(fs)
-library(arrow)
-library(data.table)
 
 devtools::load_all("/Users/rainerkoelle/RProjects/PBWG", quiet = TRUE)
 source("/Users/rainerkoelle/RProjects/BRA-EUR-2025/_chapter-setup.R")

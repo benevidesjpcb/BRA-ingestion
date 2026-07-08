@@ -28,7 +28,7 @@ library(ggbump)
 library(here)
 library(gt)
 library(kableExtra)
-
+library(data.table)
 
 # ============== DEFAULTS and DEFINITIONS =====================================
 # study year
@@ -36,6 +36,9 @@ this_year <- 2025
 
 # max_date
 max_date <- lubridate::ymd("2025-12-31")
+
+# dstaxi_years
+dsTaxi_years <- 2023:2026
 
 # set ggplot2 default theme
 ggplot2::theme_set(theme_minimal())
