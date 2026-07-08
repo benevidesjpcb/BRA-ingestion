@@ -93,28 +93,56 @@ This prevents a column shift in the 2024 data while leaving the supplied KPI cal
 ## Preparation Code
 
 The following chunk is the reproducible preparation script used to create the filtered parquet extracts and the daily taxi-time outputs.
-It is not evaluated during normal rendering because it reads the large transient source archive from Downloads.
+It is not evaluated during normal rendering because it reads the large transient source archive.
+
+The script is portable: every machine-specific location is read from an environment variable with a project-relative fallback, so it runs from the project root on any machine without editing the code.
+
+- `PBWG_SRC` — path to a local source checkout of the PBWG package (optional; when unset, the installed `PBWG` package is used).
+- `BRA_TAXI_ZIP` — path to the source zip archive (optional; when unset, the extracted `dsTaxiYYYY.csv` files in `data-raw/` are used as the source).
+- `BRA_REPORT_DATA` — data directory of the sibling report project that receives the combined analytic CSVs (defaults to this project's `data/`).
 
 ```{r}
 #| label: prepare-bra-taxi-data
 #| eval: false
 
 
-devtools::load_all("/Users/rainerkoelle/RProjects/PBWG", quiet = TRUE)
-source("/Users/rainerkoelle/RProjects/BRA-EUR-2025/_chapter-setup.R")
+# ---- dependencies -----------------------------------------------------------
+# Local project setup (study airports, libraries, defaults).
+source(here::here("_chapter-setup.R"))
+library(fs)
 
-zip_path <- "/Users/rainerkoelle/Downloads/OneDrive_1_20-04-2026.zip"
-archive_root <- "/Users/rainerkoelle/RProjects/PBWG-BRA"
-report_data_dir <- "/Users/rainerkoelle/RProjects/BRA-EUR-2025/data"
-variant <- "icao_ganp_p20"
-ref_year <- 2024L
-min_n <- 5L
-max_txxt <- 120
+# The taxi-time helpers live in the PBWG package. Either install it (loaded here
+# with library(PBWG)), or point the PBWG_SRC environment variable at a local
+# source checkout to load it with devtools::load_all().
+pbwg_src <- Sys.getenv("PBWG_SRC", unset = "")
+if (nzchar(pbwg_src)) {
+  devtools::load_all(pbwg_src, quiet = TRUE)
+} else {
+  library(PBWG)
+}
+
+# ---- configuration (portable; override with environment variables) ----------
+# Optional transient source archive (zip). When empty, the extracted
+# dsTaxiYYYY.csv files in data-raw/ are used as the source instead.
+zip_path        <- Sys.getenv("BRA_TAXI_ZIP", unset = "")
+# Fallback source: already-extracted CSV files.
+raw_data_dir    <- here("data-raw")
+# Project root that receives the parquet extracts and daily outputs.
+archive_root    <- here()
+# Report project data dir that receives the combined analytic CSVs. Defaults to
+# this project's data/ folder; override for a sibling report project.
+report_data_dir <- Sys.getenv("BRA_REPORT_DATA", unset = here("data"))
+
+variant        <- "icao_ganp_p20"
+ref_year       <- 2024L
+data_years     <- 2023:2025
+min_n          <- 5L
+max_txxt       <- 120
 study_airports <- bra_apts
 
 dir_create(path(archive_root, "data", "apdf"))
 dir_create(path(archive_root, "outputs", "txxt-reference-2024"))
-walk(2023:2025, ~ dir_create(path(archive_root, "outputs", paste0("txxt-daily-", .x))))
+walk(data_years, ~ dir_create(path(archive_root, "outputs", paste0("txxt-daily-", .x))))
 
 normalise_text <- function(x) {
   x <- as.character(x)
@@ -129,17 +157,35 @@ parse_bra_datetime <- function(x) {
 }
 
 read_bra_taxi_year <- function(year) {
-  member <- paste0("dsTaxi", year, ".csv")
-  message("Reading ", member)
+  member   <- paste0("dsTaxi", year, ".csv")
+  csv_path <- path(raw_data_dir, member)
 
-  raw <- fread(
-    cmd = sprintf("unzip -p %s %s", shQuote(zip_path), shQuote(member)),
-    sep = ";",
-    fill = 15,
-    colClasses = "character",
-    showProgress = FALSE
-  ) |>
-    as_tibble()
+  if (file.exists(csv_path)) {
+    message("Reading ", csv_path)
+    raw <- fread(
+      csv_path,
+      sep = ";",
+      fill = 15,
+      colClasses = "character",
+      showProgress = FALSE
+    )
+  } else if (nzchar(zip_path) && file.exists(zip_path)) {
+    message("Reading ", member, " from ", basename(zip_path))
+    raw <- fread(
+      cmd = sprintf("unzip -p %s %s", shQuote(zip_path), shQuote(member)),
+      sep = ";",
+      fill = 15,
+      colClasses = "character",
+      showProgress = FALSE
+    )
+  } else {
+    stop(
+      "No source found for ", year, ": expected ", csv_path,
+      " or a zip archive via BRA_TAXI_ZIP."
+    )
+  }
+
+  raw <- as_tibble(raw)
 
   if (!"V15" %in% names(raw)) {
     raw$V15 <- NA_character_
@@ -175,12 +221,12 @@ read_bra_taxi_year <- function(year) {
   harmonised
 }
 
-samples_by_year <- map(2023:2025, function(year) {
+samples_by_year <- map(data_years, function(year) {
   read_bra_taxi_year(year) |>
     prepare_txxt_reference_input(max_txxt = max_txxt) |>
     mutate(YEAR = year)
 }) |>
-  set_names(as.character(2023:2025))
+  set_names(as.character(data_years))
 
 reference_samples <- samples_by_year[[as.character(ref_year)]]
 ref_start <- ymd_hms(paste0(ref_year, "-01-01 00:00:00"), tz = "UTC")
