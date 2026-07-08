@@ -25,7 +25,7 @@ library(rnaturalearth)
 library(ggplot2)
 library(treemapify)
 library(ggbump)
-
+library(here)
 library(gt)
 library(kableExtra)
 
@@ -116,3 +116,5 @@ table_bra_eur <- tibble::tribble(
   "flights ATCO"                               , "362"        , "302"        , "362"        , "447"        , "490"        , "497"        , "542"        , "598"        , "619"        , "n/a"        ,
   "traffic density (non-oceanic flights/km²)"  , "0.22"       , "0.13"       , "0.12"       , "0.16"       , "0.18"       , "0.19"       , "0.21"       , "0.93"       , "0.976"      , "n/a"
 )
+
+#

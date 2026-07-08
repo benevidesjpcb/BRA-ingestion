@@ -4,6 +4,7 @@
 
 .Rproj.user/
 
-data-raw/
+data-raw/*
+!data-raw/.gitkeep
 output/
 temp/

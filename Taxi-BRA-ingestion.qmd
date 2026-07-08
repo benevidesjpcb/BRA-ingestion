@@ -5,15 +5,15 @@ source(here::here("_chapter-setup.R"))
 ```
 
 This note documents the preparation of the Brazilian taxi-time files used for the 2025 Brazil-Europe operational efficiency update.
-The raw taxi files were downloaded from the DECEA datalake folder on OneDrive/SharePoint (`Datalake-Rafael/decea-2025/TAXI`) to the local Downloads folder as a transient source archive.
+The raw taxi files were downloaded from the SharePoint (`Datalake-Rafael/decea-2025/TAXI`) to the local Downloads folder as a transient source archive.
 To save local storage, the raw CSV files and the raw zip archive are not copied into the project archive.
 
 The retained archive artefacts are filtered, study-airport extracts in an APDF-like parquet format, stored in:
 
 ```{r}
-bra_apdf_dir <- "/Users/rainerkoelle/RProjects/PBWG-BRA/data/apdf"
-bra_output_dir <- "/Users/rainerkoelle/RProjects/PBWG-BRA/outputs"
-bra_report_data <- here::here("data")
+bra_apdf_dir    <- here("data", "apdf")
+bra_output_dir  <- here("outputs")
+bra_report_data <- here("data")
 ```
 
 ## Source Inventory
