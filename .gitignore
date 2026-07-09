@@ -6,5 +6,8 @@
 
 data-raw/*
 !data-raw/.gitkeep
-output/
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
 temp/

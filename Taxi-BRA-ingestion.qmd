@@ -11,6 +11,11 @@ To save local storage, the raw CSV files and the raw zip archive are not copied 
 The retained archive artefacts are filtered, study-airport extracts in an APDF-like parquet format, stored in `data/apdf`.
 The project paths and analysis parameters are defined once in `_chapter-setup.R`.
 
+::: {.callout-important}
+## Prerequisites to run this document
+The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Before rendering, place them in `data-raw/` (or set the `BRA_TAXI_ZIP` environment variable) and run the `prepare-bra-taxi-data` chunk once to generate the analytic outputs. Until then, the tables below render with a short notice instead of failing. See `README.md` for the full setup.
+:::
+
 ## Source Inventory
 
 ```{r}
@@ -52,9 +57,16 @@ inventory <- purrr::map(files, function(file) {
 }) |>
   purrr::list_rbind()
 
-inventory |>
-  dplyr::arrange(Year) |>
-  knitr::kable()
+if (nrow(inventory) == 0) {
+  knitr::kable(tibble::tibble(
+    note = paste0("No source files found in ", bra_raw_data_dir,
+                  ". Place dsTaxiYYYY.csv there (or set BRA_TAXI_ZIP).")
+  ))
+} else {
+  inventory |>
+    dplyr::arrange(Year) |>
+    knitr::kable()
+}
 ```
 
 The source files use semicolon-separated fields and include Brazilian airport movements beyond the Brazil-Europe study scope.
@@ -335,20 +347,26 @@ The observed taxi-time total (`TOT_TXXT`), reference total (`TOT_REF`), and addi
 ```{r}
 #| label: tbl-bra-txxt-coverage
 
-readr::read_csv(
-  here::here("data", bra_coverage_file),
-  show_col_types = FALSE
-) |>
-  dplyr::mutate(
-    MVTS_NA_SHARE = MVTS_NA / MVTS_TOTAL,
-    AVG_TXXT = TOT_TXXT / MVTS_VALID,
-    AVG_ADD_TIME = TOT_ADD_TIME / MVTS_VALID
-  ) |>
-  dplyr::select(YEAR, PHASE, MVTS_TOTAL, MVTS_VALID, MVTS_NA, MVTS_NA_SHARE, AVG_TXXT, AVG_ADD_TIME) |>
-  dplyr::mutate(
-    dplyr::across(c(MVTS_NA_SHARE, AVG_TXXT, AVG_ADD_TIME), ~ round(.x, 3))
-  ) |>
-  knitr::kable()
+coverage_path <- here::here("data", bra_coverage_file)
+
+if (file.exists(coverage_path)) {
+  readr::read_csv(coverage_path, show_col_types = FALSE) |>
+    dplyr::mutate(
+      MVTS_NA_SHARE = MVTS_NA / MVTS_TOTAL,
+      AVG_TXXT = TOT_TXXT / MVTS_VALID,
+      AVG_ADD_TIME = TOT_ADD_TIME / MVTS_VALID
+    ) |>
+    dplyr::select(YEAR, PHASE, MVTS_TOTAL, MVTS_VALID, MVTS_NA, MVTS_NA_SHARE, AVG_TXXT, AVG_ADD_TIME) |>
+    dplyr::mutate(
+      dplyr::across(c(MVTS_NA_SHARE, AVG_TXXT, AVG_ADD_TIME), ~ round(.x, 3))
+    ) |>
+    knitr::kable()
+} else {
+  knitr::kable(tibble::tibble(
+    note = paste0("Coverage summary not found. Run the `prepare-bra-taxi-data` ",
+                  "chunk to generate ", bra_coverage_file, " in data/.")
+  ))
+}
 ```
 
 The current extracts retain the source KPI payload in the harmonised parquet files for later diagnostic comparison.
