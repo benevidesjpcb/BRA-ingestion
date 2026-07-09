@@ -6,8 +6,8 @@
 
 data-raw/*
 !data-raw/.gitkeep
-data/*
-!data/.gitkeep
+# Track the analytic CSV outputs in data/, but not the large parquet extracts.
+data/apdf/
 outputs/*
 !outputs/.gitkeep
 temp/
