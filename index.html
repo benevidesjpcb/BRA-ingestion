@@ -53,8 +53,9 @@
   .tile{background:var(--panel);border:1px solid var(--hair);border-radius:14px;padding:16px 16px 15px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:9px;position:relative;overflow:hidden}
   .tile .cap{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);display:flex;align-items:center;gap:7px}
   .dot{width:9px;height:9px;border-radius:50%;flex:none}
-  .tile .val{font-family:var(--mono);font-size:30px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1}
-  .tile .val small{font-size:13px;font-weight:500;color:var(--muted);margin-left:4px}
+  .tile .val{font-family:var(--mono);font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1;
+    display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;font-size:clamp(20px,5vw,30px)}
+  .tile .val small{font-size:13px;font-weight:500;color:var(--muted)}
   .tile .meta{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .tile .accent{position:absolute;left:0;top:0;bottom:0;width:3px}
   .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;font-weight:600;padding:2px 8px;border-radius:100px;border:1px solid transparent}
@@ -181,7 +182,7 @@
     <strong>How to read.</strong> Each value is the <em>average per movement</em> (sum of daily totals ÷ valid movements), in minutes.
     <em>Additional time</em> = actual taxi − 2024 p20 reference, grouped by <code>ICAO+phase+stand+runway</code>.<br>
     <strong>Coverage.</strong> In Brazil ~17–20% of movements have no reference (<code>MVTS_NA</code>) versus ~1–2% in Europe — Brazilian averages cover less of the sample, so compare with that caveat.<br>
-    <strong>Data.</strong> Loaded live from the CSV files in <code id="foot-dir">data/</code>. See <code>README</code> to add or remove years and airports.
+    <strong>Data.</strong> <span id="foot-data-src">Embedded in this page.</span> See <code>README</code> to add or remove years and airports.
   </footer>
 </div>
 
@@ -309,7 +310,12 @@ function svg(w,h){return `<svg viewBox="0 0 ${w} ${h}" role="img" preserveAspect
 function attachTips(host){host.querySelectorAll('[data-tip]').forEach(el=>{el.style.cursor='default';
   el.addEventListener('mousemove',e=>showTip(el.dataset.tip,e.clientX,e.clientY));
   el.addEventListener('mouseenter',e=>showTip(el.dataset.tip,e.clientX,e.clientY));
-  el.addEventListener('mouseleave',hideTip);});}
+  el.addEventListener('mouseleave',hideTip);
+  el.addEventListener('touchstart',e=>{e.stopPropagation();const t=e.touches[0];
+    const open=tip.style.opacity=='1'&&tip.dataset.owner===el.dataset.tip;
+    if(open){hideTip();} else {tip.dataset.owner=el.dataset.tip;showTip(el.dataset.tip,t.clientX,t.clientY);}
+  },{passive:true});});}
+document.addEventListener('touchstart',e=>{if(!e.target.closest('[data-tip]'))hideTip();},{passive:true});
 function niceMax(v){if(v<=0)return 1;const p=Math.pow(10,Math.floor(Math.log10(v)));const n=v/p;const s=n<=1?1:n<=2?2:n<=5?5:10;return s*p*(v/(s*p)>0.85?1.15:1);}
 
 /* ---------------- controls ---------------- */
@@ -470,17 +476,20 @@ function boot(d){
 }
 (async function init(){
   const stateBox=document.getElementById('state');
-  document.getElementById('foot-dir').textContent=CONFIG.dataDir+'/';
   // 1) Data embedded in the page (works by double-click, offline).
   let embedded=null;
   try{ const j=JSON.parse(document.getElementById('dash-data').textContent); if(j&&j.years&&j.years.length) embedded=j; }catch(e){}
-  if(embedded){ boot(embedded); return; }
+  if(embedded){
+    document.getElementById('foot-data-src').textContent='Embedded in this page — refresh with Rscript build_dashboard.R after changing data/.';
+    boot(embedded); return;
+  }
   // 2) No embedded data and opened as a local file → explain how to build it.
   if(location.protocol==='file:'){
     stateBox.innerHTML='<h3>Build the page once</h3>This copy has no embedded data yet. Run <code>Rscript build_dashboard.R</code> in the repo (it reads <code>data/</code> and embeds the numbers into this file), then just double-click <code>index.html</code> — no server needed.';
     return;
   }
   // 3) Served over HTTP → read the CSVs in data/ live.
+  document.getElementById('foot-data-src').textContent='Loaded live from the CSV files in '+CONFIG.dataDir+'/.';
   try{ boot(await loadData()); }
   catch(err){ stateBox.innerHTML='<h3>No data found</h3>Looked for files like <code>'+CONFIG.dataDir+'/'+CONFIG.fileName('BRA',CONFIG.refYear)+'</code> but found none. Add the analytic CSVs to <code>'+CONFIG.dataDir+'/</code> (see <code>README</code>).'; }
 })();
