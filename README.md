@@ -66,18 +66,24 @@ regex, and reporting period follow automatically.
 Brazil and Europe. It has **no build step**: it reads the analytic CSVs in `data/`
 live in the browser and discovers the available years and airports on its own.
 
-### Viewing it
+### Viewing it locally (no server, no Python)
 
-The dashboard fetches CSV files, which browsers **block when you double-click the
-file** (`file://`). Open it over HTTP instead:
+The page carries its data embedded, so:
 
-- **Published (public):** enable **GitHub Pages** — repo → *Settings* → *Pages* →
-  *Deploy from a branch* → **`main`** / **`/ (root)`**. The public URL will be
-  `https://<user>.github.io/<repo>/`.
-- **Locally:** run `python3 -m http.server` in the repo folder and open
-  `http://localhost:8000/`.
+1. Run once: **`Rscript build_dashboard.R`** — it reads `data/` and embeds the numbers
+   into `index.html`. (Needs R with the `jsonlite` package: `install.packages("jsonlite")`.)
+2. **Double-click `index.html`.** It opens in your browser, offline, no server needed.
 
-Opening the file directly just shows a short message reminding you of this.
+Re-run step 1 whenever the CSVs change. If you open `index.html` before ever building
+it, it shows a short note telling you to run the script.
+
+### Publishing it (later)
+
+When the page is *served over HTTP* it can also read the CSVs in `data/` live, so no
+rebuild is needed there. To publish: enable **GitHub Pages** — repo → *Settings* →
+*Pages* → *Deploy from a branch* → **`main`** / **`/ (root)`**; the URL will be
+`https://<user>.github.io/<repo>/`. (Or serve locally with
+`Rscript -e 'servr::httd()'` if you prefer the live-reading mode.)
 
 ### Updating the data — only add or remove files
 
@@ -97,8 +103,9 @@ where `<REGION>` is `BRA` or `EUR`. So:
 | **Remove 2023** | Delete the 2023 file(s) from `data/`. |
 | **Add more airports** | Nothing — new ICAO codes in the CSVs appear automatically. Add a label in `CONFIG.names` (in `index.html`) if you want a name instead of the code. |
 
-No code edit is needed for years or airports. Commit the CSVs and `push`; the
-published site updates on its own.
+No code edit is needed for years or airports. After changing files in `data/`, run
+**`Rscript build_dashboard.R`** to refresh the double-click page. (A published/served
+copy also updates on its own once you commit and `push`.)
 
 > Partial years (e.g. 2026 through June) are detected automatically and flagged as
 > "partial". A region with no file for a given year is shown as "no data" instead of
