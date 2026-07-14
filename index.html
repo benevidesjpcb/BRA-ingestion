@@ -267,16 +267,17 @@ async function loadData(){
   const ap={}, mo={}, ov={}, maxd={};
   const addTo=(o,k)=>{o.v+=k.V;o.na+=k.NA;o.txxt+=k.TXXT;o.ref+=k.REF;o.add+=k.ADD;};
   const blank=()=>({v:0,na:0,txxt:0,ref:0,add:0});
+  function ensure(obj,key,factory){ if(!(key in obj)) obj[key]=factory(); return obj[key]; }
   for(const f of files){
     for(const rw of f.rows){
       if(rw.DATE.slice(0,4)!==f.year) continue;          // keep only the file's own year
-      ((((ap[f.region]??={})[rw.ICAO]??={})[rw.PHASE]??={})[f.year]??=blank());
-      addTo(ap[f.region][rw.ICAO][rw.PHASE][f.year],rw);
-      (((ov[f.region]??={})[f.year]??={})[rw.PHASE]??=blank());
-      addTo(ov[f.region][f.year][rw.PHASE],rw);
+      const apBucket=ensure(ensure(ensure(ensure(ap,f.region,()=>({})),rw.ICAO,()=>({})),rw.PHASE,()=>({})),f.year,blank);
+      addTo(apBucket,rw);
+      const ovBucket=ensure(ensure(ensure(ov,f.region,()=>({})),f.year,()=>({})),rw.PHASE,blank);
+      addTo(ovBucket,rw);
       const mm=rw.DATE.slice(5,7);
-      ((((mo[f.region]??={})[f.year]??={})[rw.PHASE]??={})[mm]??={v:0,add:0});
-      mo[f.region][f.year][rw.PHASE][mm].v+=rw.V; mo[f.region][f.year][rw.PHASE][mm].add+=rw.ADD;
+      const moBucket=ensure(ensure(ensure(ensure(mo,f.region,()=>({})),f.year,()=>({})),rw.PHASE,()=>({})),mm,()=>({v:0,add:0}));
+      moBucket.v+=rw.V; moBucket.add+=rw.ADD;
       const dk=f.region+'|'+f.year; if(!maxd[dk]||rw.DATE>maxd[dk]) maxd[dk]=rw.DATE;
     }
   }
@@ -295,7 +296,7 @@ async function loadData(){
     for(const ph in mo[rg][yr]){monthly[rg][yr][ph]={};
       for(const mm in mo[rg][yr][ph]){const d=mo[rg][yr][ph][mm];
         monthly[rg][yr][ph][mm]=d.v?+(d.add/d.v).toFixed(3):null;}}}}
-  for(const dk in maxd){const p=dk.split('|'),rg=p[0],yr=p[1]; if(maxd[dk] < yr+'-12-31'){(partial[rg]??={})[yr]=maxd[dk];}}
+  for(const dk in maxd){const p=dk.split('|'),rg=p[0],yr=p[1]; if(maxd[dk] < yr+'-12-31'){ensure(partial,rg,()=>({}))[yr]=maxd[dk];}}
   const years=[...new Set(files.map(f=>f.year))].sort();
   return {airports,overall,monthly,meta:{partial},years};
 }
