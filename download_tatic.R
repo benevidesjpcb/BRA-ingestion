@@ -69,33 +69,32 @@ need <- Filter(function(d) {
 }, all_days)
 skipped <- length(all_days) - length(need)
 
-# ---- fetch the needed days in parallel --------------------------------------
-# One request per day, run several at once. Throttle is shared across the pool
-# (per host), so we stay polite even while concurrent. Bodies stream straight
-# to a temp file to avoid holding many 6 MB responses in memory.
-concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "6"))
+# ---- fetch the needed days in small parallel batches ------------------------
+# The API is slow per day (~6 MB generated on the fly) and dislikes many
+# simultaneous connections, so we use a SMALL concurrency and process days in
+# batches, SAVING each batch immediately. That way progress persists as we go:
+# an interrupt or a stalled batch never loses the days already saved, and a
+# re-run resumes from the first missing day.
+concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "3"))
 downloaded  <- 0L
 failed      <- character(0)
 
-if (length(need) > 0) {
-  message(sprintf("Fetching %d day(s), up to %d at a time ...",
-                  length(need), concurrency))
-
-  reqs <- lapply(need, function(d) {
+fetch_batch <- function(days_batch) {
+  reqs <- lapply(days_batch, function(d) {
     httr2::request(base_url) |>
       httr2::req_url_query(token = token, datai = fmt(d), dataf = fmt(d + 1)) |>
       httr2::req_user_agent("BRA-ingestion/tatic") |>
-      httr2::req_timeout(120) |>
-      httr2::req_throttle(rate = concurrency) |>   # cap the shared request rate
-      httr2::req_retry(max_tries = 5)
+      httr2::req_timeout(90) |>                    # a stuck request fails, not hangs
+      httr2::req_throttle(rate = concurrency) |>
+      httr2::req_retry(max_tries = 4)
   })
-  tmp   <- vapply(need, function(d) tempfile(fileext = ".json"), character(1))
-  final <- vapply(need, function(d)
+  tmp   <- vapply(days_batch, function(d) tempfile(fileext = ".json"), character(1))
+  final <- vapply(days_batch, function(d)
     file.path(raw_dir, sprintf("tatic-%s.json", fmt(d))), character(1))
 
   resps <- httr2::req_perform_parallel(
     reqs, paths = tmp, on_error = "continue",
-    max_active = concurrency, progress = TRUE
+    max_active = concurrency, progress = FALSE
   )
 
   for (i in seq_along(resps)) {
@@ -103,25 +102,35 @@ if (length(need) > 0) {
     http_ok <- inherits(r, "httr2_response") &&
       httr2::resp_status(r) == 200 &&
       file.exists(tmp[i]) && file.info(tmp[i])$size > 0
-    # parse straight from the temp file: success both validates and counts
     parsed <- if (http_ok)
       tryCatch(jsonlite::fromJSON(tmp[i], simplifyVector = FALSE),
                error = function(e) NULL) else NULL
 
     if (!is.null(parsed)) {
-      file.copy(tmp[i], final[i], overwrite = TRUE)
-      message(sprintf("  ok    %s  (%d record(s))",
+      file.copy(tmp[i], final[i], overwrite = TRUE)   # persist immediately
+      message(sprintf("  ok     %s  (%d record(s))",
                       basename(final[i]), length(parsed)))
-      downloaded <- downloaded + 1L
+      downloaded <<- downloaded + 1L
     } else {
       why <- if (inherits(r, "httr2_response") && httr2::resp_status(r) != 200)
                paste0("HTTP ", httr2::resp_status(r))
              else if (inherits(r, "condition")) conditionMessage(r)
-             else "invalid/empty JSON"
+             else "timeout/invalid JSON"
       message(sprintf("  FAILED %s  (%s)", basename(final[i]), why))
-      failed <- c(failed, fmt(need[[i]]))
+      failed <<- c(failed, fmt(days_batch[[i]]))
     }
     unlink(tmp[i])
+  }
+}
+
+if (length(need) > 0) {
+  batches <- split(need, ceiling(seq_along(need) / concurrency))
+  message(sprintf("Fetching %d day(s) in %d batch(es) of up to %d ...",
+                  length(need), length(batches), concurrency))
+  for (b in seq_along(batches)) {
+    fetch_batch(batches[[b]])
+    message(sprintf("  ...batch %d/%d done  (saved so far: %d, failed: %d)",
+                    b, length(batches), downloaded, length(failed)))
   }
 }
 
