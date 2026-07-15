@@ -59,69 +59,70 @@ n_days <- as.integer(end - start) + 1L
 message(sprintf("TATIC period: %s -> %s  (%d day-by-day call(s))",
                 fmt(start), fmt(end), n_days))
 
-# ---- download one day -------------------------------------------------------
-# Writes the day's JSON only on success and returns the record count. Any HTTP,
-# network, timeout or JSON problem raises an error (handled per-day by the loop),
-# and NO file is written, so a re-run retries exactly that day.
-fetch_day <- function(datai, dataf, out_json) {
-  resp <- httr2::request(base_url) |>
-    httr2::req_url_query(token = token, datai = datai, dataf = dataf) |>
-    httr2::req_user_agent("BRA-ingestion/tatic") |>
-    httr2::req_timeout(120) |>                 # fail instead of hanging forever
-    httr2::req_throttle(rate = 2) |>           # be polite: <= 2 req/s
-    httr2::req_retry(max_tries = 5) |>         # backoff on 429/5xx/transient
-    httr2::req_perform()
-
-  if (httr2::resp_status(resp) != 200)
-    stop("HTTP ", httr2::resp_status(resp))
-
-  body <- httr2::resp_body_string(resp)
-  if (!jsonlite::validate(body))
-    stop("response is not valid JSON (first 120 chars: ",
-         substr(body, 1, 120), ")")
-
-  writeLines(body, out_json)                   # only reached on success
-  n <- tryCatch(length(jsonlite::fromJSON(body, simplifyVector = FALSE)),
-                error = function(e) NA_integer_)
-  ifelse(is.na(n), NA_integer_, n)
-}
-
-# ---- walk the period one day at a time --------------------------------------
-downloaded <- 0L
-skipped    <- 0L
-failed     <- character(0)
-day <- start
-
-while (day <= end) {
-  datai <- fmt(day)
-  dataf <- fmt(day + 1)                       # exclusive next day (per API example)
-  out_json <- file.path(raw_dir, sprintf("tatic-%s.json", datai))
-
-  complete <- day < today                     # a past day never changes
+# ---- decide which days we still need ----------------------------------------
+# A past day already saved is skipped; today is always refreshed.
+all_days <- seq(start, end, by = "day")
+need <- Filter(function(d) {
+  out_json <- file.path(raw_dir, sprintf("tatic-%s.json", fmt(d)))
   have_it  <- file.exists(out_json) && file.info(out_json)$size > 0
+  !(have_it && d < today)                     # keep only days we must fetch
+}, all_days)
+skipped <- length(all_days) - length(need)
 
-  if (have_it && complete) {
-    skipped <- skipped + 1L
-  } else {
-    reason <- if (have_it) "refresh (today)" else "download"
-    # one bad day must not abort the whole run: log it and move on
-    n <- tryCatch(fetch_day(datai, dataf, out_json),
-                  error = function(e) {
-                    message(sprintf("  FAILED           %s  (%s)",
-                                    basename(out_json), conditionMessage(e)))
-                    NULL
-                  })
-    if (is.null(n)) {
-      failed <- c(failed, datai)
-    } else {
-      message(sprintf("  %-16s %s  (%s record(s))",
-                      reason, basename(out_json),
-                      ifelse(is.na(n), "?", n)))
+# ---- fetch the needed days in parallel --------------------------------------
+# One request per day, run several at once. Throttle is shared across the pool
+# (per host), so we stay polite even while concurrent. Bodies stream straight
+# to a temp file to avoid holding many 6 MB responses in memory.
+concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "6"))
+downloaded  <- 0L
+failed      <- character(0)
+
+if (length(need) > 0) {
+  message(sprintf("Fetching %d day(s), up to %d at a time ...",
+                  length(need), concurrency))
+
+  reqs <- lapply(need, function(d) {
+    httr2::request(base_url) |>
+      httr2::req_url_query(token = token, datai = fmt(d), dataf = fmt(d + 1)) |>
+      httr2::req_user_agent("BRA-ingestion/tatic") |>
+      httr2::req_timeout(120) |>
+      httr2::req_throttle(rate = concurrency) |>   # cap the shared request rate
+      httr2::req_retry(max_tries = 5)
+  })
+  tmp   <- vapply(need, function(d) tempfile(fileext = ".json"), character(1))
+  final <- vapply(need, function(d)
+    file.path(raw_dir, sprintf("tatic-%s.json", fmt(d))), character(1))
+
+  resps <- httr2::req_perform_parallel(
+    reqs, paths = tmp, on_error = "continue",
+    max_active = concurrency, progress = TRUE
+  )
+
+  for (i in seq_along(resps)) {
+    r <- resps[[i]]
+    http_ok <- inherits(r, "httr2_response") &&
+      httr2::resp_status(r) == 200 &&
+      file.exists(tmp[i]) && file.info(tmp[i])$size > 0
+    # parse straight from the temp file: success both validates and counts
+    parsed <- if (http_ok)
+      tryCatch(jsonlite::fromJSON(tmp[i], simplifyVector = FALSE),
+               error = function(e) NULL) else NULL
+
+    if (!is.null(parsed)) {
+      file.copy(tmp[i], final[i], overwrite = TRUE)
+      message(sprintf("  ok    %s  (%d record(s))",
+                      basename(final[i]), length(parsed)))
       downloaded <- downloaded + 1L
+    } else {
+      why <- if (inherits(r, "httr2_response") && httr2::resp_status(r) != 200)
+               paste0("HTTP ", httr2::resp_status(r))
+             else if (inherits(r, "condition")) conditionMessage(r)
+             else "invalid/empty JSON"
+      message(sprintf("  FAILED %s  (%s)", basename(final[i]), why))
+      failed <- c(failed, fmt(need[[i]]))
     }
+    unlink(tmp[i])
   }
-
-  day <- day + 1
 }
 
 message(sprintf("Done: %d day(s) downloaded/refreshed, %d already present, %d failed.",
