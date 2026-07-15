@@ -61,6 +61,17 @@ parts <- lapply(parts, function(df) {
 })
 movements <- do.call(rbind, parts)
 
+# ---- de-duplicate across day files ------------------------------------------
+# The API is day-based, but a movement can appear on the UTC/BSB boundary of two
+# adjacent daily pulls. Drop exact duplicate records (ignoring which file they
+# came from), keeping the first occurrence.
+before <- nrow(movements)
+dup_key <- setdiff(names(movements), "SOURCE_FILE")
+movements <- movements[!duplicated(movements[dup_key]), , drop = FALSE]
+if (before > nrow(movements))
+  message(sprintf("Removed %d duplicate record(s) across day files.",
+                  before - nrow(movements)))
+
 # ---- report on the important fields -----------------------------------------
 present <- intersect(key_fields, names(movements))
 absent  <- setdiff(key_fields, names(movements))
