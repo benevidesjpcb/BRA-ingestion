@@ -38,7 +38,7 @@ this_year <- 2026
 max_date <- lubridate::ymd("2026-12-31")
 
 # dstaxi_years
-dsTaxi_years <- 2023:2026
+dsTaxi_years <- 2024:2026
 
 # taxi-time ingestion: project paths ==========================================
 bra_apdf_dir     <- here::here("data", "apdf")
@@ -49,7 +49,7 @@ bra_raw_data_dir <- here::here("data-raw")
 # taxi-time ingestion: analysis parameters ====================================
 variant    <- "icao_ganp_p20"                     # reference variant (GANP p20)
 ref_year   <- 2024L                               # reference year
-data_years <- 2023:2026                            # years processed by pipeline
+data_years <- 2024:2026                            # years processed by pipeline
 min_n      <- 5L                                  # min samples per ref group
 max_txxt   <- 120                                 # taxi-time cap (minutes)
 p_ref      <- 0.20                                # reference percentile
