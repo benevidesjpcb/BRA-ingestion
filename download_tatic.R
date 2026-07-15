@@ -70,12 +70,14 @@ need <- Filter(function(d) {
 skipped <- length(all_days) - length(need)
 
 # ---- fetch the needed days in small parallel batches ------------------------
-# The API is slow per day (~6 MB generated on the fly) and dislikes many
-# simultaneous connections, so we use a SMALL concurrency and process days in
-# batches, SAVING each batch immediately. That way progress persists as we go:
-# an interrupt or a stalled batch never loses the days already saved, and a
-# re-run resumes from the first missing day.
-concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "3"))
+# The API serves ONE request at a time: a day fetched alone downloads fine, but
+# concurrent requests sit in the server's queue and time out (observed: with 3
+# at once, one day completed and the other two got 0 - few bytes before the
+# timeout). So the default is SEQUENTIAL (concurrency = 1). Each day is still
+# saved immediately, so progress persists across interrupts and a re-run resumes
+# from the first missing day. You can try raising TATIC_CONCURRENCY, but the
+# server is effectively serial, so it usually just causes timeouts.
+concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "1"))
 downloaded  <- 0L
 failed      <- character(0)
 
@@ -84,7 +86,7 @@ fetch_batch <- function(days_batch) {
     httr2::request(base_url) |>
       httr2::req_url_query(token = token, datai = fmt(d), dataf = fmt(d + 1)) |>
       httr2::req_user_agent("BRA-ingestion/tatic") |>
-      httr2::req_timeout(90) |>                    # a stuck request fails, not hangs
+      httr2::req_timeout(300) |>                   # generous: a full 6-7 MB day is slow
       httr2::req_throttle(rate = concurrency) |>
       httr2::req_retry(max_tries = 4)
   })
@@ -129,8 +131,10 @@ if (length(need) > 0) {
                   length(need), length(batches), concurrency))
   for (b in seq_along(batches)) {
     fetch_batch(batches[[b]])
-    message(sprintf("  ...batch %d/%d done  (saved so far: %d, failed: %d)",
-                    b, length(batches), downloaded, length(failed)))
+    # progress line: every batch when parallel, every 10 days when sequential
+    if (concurrency > 1 || b %% 10 == 0)
+      message(sprintf("  ...%d/%d done  (saved: %d, failed: %d)",
+                      b * concurrency, length(need), downloaded, length(failed)))
   }
 }
 
