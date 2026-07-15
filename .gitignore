@@ -4,6 +4,9 @@
 
 .Rproj.user/
 
+# Secrets — holds TATIC_TOKEN; must never be committed
+.Renviron
+
 data-raw/*
 !data-raw/.gitkeep
 output/
