@@ -60,23 +60,27 @@ message(sprintf("TATIC period: %s -> %s  (%d day-by-day call(s))",
                 fmt(start), fmt(end), n_days))
 
 # ---- download one day -------------------------------------------------------
+# Writes the day's JSON only on success and returns the record count. Any HTTP,
+# network, timeout or JSON problem raises an error (handled per-day by the loop),
+# and NO file is written, so a re-run retries exactly that day.
 fetch_day <- function(datai, dataf, out_json) {
   resp <- httr2::request(base_url) |>
     httr2::req_url_query(token = token, datai = datai, dataf = dataf) |>
     httr2::req_user_agent("BRA-ingestion/tatic") |>
-    httr2::req_retry(max_tries = 4) |>
+    httr2::req_timeout(120) |>                 # fail instead of hanging forever
+    httr2::req_throttle(rate = 2) |>           # be polite: <= 2 req/s
+    httr2::req_retry(max_tries = 5) |>         # backoff on 429/5xx/transient
     httr2::req_perform()
 
   if (httr2::resp_status(resp) != 200)
-    stop("TATIC API returned HTTP ", httr2::resp_status(resp),
-         " for day ", datai, ". Check the token/date.")
+    stop("HTTP ", httr2::resp_status(resp))
 
   body <- httr2::resp_body_string(resp)
   if (!jsonlite::validate(body))
-    stop("TATIC response for ", datai,
-         " is not valid JSON. First 200 chars:\n", substr(body, 1, 200))
+    stop("response is not valid JSON (first 120 chars: ",
+         substr(body, 1, 120), ")")
 
-  writeLines(body, out_json)
+  writeLines(body, out_json)                   # only reached on success
   n <- tryCatch(length(jsonlite::fromJSON(body, simplifyVector = FALSE)),
                 error = function(e) NA_integer_)
   ifelse(is.na(n), NA_integer_, n)
@@ -85,6 +89,7 @@ fetch_day <- function(datai, dataf, out_json) {
 # ---- walk the period one day at a time --------------------------------------
 downloaded <- 0L
 skipped    <- 0L
+failed     <- character(0)
 day <- start
 
 while (day <= end) {
@@ -99,18 +104,31 @@ while (day <= end) {
     skipped <- skipped + 1L
   } else {
     reason <- if (have_it) "refresh (today)" else "download"
-    n <- fetch_day(datai, dataf, out_json)
-    message(sprintf("  %-16s %s  (%s record(s))",
-                    reason, basename(out_json),
-                    ifelse(is.na(n), "?", n)))
-    downloaded <- downloaded + 1L
+    # one bad day must not abort the whole run: log it and move on
+    n <- tryCatch(fetch_day(datai, dataf, out_json),
+                  error = function(e) {
+                    message(sprintf("  FAILED           %s  (%s)",
+                                    basename(out_json), conditionMessage(e)))
+                    NULL
+                  })
+    if (is.null(n)) {
+      failed <- c(failed, datai)
+    } else {
+      message(sprintf("  %-16s %s  (%s record(s))",
+                      reason, basename(out_json),
+                      ifelse(is.na(n), "?", n)))
+      downloaded <- downloaded + 1L
+    }
   }
 
   day <- day + 1
 }
 
-message(sprintf("Done: %d day(s) downloaded/refreshed, %d already present.",
-                downloaded, skipped))
+message(sprintf("Done: %d day(s) downloaded/refreshed, %d already present, %d failed.",
+                downloaded, skipped, length(failed)))
+if (length(failed) > 0)
+  message("Failed day(s): ", paste(failed, collapse = ", "),
+          "\n  -> just re-run  Rscript download_tatic.R  to retry only these.")
 
 # ---- flatten everything in data-raw/tatic/ to CSV ---------------------------
 if (file.exists("ingest_tatic.R")) {
