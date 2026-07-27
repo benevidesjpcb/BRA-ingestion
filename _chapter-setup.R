@@ -86,8 +86,11 @@ asma_p_ref      <- p_ref                           # reference percentile (0.20)
 # between them. Never collapse them into a single label.
 asma_ring_col   <- "c"                             # source column holding the ring
 asma_rings      <- c("C40", "C100")                # rings, in display order
-# transit cap per ring (minutes): 100 NM legitimately takes far longer than 40 NM
-asma_max_asma   <- c(C40 = 60, C100 = 120)
+# Plausibility cap on the ASMA transit (minutes), the same for both rings.
+# Derived from the reference file rather than guessed: its single-movement groups
+# reach 179.75 min at C40 and 179.88 at C100, so the official pipeline caps at
+# 180. An earlier 60/120 guess silently discarded ~0.6% of valid C40 movements.
+asma_max_asma   <- c(C40 = 180, C100 = 180)
 # reference grouping key for ASMA (richer than taxi: adds RANGE/CLASS/SECTOR)
 asma_ref_key    <- c("ICAO", "PHASE", "RANGE", "CLASS", "RWY", "SECTOR_GROUP")
 
