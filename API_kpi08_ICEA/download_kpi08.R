@@ -37,7 +37,9 @@
 #                   incrementally    (default "aldt" — CONFIRM this is the
 #                   arrival date/time column of the kpi08 table)
 #   ODIN_ID_COL     unique id column used to de-duplicate on merge (default "id")
-#   ODIN_PAGE_SIZE  rows per request (default 1000)
+#   ODIN_PAGE_SIZE  rows per request (default 10000; the default is set in the
+#                   `page_size <- ...` line inside download_kpi08() — edit it
+#                   there to change it permanently)
 #   ODIN_TOKEN      optional Bearer token (the example endpoint needs none)
 # =============================================================================
 
@@ -74,7 +76,10 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
   token     <- Sys.getenv("ODIN_TOKEN", unset = "")
   date_col  <- Sys.getenv("ODIN_DATE_COL", unset = "aldt")
   id_col    <- Sys.getenv("ODIN_ID_COL", unset = "id")
-  page_size <- as.integer(Sys.getenv("ODIN_PAGE_SIZE", unset = "1000"))
+  # rows per request. CHANGE THIS NUMBER to make the download coarser/faster.
+  # If the server caps the page below what we ask, the log says so once and the
+  # download still completes (it advances by the rows actually returned).
+  page_size <- as.integer(Sys.getenv("ODIN_PAGE_SIZE", unset = "10000"))
 
   years <- suppressWarnings(as.integer(years))
   if (length(years) == 0 || any(is.na(years)))
