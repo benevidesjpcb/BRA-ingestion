@@ -56,9 +56,16 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 ## Configuration
 
 All paths and analysis parameters live in one place, `_chapter-setup.R`:
-`variant`, `ref_year`, `data_years`, `min_n`, `max_txxt`, `p_ref`, `ref_key`, and the
-project directories. Change the reference year or variant there and the file names,
-regex, and reporting period follow automatically.
+
+- **taxi-time** — `variant`, `ref_year`, `data_years`, `min_n`, `max_txxt`, `p_ref`,
+  `ref_key`;
+- **ASMA (KPI08)** — `asma_variant`, `asma_ref_year`, `asma_data_years`, `asma_min_n`,
+  `asma_max_asma`, `asma_p_ref`, `asma_ring`, `asma_ref_key`;
+- the project directories and the generated output file names for both.
+
+Change the study period (`asma_data_years`) or the reference year there and the file
+names, regex, download years, and reporting period follow automatically — the `.qmd`
+files only source this script.
 
 ## Dashboard
 

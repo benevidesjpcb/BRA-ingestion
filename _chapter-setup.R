@@ -66,6 +66,38 @@ bra_coverage_file <- paste0(
   "BRA-txxt-coverage-summary-", min(data_years), "-", max(data_years), ".csv"
 )
 
+# ASMA (KPI08) ingestion: analysis parameters =================================
+# ASMA is an ARRIVAL metric: additional time in the terminal airspace, measured
+# from an ASMA ring crossing to landing, minus an unimpeded reference. The source
+# files already carry a calculated `kpi08` (additional time), `transito` (transit
+# time) and `desimp` (unimpeded); those are retained for validation while the
+# reference is recomputed in-repo with the same GANP p20 logic as taxi-time.
+asma_variant    <- "icao_ganp_p20"                 # reference variant (GANP p20)
+asma_ref_year   <- ref_year                        # reference year (shared, 2024)
+asma_data_years <- 2023:2026                       # <- CHANGE THE STUDY PERIOD HERE
+asma_min_n      <- min_n                           # min samples per ref group
+asma_p_ref      <- p_ref                           # reference percentile (0.20)
+asma_max_asma   <- 60                              # ASMA transit cap (minutes)
+asma_ring       <- "C40"                           # label for the crossing ring
+# reference grouping key for ASMA (richer than taxi: adds RANGE/CLASS/SECTOR)
+asma_ref_key    <- c("ICAO", "PHASE", "RANGE", "CLASS", "RWY", "SECTOR_GROUP")
+
+# ASMA (KPI08) ingestion: project paths =======================================
+bra_asma_raw_dir  <- here::here("data-raw", "kpi08")   # raw kpi08 CSVs (ODIN)
+bra_asma_apdf_dir <- here::here("data", "asma")        # harmonised parquet extracts
+
+# ASMA (KPI08) ingestion: output file names ===================================
+bra_asma_analytic_file <- paste0(
+  "PBWG-BRA-asma-analytic-", min(asma_data_years), "-", max(asma_data_years),
+  "-ref", asma_ref_year, "-", asma_variant, ".csv"
+)
+bra_asma_coverage_file <- paste0(
+  "BRA-asma-coverage-summary-", min(asma_data_years), "-", max(asma_data_years), ".csv"
+)
+bra_asma_reference_coverage_file <- paste0(
+  "BRA-asma-reference-coverage-", asma_ref_year, ".csv"
+)
+
 # set ggplot2 default theme
 ggplot2::theme_set(theme_minimal())
 
