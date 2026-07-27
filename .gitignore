@@ -16,6 +16,7 @@ outputs/*
 !outputs/.gitkeep
 temp/
 
-# KPI08 (ODIN) downloaded data — keep the script, not the raw pulls
+# KPI08 (ODIN) downloads land in data-raw/kpi08/, already covered by data-raw/*.
+# Keep this guard in case anything is written next to the script itself.
 API_kpi08_ICEA/*.json
 API_kpi08_ICEA/*.csv

@@ -24,7 +24,7 @@ asma_ring       <- "C40"                            # label for the crossing rin
 asma_ref_key    <- c("ICAO", "PHASE", "RANGE", "CLASS", "RWY", "SECTOR_GROUP")
 
 # ---- ASMA project paths -----------------------------------------------------
-bra_asma_raw_dir  <- here::here("data-raw", "asma")   # raw kpi08 CSVs go here
+bra_asma_raw_dir  <- here::here("data-raw", "kpi08")  # raw kpi08 CSVs go here
 bra_asma_apdf_dir <- here::here("data", "asma")        # harmonised parquet extracts
 
 # ---- ASMA output file names -------------------------------------------------
@@ -54,7 +54,7 @@ alongside for validation.
 ::: {.callout-important}
 ## Prerequisites to run this document
 The raw `kpi08` CSV files are **not** shipped with the repository. Before rendering,
-place them in `data-raw/asma/` (or set `BRA_ASMA_ZIP` to a zip archive that contains
+place them in `data-raw/kpi08/` (or set `BRA_ASMA_ZIP` to a zip archive that contains
 them) and run the `prepare-bra-asma-data` chunk once to generate the analytic outputs.
 Until then, the tables below render with a short notice instead of failing. The files can
 be obtained either from the ODIN API (`API_kpi08_ICEA/download_kpi08.R`) or from the
@@ -149,7 +149,7 @@ machine-specific location is read from an environment variable with a project-re
 fallback:
 
 - `BRA_ASMA_ZIP` — path to the source zip archive (optional; when unset, the `kpi08_*.csv`
-  files in `data-raw/asma/` are used).
+  files in `data-raw/kpi08/` are used).
 - `BRA_REPORT_DATA` — data directory of the sibling report project that receives the
   combined analytic CSVs (defaults to this project's `data/`).
 

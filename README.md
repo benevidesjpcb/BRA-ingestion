@@ -135,10 +135,9 @@ folder so it stays independent of the `dsTaxi`/TATIC ingestion.
 
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
-| `API_kpi08_ICEA/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API | yes |
-| `API_kpi08_ICEA/kpi08.json` / `kpi08.csv` | Downloaded data (raw + flattened) | no (git-ignored) |
+| `API_kpi08_ICEA/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API, one file per year | yes |
 | `ASMA-BRA-ingestion.qmd` | Documented ASMA ingestion pipeline (arrival KPI08) | yes |
-| `data-raw/asma/` | Raw `kpi08_*.csv` source files | no (git-ignored) |
+| `data-raw/kpi08/` | Raw `kpi08_*.csv` source files | no (git-ignored) |
 | `data/asma/` | Generated harmonised ASMA parquet extracts | no (git-ignored) |
 
 ### The ODIN API (PostgREST)
@@ -158,27 +157,44 @@ Queries follow the PostgREST shape `<base>/<table>?<column>=<operator>.<value>`:
 Results are paginated with `limit` / `offset` (the `limit=100` in the example is
 just a cap); the script walks every page automatically.
 
-### Running it
+### Running it — one file per year, incrementally
+
+The download is **per year** and **resumable**: each year lands in
+`data-raw/kpi08/kpi08_<year>.csv` (the folder is created on first run). If the year
+file already exists, the script reads the latest date it already holds and asks ODIN
+only for records from that point on, then merges them in and de-duplicates by `id`.
+So the current year can be refreshed daily or monthly without re-downloading it.
 
 ```bash
-# download the whole kpi08 table (all pages)
+# current year only — the usual daily/monthly refresh
 Rscript API_kpi08_ICEA/download_kpi08.R
 
-# or restrict with PostgREST filters (AND-ed together), e.g. one airport / a period
-Rscript API_kpi08_ICEA/download_kpi08.R "addestino=eq.SBGR"
-Rscript API_kpi08_ICEA/download_kpi08.R "dt=gte.2026-01-01" "dt=lt.2026-02-01"
+# a specific year, or several (a full year is downloaded the first time)
+Rscript API_kpi08_ICEA/download_kpi08.R 2026
+Rscript API_kpi08_ICEA/download_kpi08.R 2023 2024 2025
 ```
 
-The example endpoint needs no token. If ODIN ever requires one, set `ODIN_TOKEN`
-in the environment (sent as a Bearer header). The page size can be tuned with
-`ODIN_PAGE_SIZE` (default 1000). Outputs are written next to the script as
-`kpi08.json` (raw) and `kpi08.csv` (flattened); the script prints the column list
-on completion.
+Both bounds of the year window are pushed to the server (`and=(col.gte.…,col.lt.…)`),
+so only the requested year travels over the wire. Files are written
+semicolon-delimited, matching the annual archive layout that `ASMA-BRA-ingestion.qmd`
+reads.
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `ODIN_DATE_COL` | Date column used to filter by year and to resume | `aldt` |
+| `ODIN_ID_COL` | Unique id column used to de-duplicate on merge | `id` |
+| `ODIN_PAGE_SIZE` | Rows per request | `1000` |
+| `ODIN_KPI08_URL` | API endpoint | the `kpi08` URL above |
+| `ODIN_TOKEN` | Bearer token, if ODIN ever requires one | unset (not needed) |
+
+> `ODIN_DATE_COL` defaults to `aldt` (landing time). Confirm it matches the `kpi08`
+> table; if the date column has another name, set the variable rather than editing
+> the script.
 
 ### The documented ASMA pipeline
 
 `ASMA-BRA-ingestion.qmd` is the arrival-side companion to `Taxi-BRA-ingestion.qmd`. It
-reads the raw `kpi08_*.csv` files from `data-raw/asma/` (or a zip via `BRA_ASMA_ZIP`),
+reads the raw `kpi08_*.csv` files from `data-raw/kpi08/` (or a zip via `BRA_ASMA_ZIP`),
 harmonises them to APDF-like ARR fields, recomputes the 2024 GANP p20 reference in-repo,
 and writes the daily analytic ASMA table plus coverage summaries to `data/` — keeping the
 Brazil-supplied `kpi08`/`transito`/`desimp` alongside for validation. Like the taxi
