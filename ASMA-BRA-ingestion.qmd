@@ -398,6 +398,68 @@ if (length(parquet_files) == 0) {
 }
 ```
 
+## Comparability Check — is the reference transferable?
+
+The reference is built from `asma_ref_year` and applied to every other year. That is only
+valid while all years measure the ASMA transit the same way. They do **not** automatically:
+the ODIN API and the older DECEA archives were observed to sit about 2.8 minutes apart
+(API years ≈ 20.7 min, archive years ≈ 23.5 min), because their `c_time` marks a different
+ASMA crossing point.
+
+Mixing them silently flips the metric: a reference built on the slower ruler and applied
+to the faster one produced a *negative* average additional time for 2026 while the
+supplied `kpi08` stayed positive. The table below is the guard — every year must sit close
+to the reference year, otherwise the years come from different sources and must be
+re-downloaded from a single one.
+
+```{r}
+#| label: tbl-bra-asma-comparability
+
+parq <- list.files(bra_asma_apdf_dir, pattern = "\\.parquet$", full.names = TRUE)
+
+if (length(parq) == 0) {
+  knitr::kable(tibble::tibble(
+    note = "No ASMA extracts yet. Run the `prepare-bra-asma-data` chunk."
+  ))
+} else {
+  lvl <- purrr::map(parq, function(f) {
+    d <- arrow::read_parquet(f)
+    tibble::tibble(
+      YEAR = lubridate::year(min(d$ALDT, na.rm = TRUE)),
+      N = nrow(d),
+      MED_TRANSIT = round(median(
+        as.numeric(difftime(d$ALDT, d$C_CROSS_TIME, units = "mins")), na.rm = TRUE), 2),
+      MED_SUPPLIED_ADD = round(median(d$ASMA_ADD_SUPPLIED, na.rm = TRUE), 2),
+      NO_CROSSING_PCT  = round(100 * mean(is.na(d$C_CROSS_TIME)), 1)
+    )
+  }) |> purrr::list_rbind() |> dplyr::arrange(YEAR)
+
+  ref_lvl <- lvl$MED_TRANSIT[lvl$YEAR == asma_ref_year]
+  # 1 minute is well inside year-to-year operational drift; beyond that the years
+  # are not on the same ruler and the shared reference cannot be trusted
+  tol <- 1.0
+
+  lvl |>
+    dplyr::mutate(
+      VS_REF = if (length(ref_lvl) == 1) round(MED_TRANSIT - ref_lvl, 2) else NA_real_,
+      COMPARABLE = dplyr::case_when(
+        is.na(VS_REF)        ~ paste0("reference year ", asma_ref_year, " missing"),
+        abs(VS_REF) <= tol   ~ "yes",
+        TRUE                 ~ "NO — different source/ruler"
+      )
+    ) |>
+    knitr::kable()
+}
+```
+
+If any year reads **NO**, do not trust its additional time. Re-download that year so every
+year comes from the same source, then re-run the preparation:
+
+```r
+source(here::here("KPI08", "download_kpi08.R"))
+download_kpi08(<the offending years>, out_dir = bra_asma_raw_dir, force = TRUE)
+```
+
 ## Coverage Check
 
 The pipeline records, per year and phase/range, the number of valid ASMA movements
@@ -443,7 +505,11 @@ reference reproduces the supplied KPI08 for the populated rows.
 Before treating the output as final, confirm with DECEA/ICEA:
 
 1. What `c_time` / `bear` represent — the C40 (40 NM), C100 (100 NM), or another ASMA ring
-   (drives the `asma_ring` / `RANGE` label).
+   (drives the `asma_ring` / `RANGE` label). **This is no longer theoretical:** the ODIN
+   API and the older archives disagree by ~2.8 minutes on the same metric (API years
+   median transit ≈ 20.7 min, archive years ≈ 23.5 min), which is consistent with the two
+   marking different crossing points. Until DECEA confirms, use one source for all years
+   — the comparability table above is the guard.
 2. Whether `transito`, `desimp` and `kpi08` definitions match the KPI08 expectations used
    for the reference.
 3. Whether to use the annual 2025 file or reconstruct 2025 from the monthly files, after
