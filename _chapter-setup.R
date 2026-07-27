@@ -74,7 +74,10 @@ bra_coverage_file <- paste0(
 # reference is recomputed in-repo with the same GANP p20 logic as taxi-time.
 asma_variant    <- "icao_ganp_p20"                 # reference variant (GANP p20)
 asma_ref_year   <- ref_year                        # reference year (shared, 2024)
-asma_data_years <- 2023:2026                       # <- CHANGE THE STUDY PERIOD HERE
+# Study period. 2023 is deliberately excluded: the reference file's 2023 slice
+# drops movements without a sector instead of counting them as MVTS_NA, so that
+# year is not comparable with the others (see the open points in the qmd).
+asma_data_years <- 2024:2026                       # <- CHANGE THE STUDY PERIOD HERE
 asma_min_n      <- min_n                           # min samples per ref group
 asma_p_ref      <- p_ref                           # reference percentile (0.20)
 # The source carries BOTH ASMA rings, one row per ring per arrival, told apart by

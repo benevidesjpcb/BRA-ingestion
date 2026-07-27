@@ -67,10 +67,18 @@ validate_asma_golden <- function(
          "CLASS, RWY and SECTOR_GROUP.")
   vals <- intersect(vals, intersect(names(g), names(o)))
 
-  # only the period the golden actually covers
-  years <- sort(unique(substr(g$DATE, 1, 4)))
+  # Compare only the years present on BOTH sides. The study period and the
+  # reference file need not cover the same span, and listing a year that only one
+  # of them has would report every one of its groups as missing.
+  years <- intersect(sort(unique(substr(g$DATE, 1, 4))),
+                     sort(unique(substr(o$DATE, 1, 4))))
+  if (length(years) == 0)
+    stop("The two files share no year: golden has ",
+         paste(sort(unique(substr(g$DATE, 1, 4))), collapse = ", "),
+         "; ours has ", paste(sort(unique(substr(o$DATE, 1, 4))), collapse = ", "), ".")
+  g <- dplyr::filter(g, substr(DATE, 1, 4) %in% years)
   o <- dplyr::filter(o, substr(DATE, 1, 4) %in% years)
-  message("years  : ", paste(years, collapse = ", "))
+  message("years  : ", paste(years, collapse = ", "), " (present in both)")
 
   # ---- key coverage ---------------------------------------------------------
   gk <- dplyr::select(g, all_of(key)) |> dplyr::distinct()
