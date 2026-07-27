@@ -144,7 +144,7 @@ metric. For arrivals, the study airport is the destination aerodrome (`ades`).
 | `c` | `RANGE` | **ASMA ring in NM (40 / 100)** → `C40` / `C100`; one row per ring |
 | `c_time` | `C_CROSS_TIME` | Crossing time at that ring |
 | `bear` | `BEARING` | Bearing at the crossing point |
-| `setor` | `SECTOR` | Entry sector |
+| `setor` | `SECTOR` / `SECTOR_GROUP` | Entry sector, a bare 60° bearing (0, 60, … 300) → `S000`…`S300`; blank stays `NA` and gets no reference |
 | `transito` | `ASMA_TRANSIT` | Supplied ASMA transit time (duration) |
 | `desimp` | `ASMA_UNIMPEDED` | Supplied unimpeded time (duration) |
 | `kpi08` | `ASMA_ADD_SUPPLIED` | Supplied additional time (duration) — kept for validation |
@@ -208,17 +208,18 @@ parse_duration_minutes <- function(x) {
   )
 }
 
-# Entry sector as the official report codes it: SIX 60-degree sectors labelled
-# S000, S060, ... S300 (NOT an 8-point compass — that binning creates smaller
-# reference groups, pushes them under min_n and inflates the "no reference"
-# count). `setor` is used when it already carries those codes; otherwise the
-# sector is binned from the bearing.
-sector_group <- function(setor, bear) {
-  setor <- normalise_text(setor)
-  deg   <- suppressWarnings(as.numeric(normalise_text(bear))) %% 360
-  binned <- ifelse(is.na(deg), NA_character_,
-                   sprintf("S%03d", (floor(deg / 60) * 60) %% 360))
-  ifelse(!is.na(setor) & grepl("^S[0-9]{3}$", setor), setor, binned)
+# Entry sector, exactly as the official report codes it. The source `setor` is
+# already the 60-degree sector as a bare number (0, 60, 120, 180, 240, 300); the
+# report writes it zero-padded with an S prefix -> S000, S060, ... S300.
+#
+# There is deliberately NO fallback to the bearing: where `setor` is blank the
+# reference is genuinely unknown, and the official output leaves those rows in an
+# "NA" sector that never receives a reference. Deriving a sector from `bear` there
+# would invent groups the report does not have and inflate the valid counts.
+sector_group <- function(setor) {
+  s <- normalise_text(setor)
+  n <- suppressWarnings(as.integer(s))
+  ifelse(is.na(n), NA_character_, sprintf("S%03d", n %% 360))
 }
 
 # ---- read one kpi08 file (annual ; or monthly ,) ----------------------------
@@ -252,7 +253,7 @@ harmonise_bra_asma <- function(raw) {
 
   rwy    <- dplyr::coalesce(normalise_text(gcol("drwy_validado")),
                             normalise_text(gcol("drwy")))
-  sector <- sector_group(gcol("setor"), gcol("bear"))
+  sector <- sector_group(gcol("setor"))
 
   tibble::tibble(
     IM_SAMAD_ID = normalise_text(gcol("id")),
