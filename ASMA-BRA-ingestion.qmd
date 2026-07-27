@@ -515,10 +515,10 @@ if (file.exists(asma_daily_path)) {
       MVTS_NA      = sum(MVTS_NA),
       AVG_ASMA     = sum(TOT_ASMA) / sum(MVTS_VALID),
       AVG_ADD_TIME = sum(TOT_ADD_TIME) / sum(MVTS_VALID),
-      AVG_ADD_SUPPLIED = sum(TOT_ADD_SUPPLIED) / sum(MVTS_VALID),
+      AVG_BRA_KPI08 = sum(TOT_BRA_KPI08) / sum(MVTS_VALID),
       .groups = "drop"
     ) |>
-    dplyr::mutate(dplyr::across(c(AVG_ASMA, AVG_ADD_TIME, AVG_ADD_SUPPLIED),
+    dplyr::mutate(dplyr::across(c(AVG_ASMA, AVG_ADD_TIME, AVG_BRA_KPI08),
                                 ~ round(.x, 3))) |>
     knitr::kable()
 } else {
@@ -529,7 +529,7 @@ if (file.exists(asma_daily_path)) {
 }
 ```
 
-The `AVG_ADD_TIME` (in-repo GANP p20 reference) and `AVG_ADD_SUPPLIED` (Brazil-supplied
+The `AVG_ADD_TIME` (in-repo GANP p20 reference) and `AVG_BRA_KPI08` (Brazil-supplied
 `kpi08`) columns are directly comparable: a close match validates that the in-repo
 reference reproduces the supplied KPI08 for the populated rows.
 

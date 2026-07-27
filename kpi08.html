@@ -293,7 +293,7 @@ function aggregate(rows){
     a.mvts += num(r.MVTS_VALID); a.na += num(r.MVTS_NA);
     a.asma += num(r.TOT_ASMA);   a.ref += num(r.TOT_REF);
     a.add  += num(r.TOT_ADD_TIME);
-    a.sup  += num(r.TOT_ADD_SUPPLIED);
+    a.sup  += num(r.TOT_BRA_KPI08);
   };
   const byYear = {}, byApt = {}, byMonth = {};
   const maxDate = {}, seenRings = new Set();
