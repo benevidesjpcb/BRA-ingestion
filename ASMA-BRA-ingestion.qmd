@@ -46,7 +46,7 @@ downloaded in full.
 #| eval: false
 
 # sourcing only defines download_kpi08(); nothing is fetched until it is called
-source(here::here("API_kpi08_ICEA", "download_kpi08.R"))
+source(here::here("KPI08", "download_kpi08.R"))
 
 # the full study period; drop to the current year for the routine refresh
 download_kpi08(asma_data_years, out_dir = bra_asma_raw_dir)
@@ -63,7 +63,7 @@ if (length(have_files) == 0) {
     status = "no source data yet",
     `what to do` = paste0(
       "Run the `download-bra-kpi08-data` chunk above (or, from a terminal, ",
-      "`Rscript API_kpi08_ICEA/download_kpi08.R ",
+      "`Rscript KPI08/download_kpi08.R ",
       min(asma_data_years), " … ", max(asma_data_years), "`)."
     )
   ))
@@ -450,4 +450,39 @@ Before treating the output as final, confirm with DECEA/ICEA:
    resolving the `feb`/`fev` duplicate.
 4. Whether any DEP/DSMA (departure) evidence exists; these files are arrival-only, so a
    separate DSMA source is still needed for the departure side.
+
+## Dashboard
+
+`kpi08.html` is the interactive companion to this document: headline tiles, additional
+time by year, an airport ranking, the monthly trend, and a validation panel putting the
+reference recomputed here next to the `kpi08` value supplied by Brazil.
+
+The page carries its data embedded, so it opens offline by double-clicking. Run the chunk
+below whenever the analytic CSV changes to refresh those embedded numbers. It is
+`eval: false` so rendering this document never rewrites the page by surprise.
+
+```{r}
+#| label: build-bra-kpi08-dashboard
+#| eval: false
+
+# sourcing only defines build_kpi08_dashboard(); nothing is written until it is called
+source(here::here("KPI08", "build_kpi08_dashboard.R"))
+
+build_kpi08_dashboard(ring = asma_ring)
+```
+
+```{r}
+#| label: check-bra-kpi08-dashboard
+
+# is the page currently carrying data, or does it still need a build?
+dash_file <- here::here("kpi08.html")
+dash_state <- if (!file.exists(dash_file)) {
+  "kpi08.html not found"
+} else if (grepl('id="dash-data" type="application/json">\\s*\\{\\s*\\}',
+                 readr::read_file(dash_file))) {
+  "no data embedded yet — run the `build-bra-kpi08-dashboard` chunk above"
+} else {
+  "data embedded — open kpi08.html to view the dashboard"
+}
+knitr::kable(tibble::tibble(dashboard = basename(dash_file), status = dash_state))
 ```

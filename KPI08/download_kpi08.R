@@ -15,12 +15,12 @@
 # Two ways to use it:
 #
 #   1) From a terminal
-#        Rscript API_kpi08_ICEA/download_kpi08.R                 # current year
-#        Rscript API_kpi08_ICEA/download_kpi08.R 2026            # one year
-#        Rscript API_kpi08_ICEA/download_kpi08.R 2023 2024 2025  # several years
+#        Rscript KPI08/download_kpi08.R                 # current year
+#        Rscript KPI08/download_kpi08.R 2026            # one year
+#        Rscript KPI08/download_kpi08.R 2023 2024 2025  # several years
 #
 #   2) From R / a Quarto chunk — source it and call the function
-#        source(here::here("API_kpi08_ICEA", "download_kpi08.R"))
+#        source(here::here("KPI08", "download_kpi08.R"))
 #        download_kpi08(2023:2026, out_dir = here::here("data-raw", "kpi08"))
 #
 #      Sourcing only defines the function; nothing is downloaded until you call it.

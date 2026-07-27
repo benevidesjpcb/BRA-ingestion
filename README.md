@@ -142,10 +142,15 @@ folder so it stays independent of the `dsTaxi`/TATIC ingestion.
 
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
-| `API_kpi08_ICEA/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API, one file per year | yes |
+| `KPI08/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API, one file per year | yes |
+| `KPI08/build_kpi08_dashboard.R` | Embeds the analytic numbers into `kpi08.html` | yes |
 | `ASMA-BRA-ingestion.qmd` | Documented ASMA ingestion pipeline (arrival KPI08) | yes |
-| `data-raw/kpi08/` | Raw `kpi08_*.csv` source files | no (git-ignored) |
+| `kpi08.html` | Interactive ASMA dashboard | yes |
+| `data-raw/kpi08/` | Raw `kpi08_*.csv` source files (and `parts/` month files) | no (git-ignored) |
 | `data/asma/` | Generated harmonised ASMA parquet extracts | no (git-ignored) |
+
+Both scripts are usable two ways: `Rscript KPI08/<script>.R` from a terminal, or
+`source()` + call the function from R — which is how the `.qmd` chunks drive them.
 
 ### The ODIN API (PostgREST)
 
@@ -174,11 +179,11 @@ So the current year can be refreshed daily or monthly without re-downloading it.
 
 ```bash
 # current year only — the usual daily/monthly refresh
-Rscript API_kpi08_ICEA/download_kpi08.R
+Rscript KPI08/download_kpi08.R
 
 # a specific year, or several (a full year is downloaded the first time)
-Rscript API_kpi08_ICEA/download_kpi08.R 2026
-Rscript API_kpi08_ICEA/download_kpi08.R 2023 2024 2025
+Rscript KPI08/download_kpi08.R 2026
+Rscript KPI08/download_kpi08.R 2023 2024 2025
 ```
 
 From R — or from the `download-bra-kpi08-data` chunk in `ASMA-BRA-ingestion.qmd` —
@@ -186,7 +191,7 @@ source the script and call the function instead. Sourcing only defines it; nothi
 downloaded until you call it:
 
 ```r
-source(here::here("API_kpi08_ICEA", "download_kpi08.R"))
+source(here::here("KPI08", "download_kpi08.R"))
 download_kpi08(2023:2026, out_dir = here::here("data-raw", "kpi08"))
 ```
 
@@ -213,12 +218,18 @@ reads.
 self-contained page with no build step beyond embedding the numbers.
 
 ```bash
-Rscript build_kpi08_dashboard.R   # reads data/, embeds into kpi08.html
+Rscript KPI08/build_kpi08_dashboard.R   # reads data/, embeds into kpi08.html
 ```
 
-Then double-click `kpi08.html`. Re-run the script whenever the ASMA analytic CSV
-changes. Served over HTTP the page can also read that CSV live, so no rebuild is
-needed there.
+or, from R (this is what the `build-bra-kpi08-dashboard` chunk of the `.qmd` runs):
+
+```r
+source(here::here("KPI08", "build_kpi08_dashboard.R"))
+build_kpi08_dashboard(ring = asma_ring)
+```
+
+Then double-click `kpi08.html`. Re-run it whenever the ASMA analytic CSV changes.
+Served over HTTP the page can also read that CSV live, so no rebuild is needed there.
 
 It shows, for the selected year and metric (additional time / ASMA transit /
 reference): headline tiles, additional time by year, an airport ranking, the

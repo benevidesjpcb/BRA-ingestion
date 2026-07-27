@@ -650,7 +650,7 @@ loadData().then(d=>{
        <p>This page shows the ASMA (KPI08) analytic output, which has not been built yet.</p>
        <p>Run the <code>prepare-bra-asma-data</code> chunk in <code>ASMA-BRA-ingestion.qmd</code>
           to create the analytic CSV in <code>data/</code>, then run
-          <code>Rscript build_kpi08_dashboard.R</code> to embed it here.</p>`;
+          <code>Rscript KPI08/build_kpi08_dashboard.R</code> to embed it here.</p>`;
     return;
   }
   DATA = d; boot();
