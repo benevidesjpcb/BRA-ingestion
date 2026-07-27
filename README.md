@@ -137,6 +137,9 @@ folder so it stays independent of the `dsTaxi`/TATIC ingestion.
 | --- | --- | --- |
 | `API_kpi08_ICEA/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API | yes |
 | `API_kpi08_ICEA/kpi08.json` / `kpi08.csv` | Downloaded data (raw + flattened) | no (git-ignored) |
+| `ASMA-BRA-ingestion.qmd` | Documented ASMA ingestion pipeline (arrival KPI08) | yes |
+| `data-raw/asma/` | Raw `kpi08_*.csv` source files | no (git-ignored) |
+| `data/asma/` | Generated harmonised ASMA parquet extracts | no (git-ignored) |
 
 ### The ODIN API (PostgREST)
 
@@ -172,6 +175,16 @@ in the environment (sent as a Bearer header). The page size can be tuned with
 `kpi08.json` (raw) and `kpi08.csv` (flattened); the script prints the column list
 on completion.
 
-> The ASMA additional-time metric on top of this data is not implemented yet — the
-> date column and record layout are confirmed from the first download, then the
-> metric is added.
+### The documented ASMA pipeline
+
+`ASMA-BRA-ingestion.qmd` is the arrival-side companion to `Taxi-BRA-ingestion.qmd`. It
+reads the raw `kpi08_*.csv` files from `data-raw/asma/` (or a zip via `BRA_ASMA_ZIP`),
+harmonises them to APDF-like ARR fields, recomputes the 2024 GANP p20 reference in-repo,
+and writes the daily analytic ASMA table plus coverage summaries to `data/` — keeping the
+Brazil-supplied `kpi08`/`transito`/`desimp` alongside for validation. Like the taxi
+pipeline, its `prepare-bra-asma-data` chunk is `eval: false` and is run once manually.
+
+> A few source conventions still need confirmation with DECEA/ICEA before the output is
+> final (what `c_time`/`bear` represent — C40 vs C100; the `feb`/`fev` monthly duplicate;
+> and that these files are arrival-only, so a separate DSMA source is needed for
+> departures). These are listed at the end of the `.qmd`.

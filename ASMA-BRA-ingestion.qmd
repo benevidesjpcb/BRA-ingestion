@@ -1,0 +1,436 @@
+# Brazil ASMA (KPI08) Ingestion
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+source(here::here("_chapter-setup.R"))
+
+# ---- ASMA (KPI08) parameters -----------------------------------------------
+# ASMA is an ARRIVAL metric: additional time in the terminal airspace, measured
+# from an ASMA ring crossing to landing, minus an unimpeded reference. The source
+# files already carry a calculated `kpi08` (additional time), `transito` (transit
+# time) and `desimp` (unimpeded) which we retain for validation, while the
+# reference below is recomputed in-repo with the same GANP p20 logic as taxi-time.
+asma_variant    <- "icao_ganp_p20"                 # reference variant (GANP p20)
+asma_ref_year   <- ref_year                        # 2024 reference year (shared)
+asma_data_years <- 2023:2025                        # ASMA archive coverage
+asma_min_n      <- min_n                            # min samples per ref group (5)
+asma_p_ref      <- p_ref                            # reference percentile (0.20)
+asma_max_asma   <- 60                               # ASMA transit cap (minutes)
+asma_ring       <- "C40"                            # label for the crossing ring
+# reference grouping key for ASMA (richer than taxi: adds RANGE/CLASS/SECTOR)
+asma_ref_key    <- c("ICAO", "PHASE", "RANGE", "CLASS", "RWY", "SECTOR_GROUP")
+
+# ---- ASMA project paths -----------------------------------------------------
+bra_asma_raw_dir  <- here::here("data-raw", "asma")   # raw kpi08 CSVs go here
+bra_asma_apdf_dir <- here::here("data", "asma")        # harmonised parquet extracts
+
+# ---- ASMA output file names -------------------------------------------------
+bra_asma_analytic_file <- paste0(
+  "PBWG-BRA-asma-analytic-", min(asma_data_years), "-", max(asma_data_years),
+  "-ref", asma_ref_year, "-", asma_variant, ".csv"
+)
+bra_asma_coverage_file <- paste0(
+  "BRA-asma-coverage-summary-", min(asma_data_years), "-", max(asma_data_years), ".csv"
+)
+bra_asma_reference_coverage_file <- paste0(
+  "BRA-asma-reference-coverage-", asma_ref_year, ".csv"
+)
+```
+
+This note documents the preparation of the Brazilian **ASMA (KPI08 — additional time in
+terminal airspace)** files used for the 2025 Brazil-Europe operational efficiency update.
+It is the arrival-side companion to `Taxi-BRA-ingestion.qmd` and follows the same shape:
+a source inventory, an APDF-like harmonisation, a reproducible preparation chunk, and a
+coverage check.
+
+The source `kpi08` files are ARRIVAL ASMA extracts. They already carry a supplied
+`kpi08`/`transito`/`desimp`; the pipeline recomputes the GANP 20th-percentile reference
+in-repo (so the private `PBWG` package is not required) and keeps the supplied values
+alongside for validation.
+
+::: {.callout-important}
+## Prerequisites to run this document
+The raw `kpi08` CSV files are **not** shipped with the repository. Before rendering,
+place them in `data-raw/asma/` (or set `BRA_ASMA_ZIP` to a zip archive that contains
+them) and run the `prepare-bra-asma-data` chunk once to generate the analytic outputs.
+Until then, the tables below render with a short notice instead of failing. The files can
+be obtained either from the ODIN API (`API_kpi08_ICEA/download_kpi08.R`) or from the
+DECEA ASMA archives. See `README.md` for setup.
+:::
+
+## Source Inventory
+
+```{r}
+#| label: tbl-bra-asma-source-inventory
+#| tbl-cap: "Inventory of the raw ASMA source files (kpi08)"
+
+# Accepts annual files (kpi08_YYYY.csv) and monthly files (kpi08_mmmYYYY.csv).
+files <- list.files(
+  bra_asma_raw_dir,
+  pattern = "^kpi08_.*\\.csv$",
+  full.names = TRUE
+)
+
+inventory <- purrr::map(files, function(file) {
+  member <- basename(file)
+  year   <- stringr::str_extract(member, "20[0-9]{2}")
+  month  <- stringr::str_match(member, "kpi08_([a-z]{3})20[0-9]{2}\\.csv$")[, 2]
+
+  tibble::tibble(
+    File      = member,
+    Year      = year,
+    Month     = ifelse(is.na(month), "annual", month),
+    `Size (MB)` = round(file.info(file)$size / 1024^2, 1)
+  )
+}) |>
+  purrr::list_rbind()
+
+if (nrow(inventory) == 0) {
+  knitr::kable(tibble::tibble(
+    note = paste0("No source files found in ", bra_asma_raw_dir,
+                  ". Place kpi08_*.csv there (or set BRA_ASMA_ZIP).")
+  ))
+} else {
+  inventory |>
+    dplyr::arrange(Year, Month, File) |>
+    knitr::kable()
+}
+```
+
+The annual archive contains one file per year (`kpi08_2023.csv`, `kpi08_2024.csv`,
+`kpi08_2025.csv`, semicolon-delimited). The monthly archive contains 2025 monthly files
+(comma-delimited, with a leading row index). The monthly set has been seen to contain
+**both** `kpi08_feb2025.csv` and `kpi08_fev2025.csv` — a likely English/Portuguese
+month-name duplicate that must be resolved before combining months.
+
+## Harmonisation
+
+The `kpi08` payload columns are mapped to the APDF-like ARR fields required by the ASMA
+metric. For arrivals, the study airport is the destination aerodrome (`ades`).
+
+| Source field | Harmonised field | Note |
+| --- | --- | --- |
+| `fltid` | `FLTID` | Flight identifier |
+| `adep` | `ADEP` | Departure aerodrome |
+| `ades` | `ADES` / `ICAO` | Destination aerodrome (the study airport for ARR) |
+| `reg` | `REG` | Aircraft registration (often blank) |
+| `type` | `ARCTYP` | Aircraft type |
+| `CLASS` | `CLASS` | Brazil/WTC-style weight class, kept raw as supplied |
+| `drwy_validado` / `drwy` | `RWY` | Validated runway when present, else raw runway |
+| `stnd` | `STND` | Stand/gate |
+| `aldt` | `ALDT` / `MVT_TIME` | Landing time (the arrival movement time) |
+| `aibt` | `AIBT` | In-block time (blank where unmatched) |
+| `sibt` | `SIBT` | Scheduled in-block time (often blank) |
+| `c_time` | `C_CROSS_TIME` | ASMA ring crossing time (single generic point) |
+| `bear` | `BEARING` | Bearing at the crossing point |
+| `setor` | `SECTOR` | Entry sector |
+| `transito` | `ASMA_TRANSIT` | Supplied ASMA transit time (duration) |
+| `desimp` | `ASMA_UNIMPEDED` | Supplied unimpeded time (duration) |
+| `kpi08` | `ASMA_ADD_SUPPLIED` | Supplied additional time (duration) — kept for validation |
+| `id` | `IM_SAMAD_ID` | Source movement identifier |
+
+Two source conventions differ between the archives and are normalised on read: the
+monthly files carry a leading `row_index` column and use a comma delimiter, while the
+annual files are semicolon-delimited. The single `c_time`/`bear` pair represents **one**
+ASMA crossing point; the source does not state whether it is the 40 NM (C40) or 100 NM
+(C100) ring, so it is labelled with the configurable `asma_ring` (default `C40`) pending
+confirmation from DECEA.
+
+## Preparation Code
+
+The following chunk is the reproducible preparation script. It is not evaluated during
+normal rendering because it reads the large source archive.
+
+The ASMA metric is computed in-chunk with base tidyverse (no PBWG dependency). Every
+machine-specific location is read from an environment variable with a project-relative
+fallback:
+
+- `BRA_ASMA_ZIP` — path to the source zip archive (optional; when unset, the `kpi08_*.csv`
+  files in `data-raw/asma/` are used).
+- `BRA_REPORT_DATA` — data directory of the sibling report project that receives the
+  combined analytic CSVs (defaults to this project's `data/`).
+
+```{r}
+#| label: prepare-bra-asma-data
+#| eval: false
+
+source(here::here("_chapter-setup.R"))
+
+# ---- source/report locations (override with environment variables) ----------
+zip_path        <- Sys.getenv("BRA_ASMA_ZIP", unset = "")
+report_data_dir <- Sys.getenv("BRA_REPORT_DATA", unset = bra_report_data)
+
+dir_create(bra_asma_apdf_dir)
+
+# ---- small helpers ----------------------------------------------------------
+normalise_text <- function(x) {
+  x <- as.character(x); x <- trimws(x); x[x == ""] <- NA_character_; x
+}
+
+# ASMA timestamps (landing/in-block etc.) are date-times; parse tolerantly.
+parse_asma_datetime <- function(x) {
+  x <- normalise_text(x)
+  parse_date_time(x, orders = c("ymd HMS", "ymd HMS OS", "ymd HM", "dmy HMS"),
+                  tz = "UTC", quiet = TRUE)
+}
+
+# Durations come as "H:MM:SS(.s)"; return minutes (supports a leading '-').
+parse_duration_minutes <- function(x) {
+  x   <- normalise_text(x)
+  sgn <- ifelse(!is.na(x) & grepl("^-", x), -1, 1)   # capture sign before stripping
+  x   <- sub("^-", "", x)
+  p   <- stringr::str_match(x, "^([0-9]+):([0-9]{2}):([0-9]{2}(?:\\.[0-9]+)?)$")
+  suppressWarnings(
+    sgn * (as.numeric(p[, 2]) * 60 + as.numeric(p[, 3]) + as.numeric(p[, 4]) / 60)
+  )
+}
+
+# 8-point compass sector from a bearing in degrees (fallback when SECTOR blank).
+bearing_to_sector <- function(deg) {
+  deg <- suppressWarnings(as.numeric(deg)) %% 360
+  labels <- c("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+  idx <- floor((deg + 22.5) / 45) %% 8 + 1
+  ifelse(is.na(deg), NA_character_, labels[idx])
+}
+
+# ---- read one kpi08 file (annual ; or monthly ,) ----------------------------
+read_bra_asma_file <- function(csv_path, member = basename(csv_path)) {
+  is_monthly <- grepl("kpi08_[a-z]{3}20[0-9]{2}\\.csv$", member)
+  sep <- if (is_monthly) "," else ";"
+
+  if (file.exists(csv_path)) {
+    message("Reading ", csv_path)
+    raw <- fread(csv_path, sep = sep, colClasses = "character", showProgress = FALSE)
+  } else if (nzchar(zip_path) && file.exists(zip_path)) {
+    message("Reading ", member, " from ", basename(zip_path))
+    raw <- fread(cmd = sprintf("unzip -p %s %s", shQuote(zip_path), shQuote(member)),
+                 sep = sep, colClasses = "character", showProgress = FALSE)
+  } else {
+    stop("No source found for ", member, ": expected ", csv_path,
+         " or a zip archive via BRA_ASMA_ZIP.")
+  }
+
+  raw <- as_tibble(raw)
+  # drop the monthly leading row index if present
+  if ("V1" %in% names(raw)) raw$V1 <- NULL
+  names(raw) <- gsub('^"|"$', "", names(raw))
+  raw
+}
+
+# ---- harmonise to APDF-like ARR ASMA ---------------------------------------
+harmonise_bra_asma <- function(raw) {
+  # safe column accessor: NA vector of the right length when a column is absent
+  gcol <- function(name) if (name %in% names(raw)) raw[[name]] else rep(NA_character_, nrow(raw))
+
+  rwy    <- dplyr::coalesce(normalise_text(gcol("drwy_validado")),
+                            normalise_text(gcol("drwy")))
+  sector <- dplyr::coalesce(normalise_text(gcol("setor")),
+                            bearing_to_sector(gcol("bear")))
+
+  tibble::tibble(
+    IM_SAMAD_ID = normalise_text(gcol("id")),
+    FLTID  = normalise_text(gcol("fltid")),
+    ADEP   = normalise_text(gcol("adep")),
+    ADES   = normalise_text(gcol("ades")),
+    REG    = normalise_text(gcol("reg")),
+    ARCTYP = normalise_text(gcol("type")),
+    CLASS  = normalise_text(gcol("CLASS")),
+    RWY    = rwy,
+    STND   = normalise_text(gcol("stnd")),
+    ALDT   = parse_asma_datetime(gcol("aldt")),
+    AIBT   = parse_asma_datetime(gcol("aibt")),
+    SIBT   = parse_asma_datetime(gcol("sibt")),
+    C_CROSS_TIME = parse_asma_datetime(gcol("c_time")),
+    BEARING      = suppressWarnings(as.numeric(gcol("bear"))),
+    SECTOR       = normalise_text(gcol("setor")),
+    ASMA_TRANSIT      = parse_duration_minutes(gcol("transito")),
+    ASMA_UNIMPEDED    = parse_duration_minutes(gcol("desimp")),
+    ASMA_ADD_SUPPLIED = parse_duration_minutes(gcol("kpi08")),
+    # ARR-oriented data: phase is arrival, study airport is the destination
+    PHASE = "ARR",
+    ICAO  = normalise_text(gcol("ades")),
+    RANGE = asma_ring,
+    SECTOR_GROUP = sector
+  ) |>
+    dplyr::filter(ICAO %in% bra_apts)
+}
+
+# ---- observed ASMA transit + validity --------------------------------------
+# Prefer the transit derived from the timestamps (landing - crossing); fall back
+# to the supplied `transito` when a timestamp is missing.
+prepare_asma <- function(df) {
+  df |>
+    mutate(
+      ASMA_TRANSIT_CALC = as.numeric(difftime(ALDT, C_CROSS_TIME, units = "mins")),
+      ASMA = dplyr::coalesce(ASMA_TRANSIT_CALC, ASMA_TRANSIT),
+      DATE = as_date(ALDT),
+      VALID_ASMA = !is.na(ASMA) & ASMA > 0 & ASMA <= asma_max_asma
+    )
+}
+
+# ---- 2024 GANP p20 reference (unimpeded) -----------------------------------
+build_asma_reference <- function(mov_ref) {
+  ref_start <- ymd_hms(paste0(asma_ref_year, "-01-01 00:00:00"), tz = "UTC")
+  ref_end   <- ymd_hms(paste0(asma_ref_year, "-12-31 23:59:59"), tz = "UTC")
+
+  mov_ref |>
+    filter(VALID_ASMA,
+           if_all(all_of(asma_ref_key), ~ !is.na(.x)),
+           ALDT >= ref_start, ALDT <= ref_end) |>
+    group_by(across(all_of(asma_ref_key))) |>
+    summarise(N = n(),
+              ASMA_REF = quantile(ASMA, asma_p_ref, type = 7, names = FALSE),
+              .groups = "drop") |>
+    filter(N >= asma_min_n) |>
+    select(all_of(asma_ref_key), ASMA_REF)
+}
+
+# ---- daily analytic table ---------------------------------------------------
+summarise_asma_daily <- function(mov, reference) {
+  mov |>
+    filter(!is.na(DATE)) |>
+    left_join(reference, by = asma_ref_key) |>
+    mutate(VALID = VALID_ASMA & !is.na(ASMA_REF)) |>
+    group_by(ICAO, PHASE, RANGE, DATE) |>
+    summarise(
+      MVTS_VALID       = sum(VALID),
+      MVTS_NA          = sum(!VALID),
+      TOT_ASMA         = sum(ASMA[VALID]),
+      TOT_REF          = sum(ASMA_REF[VALID]),
+      TOT_ADD_TIME     = sum(ASMA[VALID] - ASMA_REF[VALID]),
+      # supplied values kept for validation
+      TOT_ASMA_SUPPLIED   = sum(ASMA_TRANSIT[VALID], na.rm = TRUE),
+      TOT_UNIMP_SUPPLIED  = sum(ASMA_UNIMPEDED[VALID], na.rm = TRUE),
+      TOT_ADD_SUPPLIED    = sum(ASMA_ADD_SUPPLIED[VALID], na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    arrange(ICAO, PHASE, DATE)
+}
+
+# ---- run the pipeline -------------------------------------------------------
+# Resolve the source files: annual files are preferred; monthly files are used
+# only to fill years the annual set does not cover.
+raw_files <- list.files(bra_asma_raw_dir, pattern = "^kpi08_.*\\.csv$", full.names = TRUE)
+if (length(raw_files) == 0 && !nzchar(zip_path))
+  stop("No ASMA source found. Put kpi08_*.csv in ", bra_asma_raw_dir,
+       " or set BRA_ASMA_ZIP.")
+
+harmonised <- purrr::map(raw_files, function(f) harmonise_bra_asma(read_bra_asma_file(f))) |>
+  purrr::list_rbind() |>
+  mutate(YEAR = lubridate::year(ALDT)) |>
+  filter(YEAR %in% asma_data_years) |>
+  distinct(IM_SAMAD_ID, .keep_all = TRUE)   # guard against annual/monthly overlap
+
+# write one harmonised parquet extract per year
+walk(asma_data_years, function(y) {
+  ext <- filter(harmonised, YEAR == y)
+  if (nrow(ext) > 0)
+    write_parquet(ext, path(bra_asma_apdf_dir, paste0("PBWG-BRA-asma-apdf-", y, ".parquet")))
+})
+
+movements <- prepare_asma(harmonised)
+reference_data <- build_asma_reference(filter(movements, YEAR == asma_ref_year))
+
+daily <- summarise_asma_daily(movements, reference_data)
+write_csv(daily, path(report_data_dir, bra_asma_analytic_file))
+
+# ---- coverage summaries -----------------------------------------------------
+coverage_summary <- movements |>
+  group_by(YEAR) |>
+  summarise(
+    N_TOTAL         = n(),
+    N_VALID_ASMA    = sum(VALID_ASMA),
+    N_MISSING_RANGE = sum(is.na(RANGE)),
+    N_MISSING_CLASS = sum(is.na(CLASS)),
+    N_MISSING_RWY   = sum(is.na(RWY)),
+    N_MISSING_SECTOR= sum(is.na(SECTOR_GROUP)),
+    .groups = "drop"
+  )
+write_csv(coverage_summary, path(report_data_dir, bra_asma_coverage_file))
+
+reference_coverage <- reference_data |>
+  group_by(RANGE) |>
+  summarise(
+    N_REFERENCE_GROUPS       = n(),
+    N_VALID_REFERENCE_GROUPS = sum(!is.na(ASMA_REF)),
+    .groups = "drop"
+  )
+write_csv(reference_coverage, path(report_data_dir, bra_asma_reference_coverage_file))
+```
+
+## Retained Artefacts
+
+```{r}
+#| label: tbl-bra-asma-retained-artefacts
+
+parquet_files <- list.files(bra_asma_apdf_dir, pattern = "\\.parquet$", full.names = TRUE)
+
+if (length(parquet_files) == 0) {
+  knitr::kable(tibble::tibble(
+    note = "No ASMA parquet extracts yet. Run the `prepare-bra-asma-data` chunk."
+  ))
+} else {
+  tibble::tibble(path = parquet_files) |>
+    dplyr::mutate(file = basename(path),
+                  size_mb = round(file.info(path)$size / 1024^2, 1)) |>
+    dplyr::select(file, size_mb) |>
+    knitr::kable()
+}
+```
+
+## Coverage Check
+
+The pipeline records, per year and phase/range, the number of valid ASMA movements
+(`MVTS_VALID`), the movements that could not be used (`MVTS_NA`), and the observed ASMA
+total (`TOT_ASMA`), reference total (`TOT_REF`) and additional-time total
+(`TOT_ADD_TIME`). The supplied `transito`/`desimp`/`kpi08` totals are kept alongside for
+validation against the in-repo reference.
+
+```{r}
+#| label: tbl-bra-asma-coverage
+
+asma_daily_path <- here::here("data", bra_asma_analytic_file)
+
+if (file.exists(asma_daily_path)) {
+  readr::read_csv(asma_daily_path, show_col_types = FALSE) |>
+    dplyr::mutate(YEAR = lubridate::year(DATE)) |>
+    dplyr::group_by(YEAR, PHASE, RANGE) |>
+    dplyr::summarise(
+      MVTS_VALID   = sum(MVTS_VALID),
+      MVTS_NA      = sum(MVTS_NA),
+      AVG_ASMA     = sum(TOT_ASMA) / sum(MVTS_VALID),
+      AVG_ADD_TIME = sum(TOT_ADD_TIME) / sum(MVTS_VALID),
+      AVG_ADD_SUPPLIED = sum(TOT_ADD_SUPPLIED) / sum(MVTS_VALID),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(dplyr::across(c(AVG_ASMA, AVG_ADD_TIME, AVG_ADD_SUPPLIED),
+                                ~ round(.x, 3))) |>
+    knitr::kable()
+} else {
+  knitr::kable(tibble::tibble(
+    note = paste0("ASMA analytic output not found. Run the `prepare-bra-asma-data` ",
+                  "chunk to generate ", bra_asma_analytic_file, " in data/.")
+  ))
+}
+```
+
+The `AVG_ADD_TIME` (in-repo GANP p20 reference) and `AVG_ADD_SUPPLIED` (Brazil-supplied
+`kpi08`) columns are directly comparable: a close match validates that the in-repo
+reference reproduces the supplied KPI08 for the populated rows.
+
+## Open Points to Confirm
+
+Before treating the output as final, confirm with DECEA/ICEA:
+
+1. What `c_time` / `bear` represent — the C40 (40 NM), C100 (100 NM), or another ASMA ring
+   (drives the `asma_ring` / `RANGE` label).
+2. Whether `transito`, `desimp` and `kpi08` definitions match the KPI08 expectations used
+   for the reference.
+3. Whether to use the annual 2025 file or reconstruct 2025 from the monthly files, after
+   resolving the `feb`/`fev` duplicate.
+4. Whether any DEP/DSMA (departure) evidence exists; these files are arrival-only, so a
+   separate DSMA source is still needed for the departure side.
+```
