@@ -78,6 +78,7 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
   token     <- Sys.getenv("ODIN_TOKEN", unset = "")
   date_col  <- Sys.getenv("ODIN_DATE_COL", unset = "aldt")
   id_col    <- Sys.getenv("ODIN_ID_COL", unset = "id")
+  ring_col  <- Sys.getenv("ODIN_RING_COL", unset = "c")   # ASMA ring (40 / 100 NM)
   # rows per request. CHANGE THIS NUMBER to make the download coarser/faster.
   # If the server caps the page below what we ask, the log says so once and the
   # download still completes (it advances by the rows actually returned).
@@ -251,8 +252,13 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
     }
 
     combined <- kpi08_rbind_fill(parts)
-    if (id_col %in% names(combined))
-      combined <- combined[!duplicated(combined[[id_col]], fromLast = TRUE), , drop = FALSE]
+    # De-duplicate on the id AND the ASMA ring: each arrival appears once per ring
+    # (c = 40 / 100), so keying on the id alone would drop one ring per flight.
+    if (id_col %in% names(combined)) {
+      key <- if (ring_col %in% names(combined))
+               paste(combined[[id_col]], combined[[ring_col]]) else combined[[id_col]]
+      combined <- combined[!duplicated(key, fromLast = TRUE), , drop = FALSE]
+    }
     if (date_col %in% names(combined))
       combined <- combined[order(combined[[date_col]]), , drop = FALSE]
 

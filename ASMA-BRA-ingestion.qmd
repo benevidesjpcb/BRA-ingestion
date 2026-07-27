@@ -348,7 +348,10 @@ harmonised <- purrr::map(raw_files, function(f) harmonise_bra_asma(read_bra_asma
   purrr::list_rbind() |>
   mutate(YEAR = lubridate::year(ALDT)) |>
   filter(YEAR %in% asma_data_years) |>
-  distinct(IM_SAMAD_ID, .keep_all = TRUE)   # guard against annual/monthly overlap
+  # De-duplicate on id AND ring: every arrival appears once per ASMA ring, and
+  # if the source shares one id between those two rows, keying on the id alone
+  # silently deletes a whole ring.
+  distinct(IM_SAMAD_ID, RANGE, .keep_all = TRUE)
 
 # write one harmonised parquet extract per year
 walk(asma_data_years, function(y) {
