@@ -3,9 +3,14 @@
 # download_kpi08.R
 #
 # Downloads KPI08 (ASMA) data from the ICEA/DECEA ODIN API into ONE FILE PER
-# YEAR, incrementally. Re-running only fetches what is missing and merges it
-# into the existing year file, so you can run it daily/monthly to keep the
-# current year up to date.
+# YEAR, fetching ONE MONTH AT A TIME.
+#
+# Each month is saved on its own under <out_dir>/parts/kpi08_<year>-<mm>.csv as
+# soon as it arrives, and the months are then merged into <out_dir>/kpi08_<year>.csv.
+# Because every finished month is on disk, an interrupted run loses nothing: a
+# re-run skips the months it already has and only refreshes the current ("open")
+# month, which can still receive new records. So you can run it daily or monthly
+# to keep the current year up to date.
 #
 # Two ways to use it:
 #
@@ -132,52 +137,83 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
     kpi08_rbind_fill(rows)
   }
 
-  # ---- process each year ----------------------------------------------------
+  # ---- process each year, ONE MONTH AT A TIME -------------------------------
+  # Each month is downloaded and saved on its own under <out_dir>/parts/, then
+  # the months are merged into the year file. Progress therefore survives an
+  # interrupt: a finished month is never downloaded twice. Only the "open" month
+  # (the current one) is refreshed, because it can still receive new records.
+  parts_dir <- file.path(out_dir, "parts")
+  if (!dir.exists(parts_dir)) dir.create(parts_dir, recursive = TRUE)
+
+  today      <- Sys.Date()
+  this_year  <- as.integer(format(today, "%Y"))
+  this_month <- as.integer(format(today, "%m"))
+
+  write_csv2 <- function(df, path) {
+    utils::write.table(df, path, sep = ";", row.names = FALSE,
+                       quote = TRUE, na = "", fileEncoding = "UTF-8")
+  }
+  read_csv2 <- function(path) {
+    utils::read.csv(path, sep = ";", colClasses = "character",
+                    check.names = FALSE, na.strings = "")
+  }
+
   written <- character(0)
 
   for (yr in years) {
-    out_csv    <- file.path(out_dir, sprintf("kpi08_%d.csv", yr))
-    year_start <- sprintf("%d-01-01", yr)
-    year_end   <- sprintf("%d-01-01", yr + 1L)   # exclusive upper bound
+    if (yr > this_year) {
+      message(sprintf("Year %d is in the future; skipped.", yr)); next
+    }
+    last_month <- if (yr == this_year) this_month else 12L
+    message(sprintf("Year %d: months 01-%02d", yr, last_month))
 
-    existing  <- NULL
-    from_date <- year_start
-    if (file.exists(out_csv)) {
-      existing <- utils::read.csv(out_csv, sep = ";", colClasses = "character",
-                                  check.names = FALSE, na.strings = "")
-      if (date_col %in% names(existing) && nrow(existing) > 0) {
-        have_max <- suppressWarnings(max(existing[[date_col]], na.rm = TRUE))
-        if (!is.na(have_max) && nzchar(have_max)) from_date <- have_max
+    for (mo in seq_len(last_month)) {
+      part_csv <- file.path(parts_dir, sprintf("kpi08_%d-%02d.csv", yr, mo))
+      # month window [first day of month, first day of next month)
+      from_date <- sprintf("%d-%02d-01", yr, mo)
+      to_date   <- if (mo == 12L) sprintf("%d-01-01", yr + 1L)
+                   else sprintf("%d-%02d-01", yr, mo + 1L)
+
+      is_open <- (yr == this_year && mo == this_month)   # still receiving data
+      if (file.exists(part_csv) && !is_open) {
+        message(sprintf("  %d-%02d  skip (already downloaded)", yr, mo)); next
       }
-      message(sprintf("Year %d: %d existing row(s); resuming from %s",
-                      yr, nrow(existing), from_date))
-    } else {
-      message(sprintf("Year %d: no file yet; downloading the full year", yr))
+
+      message(sprintf("  %d-%02d  downloading %s ...", yr, mo,
+                      if (is_open) "(open month, refreshing)" else ""))
+      part <- download_window(from_date, to_date)
+
+      if (is.null(part)) {
+        message(sprintf("  %d-%02d  no rows", yr, mo))
+        # remember that an empty past month was checked, so we do not retry it
+        if (!is_open) write_csv2(data.frame(), part_csv)
+        next
+      }
+      write_csv2(part, part_csv)                          # persist immediately
+      message(sprintf("  %d-%02d  saved %d row(s)", yr, mo, nrow(part)))
     }
 
-    message(sprintf("  Downloading %s from %s to %s ...", date_col, from_date, year_end))
-    fresh <- download_window(from_date, year_end)
-
-    if (is.null(fresh) && is.null(existing)) {
-      message(sprintf("  Year %d: no rows returned.", yr))
-      next
+    # ---- merge the year's months into one file ------------------------------
+    part_files <- list.files(parts_dir,
+                             pattern = sprintf("^kpi08_%d-[0-9]{2}\\.csv$", yr),
+                             full.names = TRUE)
+    parts <- lapply(part_files, read_csv2)
+    parts <- Filter(function(d) !is.null(d) && nrow(d) > 0, parts)
+    if (length(parts) == 0) {
+      message(sprintf("Year %d: no rows in any month; nothing written.", yr)); next
     }
 
-    # merge existing + fresh, de-duplicate by id (fresh wins)
-    combined <- if (is.null(existing)) fresh
-                else if (is.null(fresh)) existing
-                else kpi08_rbind_fill(list(existing, fresh))
-
+    combined <- kpi08_rbind_fill(parts)
     if (id_col %in% names(combined))
       combined <- combined[!duplicated(combined[[id_col]], fromLast = TRUE), , drop = FALSE]
     if (date_col %in% names(combined))
       combined <- combined[order(combined[[date_col]]), , drop = FALSE]
 
-    utils::write.table(combined, out_csv, sep = ";", row.names = FALSE,
-                       quote = TRUE, na = "", fileEncoding = "UTF-8")
+    out_csv <- file.path(out_dir, sprintf("kpi08_%d.csv", yr))
+    write_csv2(combined, out_csv)
     written <- c(written, out_csv)
-    message(sprintf("  Year %d: wrote %d row(s), %d column(s) -> %s",
-                    yr, nrow(combined), ncol(combined), out_csv))
+    message(sprintf("Year %d: merged %d month(s) -> %d row(s), %d column(s) -> %s",
+                    yr, length(parts), nrow(combined), ncol(combined), out_csv))
     message("  Columns: ", paste(names(combined), collapse = ", "))
   }
 
