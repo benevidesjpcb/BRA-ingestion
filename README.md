@@ -174,6 +174,15 @@ Rscript API_kpi08_ICEA/download_kpi08.R 2026
 Rscript API_kpi08_ICEA/download_kpi08.R 2023 2024 2025
 ```
 
+From R — or from the `download-bra-kpi08-data` chunk in `ASMA-BRA-ingestion.qmd` —
+source the script and call the function instead. Sourcing only defines it; nothing is
+downloaded until you call it:
+
+```r
+source(here::here("API_kpi08_ICEA", "download_kpi08.R"))
+download_kpi08(2023:2026, out_dir = here::here("data-raw", "kpi08"))
+```
+
 Both bounds of the year window are pushed to the server (`and=(col.gte.…,col.lt.…)`),
 so only the requested year travels over the wire. Files are written
 semicolon-delimited, matching the annual archive layout that `ASMA-BRA-ingestion.qmd`

@@ -15,7 +15,9 @@ source(here::here("_chapter-setup.R"))
 # reference below is recomputed in-repo with the same GANP p20 logic as taxi-time.
 asma_variant    <- "icao_ganp_p20"                 # reference variant (GANP p20)
 asma_ref_year   <- ref_year                        # 2024 reference year (shared)
-asma_data_years <- 2023:2025                        # ASMA archive coverage
+# study period: from the first ASMA year through the current one, so the ODIN
+# download and the analysis follow the calendar without editing this file
+asma_data_years <- 2023:as.integer(format(Sys.Date(), "%Y"))
 asma_min_n      <- min_n                            # min samples per ref group (5)
 asma_p_ref      <- p_ref                            # reference percentile (0.20)
 asma_max_asma   <- 60                               # ASMA transit cap (minutes)
@@ -53,13 +55,57 @@ alongside for validation.
 
 ::: {.callout-important}
 ## Prerequisites to run this document
-The raw `kpi08` CSV files are **not** shipped with the repository. Before rendering,
-place them in `data-raw/kpi08/` (or set `BRA_ASMA_ZIP` to a zip archive that contains
-them) and run the `prepare-bra-asma-data` chunk once to generate the analytic outputs.
-Until then, the tables below render with a short notice instead of failing. The files can
-be obtained either from the ODIN API (`API_kpi08_ICEA/download_kpi08.R`) or from the
-DECEA ASMA archives. See `README.md` for setup.
+The raw `kpi08` CSV files are **not** shipped with the repository. Get them first with
+the download chunk below (ODIN API), or place your own `kpi08_*.csv` in
+`data-raw/kpi08/` (or set `BRA_ASMA_ZIP` to a zip archive containing them). Then run the
+`prepare-bra-asma-data` chunk once to generate the analytic outputs. Until then, the
+tables below render with a short notice instead of failing. See `README.md` for setup.
 :::
+
+## Getting the Source Data
+
+The `kpi08` source comes from the ICEA/DECEA **ODIN** API, one file per year in
+`data-raw/kpi08/`. The chunk below is `eval: false` — the download is slow, so it is not
+executed on render; run it manually when you need data.
+
+It is **incremental**: a year already on disk is resumed from the latest record it holds,
+so re-running it daily or monthly only fetches what is new. A year with no file yet is
+downloaded in full.
+
+```{r}
+#| label: download-bra-kpi08-data
+#| eval: false
+
+# sourcing only defines download_kpi08(); nothing is fetched until it is called
+source(here::here("API_kpi08_ICEA", "download_kpi08.R"))
+
+# the full study period; drop to the current year for the routine refresh
+download_kpi08(asma_data_years, out_dir = bra_asma_raw_dir)
+```
+
+```{r}
+#| label: check-bra-kpi08-data
+
+# what is on disk right now, and what to do if nothing is
+have_files <- list.files(bra_asma_raw_dir, pattern = "^kpi08_.*\\.csv$")
+
+if (length(have_files) == 0) {
+  knitr::kable(tibble::tibble(
+    status = "no source data yet",
+    `what to do` = paste0(
+      "Run the `download-bra-kpi08-data` chunk above (or, from a terminal, ",
+      "`Rscript API_kpi08_ICEA/download_kpi08.R ",
+      min(asma_data_years), " … ", max(asma_data_years), "`)."
+    )
+  ))
+} else {
+  knitr::kable(tibble::tibble(
+    status = paste0(length(have_files), " source file(s) in ", bra_asma_raw_dir),
+    years  = paste(sort(unique(stringr::str_extract(have_files, "20[0-9]{2}"))),
+                   collapse = ", ")
+  ))
+}
+```
 
 ## Source Inventory
 
@@ -90,8 +136,10 @@ inventory <- purrr::map(files, function(file) {
 
 if (nrow(inventory) == 0) {
   knitr::kable(tibble::tibble(
-    note = paste0("No source files found in ", bra_asma_raw_dir,
-                  ". Place kpi08_*.csv there (or set BRA_ASMA_ZIP).")
+    note = paste0("No source files in ", bra_asma_raw_dir,
+                  " yet. Run the `download-bra-kpi08-data` chunk above to fetch them ",
+                  "from the ODIN API (or place your own kpi08_*.csv there, or set ",
+                  "BRA_ASMA_ZIP).")
   ))
 } else {
   inventory |>
