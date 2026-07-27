@@ -14,3 +14,7 @@ data/apdf/
 outputs/*
 !outputs/.gitkeep
 temp/
+
+# KPI08 (ODIN) downloaded data — keep the script, not the raw pulls
+API_kpi08_ICEA/*.json
+API_kpi08_ICEA/*.csv

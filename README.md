@@ -126,3 +126,52 @@ Only these need editing the `CONFIG` block at the top of the script in `index.ht
 `reproduce_txxt.R` rebuilds the analytic outputs from the raw data and compares them,
 row by row, with the CSVs in `golden/`. It is the regression check that proves the
 in-repo metric matches the original PBWG results exactly for 2023–2025.
+
+## KPI08 — ASMA (additional time in terminal airspace)
+
+KPI08 uses a **different** data source from the taxi-time pipeline above: the
+**ODIN** API from ICEA/DECEA, a PostgREST service. Its downloader lives in its own
+folder so it stays independent of the `dsTaxi`/TATIC ingestion.
+
+| Path | Role | Tracked in git? |
+| --- | --- | --- |
+| `API_kpi08_ICEA/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API | yes |
+| `API_kpi08_ICEA/kpi08.json` / `kpi08.csv` | Downloaded data (raw + flattened) | no (git-ignored) |
+
+### The ODIN API (PostgREST)
+
+Base endpoint: `https://odin-ms.icea.decea.mil.br/api/kpi08`
+
+Queries follow the PostgREST shape `<base>/<table>?<column>=<operator>.<value>`:
+
+| Operator | Meaning | Example |
+| --- | --- | --- |
+| `eq` / `neq` | equal / not equal | `addestino=eq.SBGR` |
+| `gt` `gte` `lt` `lte` | comparisons | `valor=gte.1000` |
+| `like` / `ilike` | SQL LIKE (`%` wildcard) | `nome=ilike.jo%25` |
+| `in` | in a list | `addestino=in.(SBGR,SBSP,SBKP)` |
+| `is` | null / true / false | `valor=is.null` |
+
+Results are paginated with `limit` / `offset` (the `limit=100` in the example is
+just a cap); the script walks every page automatically.
+
+### Running it
+
+```bash
+# download the whole kpi08 table (all pages)
+Rscript API_kpi08_ICEA/download_kpi08.R
+
+# or restrict with PostgREST filters (AND-ed together), e.g. one airport / a period
+Rscript API_kpi08_ICEA/download_kpi08.R "addestino=eq.SBGR"
+Rscript API_kpi08_ICEA/download_kpi08.R "dt=gte.2026-01-01" "dt=lt.2026-02-01"
+```
+
+The example endpoint needs no token. If ODIN ever requires one, set `ODIN_TOKEN`
+in the environment (sent as a Bearer header). The page size can be tuned with
+`ODIN_PAGE_SIZE` (default 1000). Outputs are written next to the script as
+`kpi08.json` (raw) and `kpi08.csv` (flattened); the script prints the column list
+on completion.
+
+> The ASMA additional-time metric on top of this data is not implemented yet — the
+> date column and record layout are confirmed from the first download, then the
+> metric is added.
