@@ -207,6 +207,27 @@ reads.
 > table; if the date column has another name, set the variable rather than editing
 > the script.
 
+### The KPI08 dashboard
+
+`kpi08.html` is the ASMA counterpart of `index.html`, built the same way: a
+self-contained page with no build step beyond embedding the numbers.
+
+```bash
+Rscript build_kpi08_dashboard.R   # reads data/, embeds into kpi08.html
+```
+
+Then double-click `kpi08.html`. Re-run the script whenever the ASMA analytic CSV
+changes. Served over HTTP the page can also read that CSV live, so no rebuild is
+needed there.
+
+It shows, for the selected year and metric (additional time / ASMA transit /
+reference): headline tiles, additional time by year, an airport ranking, the
+monthly trend, and a **validation panel** comparing the reference recomputed in this
+repository against the `kpi08` value supplied by Brazil — close bars mean the
+reproduction matches. Unlike the taxi dashboard this one is Brazil-only and
+arrivals-only, because ASMA has no European counterpart in `data/` and the source
+carries no departure (DSMA) side.
+
 ### The documented ASMA pipeline
 
 `ASMA-BRA-ingestion.qmd` is the arrival-side companion to `Taxi-BRA-ingestion.qmd`. It
