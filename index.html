@@ -468,7 +468,11 @@ document.getElementById('themebtn').addEventListener('click',()=>{
 let rt; addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{if(DATA)renderAll();},120);});
 
 function boot(d){
-  DATA=d; YEARS=DATA.years;
+  DATA=d;
+  // A one-element R vector serialises as a bare string, not a list, so a payload
+  // covering a single year arrives unwrapped. Normalise before iterating.
+  YEARS=DATA.years==null?[]:(Array.isArray(DATA.years)?DATA.years:[DATA.years]);
+  DATA.years=YEARS;
   const complete=YEARS.filter(y=>REG.every(rg=>DATA.overall[rg]&&DATA.overall[rg][y]));
   state.year=(complete.length?complete:YEARS).slice(-1)[0];
   const spans=REG.map(rg=>{const ys=YEARS.filter(y=>DATA.overall[rg]&&DATA.overall[rg][y]);

@@ -106,8 +106,11 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
 
   payload <- list(airports = airports, overall = overall, monthly = monthly,
                   meta = list(partial = partial),
-                  rings = intersect(rings, unique(raw$RANGE)),
-                  years = sort(unique(raw$YEAR)))
+                  # I() keeps these as JSON arrays: auto_unbox would turn a
+                  # single ring or a single year into a bare string, and the page
+                  # iterates over them
+                  rings = I(intersect(rings, unique(raw$RANGE))),
+                  years = I(sort(unique(raw$YEAR))))
   json <- as.character(jsonlite::toJSON(payload, auto_unbox = TRUE, digits = 6, na = "null"))
 
   # Write the numbers to their OWN file next to the page, rather than rewriting the

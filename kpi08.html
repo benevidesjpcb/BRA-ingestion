@@ -631,8 +631,12 @@ function segment(host, values, current, onPick, labelOf = v=>v){
 
 function boot(){
   const partial = DATA.meta && DATA.meta.partial || {};
-  // rings present in the data, C40 first; older payloads without them still work
-  DATA.rings = (DATA.rings && DATA.rings.length) ? DATA.rings : Object.keys(DATA.overall);
+  // A one-element R vector serialises as a bare string, not a list, so a payload
+  // with a single ring or a single year arrives unwrapped. Normalise before use.
+  const asArray = v => v == null ? [] : (Array.isArray(v) ? v : [v]);
+  DATA.rings = asArray(DATA.rings);
+  if (!DATA.rings.length) DATA.rings = Object.keys(DATA.overall);
+  DATA.years = asArray(DATA.years);
   state.ring = DATA.rings[0];
   state.year = DATA.years[DATA.years.length-1];
 

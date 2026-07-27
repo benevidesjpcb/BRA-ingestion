@@ -78,7 +78,10 @@ pd <- raw |> group_by(REGION, YEAR) |> summarise(maxd = max(DATE), .groups = "dr
 for (i in seq_len(nrow(pd))) partial[[pd$REGION[i]]][[pd$YEAR[i]]] <- pd$maxd[i]
 
 payload <- list(airports = airports, overall = overall, monthly = monthly,
-                meta = list(partial = partial), years = sort(unique(raw$YEAR)))
+                meta = list(partial = partial),
+                # I() keeps this a JSON array: auto_unbox would turn a single
+                # year into a bare string, and the page iterates over it
+                years = I(sort(unique(raw$YEAR))))
 json <- as.character(jsonlite::toJSON(payload, auto_unbox = TRUE, digits = 6, na = "null"))
 
 # Write the numbers to their OWN file next to the page, rather than rewriting the
