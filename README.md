@@ -21,6 +21,7 @@ and daily additional time) is computed in this repository with base tidyverse, s
 | `data/apdf/` | Generated harmonised parquet extracts | no |
 | `outputs/` | Generated per-year daily outputs | no (only `.gitkeep`) |
 | `index.html` | Interactive dashboard — reads the CSVs in `data/` live | yes |
+| `index-data.js` | Numbers the dashboard loads, written by `build_dashboard.R` | no (git-ignored) |
 | `golden/` | Reference result CSVs used to validate the reproduction | yes |
 | `_chapter-setup.R` | Shared libraries, project paths, analysis parameters | yes |
 | `Taxi-BRA-ingestion.qmd` | The documented pipeline | yes |
@@ -75,14 +76,19 @@ live in the browser and discovers the available years and airports on its own.
 
 ### Viewing it locally (no server, no Python)
 
-The page carries its data embedded, so:
+The page loads its numbers from a small generated file beside it, so:
 
-1. Run once: **`Rscript build_dashboard.R`** — it reads `data/` and embeds the numbers
-   into `index.html`. (Needs R with the `jsonlite` package: `install.packages("jsonlite")`.)
+1. Run once: **`Rscript build_dashboard.R`** — it reads `data/` and writes
+   **`index-data.js`**. (Needs R with the `jsonlite` package: `install.packages("jsonlite")`.)
 2. **Double-click `index.html`.** It opens in your browser, offline, no server needed.
 
 Re-run step 1 whenever the CSVs change. If you open `index.html` before ever building
 it, it shows a short note telling you to run the script.
+
+`index-data.js` is generated and **git-ignored on purpose**: a build that rewrites the
+tracked `index.html` leaves it modified after every run and turns any concurrent change
+into a merge conflict on one enormous line. Nothing is lost by not tracking it — served
+over HTTP the page reads the CSVs in `data/` live.
 
 ### Publishing it (later)
 
@@ -111,8 +117,9 @@ where `<REGION>` is `BRA` or `EUR`. So:
 | **Add more airports** | Nothing — new ICAO codes in the CSVs appear automatically. Add a label in `CONFIG.names` (in `index.html`) if you want a name instead of the code. |
 
 No code edit is needed for years or airports. After changing files in `data/`, run
-**`Rscript build_dashboard.R`** to refresh the double-click page. (A published/served
-copy also updates on its own once you commit and `push`.)
+**`Rscript build_dashboard.R`** to refresh `index-data.js` for the double-click page.
+(A published/served copy reads `data/` live, so it updates on its own once you commit
+and `push`.)
 
 > Partial years (e.g. 2026 through June) are detected automatically and flagged as
 > "partial". A region with no file for a given year is shown as "no data" instead of
