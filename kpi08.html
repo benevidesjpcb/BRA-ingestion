@@ -127,6 +127,9 @@
   </header>
 
   <div class="controls">
+    <div class="ctl"><span>ASMA ring</span>
+      <div class="seg" id="seg-ring" role="group" aria-label="ASMA ring"></div>
+    </div>
     <div class="ctl"><span>Year</span>
       <div class="seg" id="seg-year" role="group" aria-label="Year"></div>
     </div>
@@ -179,7 +182,10 @@
   <footer>
     <strong>How to read.</strong> Each value is the <em>average per arrival</em> (sum of daily totals ÷ valid movements), in minutes.
     <em>Additional time</em> = observed ASMA transit − the 2024 p20 reference, grouped by <code id="foot-key">ICAO+phase+range+class+runway+sector</code>.<br>
-    <strong>ASMA</strong> is an arrivals-only metric: the time from crossing the <span id="foot-ring">C40</span> ring to landing. There is no departure (DSMA) counterpart in this source.<br>
+    <strong>ASMA</strong> is an arrivals-only metric: the time from crossing an ASMA ring to landing. The source measures
+    <strong>two rings</strong> — <code>C40</code> (40 NM) and <code>C100</code> (100 NM) — one row per ring per arrival. They cover
+    different distances and are about 10 minutes apart, so each has its own reference and they are never pooled: pick the ring above.
+    There is no departure (DSMA) counterpart in this source.<br>
     <strong>Validation.</strong> The last panel compares the reference recomputed in this repository with the <code>kpi08</code> value supplied by Brazil — close bars mean the reproduction matches.<br>
     <strong>Data.</strong> <span id="foot-data-src">Embedded in this page.</span> See <code>README</code> for how to refresh it.
   </footer>
@@ -220,7 +226,15 @@ const fmtInt = v => (v==null||!isFinite(v)) ? "–" : Math.round(v).toLocaleStri
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 let DATA = null;
-const state = { year:null, metric:"add" };
+const state = { ring:null, year:null, metric:"add" };
+
+// every lookup goes through the selected ring: C40 and C100 measure different
+// distances (~10 min apart in the source) and must never be pooled
+const ovOf  = y => (DATA.overall[state.ring] || {})[y];
+const moOf  = y => (DATA.monthly[state.ring] || {})[y];
+const aptEntries = () => Object.entries(DATA.airports)
+  .map(([icao,byRing]) => ({icao, d: ((byRing[state.ring] || {})[state.year])}))
+  .filter(r => r.d);
 
 /* ---------------- data loading ---------------- */
 // Preferred: the JSON embedded by build_kpi08_dashboard.R (works offline, file://).
@@ -277,13 +291,14 @@ function aggregate(rows){
     a.sup  += num(r.TOT_ADD_SUPPLIED);
   };
   const byYear = {}, byApt = {}, byMonth = {};
-  const maxDate = {};
+  const maxDate = {}, seenRings = new Set();
   for (const r of rows){
     if (!r.DATE) continue;
-    const y = r.DATE.slice(0,4), m = r.DATE.slice(5,7);
-    bump(byYear, y, r);
-    bump(byApt, y + "|" + r.ICAO, r);
-    bump(byMonth, y + "|" + m, r);
+    const y = r.DATE.slice(0,4), m = r.DATE.slice(5,7), g = r.RANGE || "C40";
+    seenRings.add(g);
+    bump(byYear, g + "|" + y, r);
+    bump(byApt, g + "|" + y + "|" + r.ICAO, r);
+    bump(byMonth, g + "|" + y + "|" + m, r);
     if (!maxDate[y] || r.DATE > maxDate[y]) maxDate[y] = r.DATE;
   }
   const leaf = a => ({
@@ -294,19 +309,26 @@ function aggregate(rows){
     avg_add_sup:+(a.sup/a.mvts).toFixed(3),
     na_share:+(100*a.na/(a.mvts+a.na)).toFixed(2)
   });
-  const overall = {}, airports = {}, monthly = {};
-  for (const [y,a] of Object.entries(byYear)) overall[y] = leaf(a);
+  const overall = {}, airports = {}, monthly = {}, years = new Set();
+  for (const [k,a] of Object.entries(byYear)){
+    const [g,y] = k.split("|"); years.add(y);
+    (overall[g] || (overall[g] = {}))[y] = leaf(a);
+  }
   for (const [k,a] of Object.entries(byApt)){
-    const [y,icao] = k.split("|");
-    (airports[icao] || (airports[icao] = {}))[y] = leaf(a);
+    const [g,y,icao] = k.split("|");
+    const byRing = airports[icao] || (airports[icao] = {});
+    (byRing[g] || (byRing[g] = {}))[y] = leaf(a);
   }
   for (const [k,a] of Object.entries(byMonth)){
-    const [y,m] = k.split("|");
-    (monthly[y] || (monthly[y] = {}))[m] = +(a.add/a.mvts).toFixed(3);
+    const [g,y,m] = k.split("|");
+    const byYr = monthly[g] || (monthly[g] = {});
+    (byYr[y] || (byYr[y] = {}))[m] = +(a.add/a.mvts).toFixed(3);
   }
   const partial = {};
   for (const [y,d] of Object.entries(maxDate)) if (d < `${y}-12-31`) partial[y] = d;
-  return {years:Object.keys(overall).sort(), overall, airports, monthly, meta:{partial}};
+  const order = ["C40","C100"];
+  const rings = [...seenRings].sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  return {years:[...years].sort(), rings, overall, airports, monthly, meta:{partial}};
 }
 
 /* ---------------- chart helpers ---------------- */
@@ -360,11 +382,11 @@ function hoverable(node, title, rows){
 
 /* ---------------- renderers ---------------- */
 function renderKPIs(){
-  const o = DATA.overall[state.year];
+  const o = ovOf(state.year);
   const host = $("#kpis");
   if (!o){ host.innerHTML = `<div class="tile"><div class="cap">No data</div></div>`; return; }
   const prevYears = DATA.years.filter(y=>y<state.year);
-  const prev = prevYears.length ? DATA.overall[prevYears[prevYears.length-1]] : null;
+  const prev = prevYears.length ? ovOf(prevYears[prevYears.length-1]) : null;
   const delta = prev ? o.avg_add - prev.avg_add : null;
   const deltaPill = delta==null ? "" :
     `<span class="pill ${delta<=0?"good":"warn"}">${delta<=0?"▼":"▲"} ${fmt(Math.abs(delta))} min</span>`;
@@ -396,11 +418,11 @@ function renderKPIs(){
 function renderYear(){
   const host = $("#chart-year");
   const mk = CONFIG.metrics[state.metric];
-  $("#yr-title").textContent = `${mk.label} by year`;
+  $("#yr-title").textContent = `${mk.label} by year — ${state.ring}`;
   $("#yr-note").textContent  = `Average per arrival, in minutes (${mk.desc}).`;
 
   const years = DATA.years;
-  const vals = years.map(y => DATA.overall[y] ? DATA.overall[y][mk.key] : null);
+  const vals = years.map(y => ovOf(y) ? ovOf(y)[mk.key] : null);
   const max = niceMax(Math.max(...vals.filter(v=>v!=null), 0.1));
   const h = 232, padL = 44, padR = 12, padT = 14, padB = 34;
   const {s,w} = svgFor(host,h);
@@ -422,7 +444,8 @@ function renderYear(){
                          opacity: y===state.year ? 1 : 0.45},s);
     const lab = el("text",{x:cx, y:yBot-bh-7,"text-anchor":"middle",class:"glabel"},s);
     lab.textContent = fmt(v);
-    const o = DATA.overall[y];
+    const o = ovOf(y);
+    if (!o) return;
     hoverable(r, y, [["Additional", fmt(o.avg_add)+" min"],["ASMA transit", fmt(o.avg_asma)+" min"],
                      ["Reference", fmt(o.avg_ref)+" min"],["Valid arrivals", fmtInt(o.mvts)]]);
   });
@@ -433,14 +456,11 @@ function renderRank(){
   const host = $("#chart-rank");
   const mk = CONFIG.metrics[state.metric];
   $("#rk-title").textContent = `Airport ranking — ${mk.label.toLowerCase()}`;
-  $("#rk-note").textContent  = `${state.year}, average per arrival (minutes).`;
+  $("#rk-note").textContent  = `${state.year} · ${state.ring}, average per arrival (minutes).`;
 
-  const rows = Object.entries(DATA.airports)
-    .map(([icao,byYear]) => ({icao, d: byYear[state.year]}))
-    .filter(r => r.d)
-    .sort((a,b) => b.d[mk.key] - a.d[mk.key]);
+  const rows = aptEntries().sort((a,b) => b.d[mk.key] - a.d[mk.key]);
 
-  if (!rows.length){ host.innerHTML = `<p class="note">No airports for ${state.year}.</p>`; return; }
+  if (!rows.length){ host.innerHTML = `<p class="note">No airports for ${state.year} at ${state.ring}.</p>`; return; }
 
   const rowH = 26, padT = 6, padB = 6, padL = 152, padR = 56;
   const h = padT + padB + rows.length*rowH;
@@ -478,14 +498,14 @@ function renderRank(){
 // context lines labelled at their end (no extra hues needed)
 function renderTrend(){
   const host = $("#chart-trend");
-  $("#tr-note").textContent = `Average additional time per arrival, by month. ${state.year} highlighted; earlier years shown for context.`;
+  $("#tr-note").textContent = `Average additional time per arrival at ${state.ring}, by month. ${state.year} highlighted; earlier years shown for context.`;
   const h = 250, padL = 44, padR = 42, padT = 14, padB = 30;
   const {s,w} = svgFor(host,h);
   const x0 = padL, x1 = w - padR, yTop = padT, yBot = h - padB;
 
   const allVals = [];
   DATA.years.forEach(y => MONTHS.forEach(m => {
-    const v = DATA.monthly[y] && DATA.monthly[y][m]; if (v!=null) allVals.push(v);
+    const mm = moOf(y); const v = mm && mm[m]; if (v!=null) allVals.push(v);
   }));
   if (!allVals.length){ host.innerHTML = `<p class="note">No monthly data.</p>`; return; }
   const max = niceMax(Math.max(...allVals));
@@ -502,7 +522,7 @@ function renderTrend(){
   // ending at a similar value never print on top of each other
   const labels = [];
   const draw = (year, isCurrent) => {
-    const mm = DATA.monthly[year]; if (!mm) return;
+    const mm = moOf(year); if (!mm) return;
     const pts = MONTHS.map((m,i)=> mm[m]!=null ? [xAt(i), yAt(mm[m])] : null).filter(Boolean);
     if (pts.length < 2) return;
     const d = pts.map((p,i)=> (i?"L":"M")+p[0]+","+p[1]).join(" ");
@@ -541,16 +561,15 @@ function renderTrend(){
 // is present and both are direct-labelled
 function renderValidation(){
   const host = $("#chart-valid");
-  $("#vl-note").textContent = `${state.year}. Bars of similar height mean the in-repo reference reproduces the supplied KPI08.`;
+  $("#vl-note").textContent = `${state.year} · ${state.ring}. Bars of similar height mean the in-repo reference reproduces the supplied KPI08.`;
   $("#vl-legend").innerHTML =
     `<span class="it"><span class="dot" style="background:var(--bra)"></span>Recomputed here (GANP p20)</span>
      <span class="it"><span class="dot" style="background:var(--sup)"></span>Supplied by Brazil (kpi08)</span>`;
 
-  const rows = Object.entries(DATA.airports)
-    .map(([icao,byYear]) => ({icao, d: byYear[state.year]}))
-    .filter(r => r.d && (r.d.avg_add != null || r.d.avg_add_sup != null))
+  const rows = aptEntries()
+    .filter(r => r.d.avg_add != null || r.d.avg_add_sup != null)
     .sort((a,b)=> b.d.avg_add - a.d.avg_add);
-  if (!rows.length){ host.innerHTML = `<p class="note">No airports for ${state.year}.</p>`; return; }
+  if (!rows.length){ host.innerHTML = `<p class="note">No airports for ${state.year} at ${state.ring}.</p>`; return; }
 
   const h = 250, padL = 44, padR = 12, padT = 14, padB = 40;
   const {s,w} = svgFor(host,h);
@@ -579,10 +598,7 @@ function renderValidation(){
 
 function renderTable(){
   const t = $("#dtable");
-  const rows = Object.entries(DATA.airports)
-    .map(([icao,byYear])=>({icao,d:byYear[state.year]}))
-    .filter(r=>r.d)
-    .sort((a,b)=>b.d.avg_add-a.d.avg_add);
+  const rows = aptEntries().sort((a,b)=>b.d.avg_add-a.d.avg_add);
   t.innerHTML =
     `<thead><tr><th>Airport</th><th>Valid arrivals</th><th>ASMA transit</th>
       <th>Reference</th><th>Additional</th><th>Supplied</th><th>No ref.</th></tr></thead>
@@ -610,8 +626,13 @@ function segment(host, values, current, onPick, labelOf = v=>v){
 
 function boot(){
   const partial = DATA.meta && DATA.meta.partial || {};
+  // rings present in the data, C40 first; older payloads without them still work
+  DATA.rings = (DATA.rings && DATA.rings.length) ? DATA.rings : Object.keys(DATA.overall);
+  state.ring = DATA.rings[0];
   state.year = DATA.years[DATA.years.length-1];
 
+  segment($("#seg-ring"), DATA.rings, state.ring, v=>{ state.ring=v; renderAll(); },
+          g => g === "C40" ? "C40 (40 NM)" : g === "C100" ? "C100 (100 NM)" : g);
   segment($("#seg-year"), DATA.years, state.year, v=>{ state.year=v; renderAll(); },
           y => y + (partial[y] ? " *" : ""));
   $("#seg-metric").onclick = e=>{
@@ -623,9 +644,8 @@ function boot(){
   const span = DATA.years.length>1 ? `${DATA.years[0]}–${DATA.years[DATA.years.length-1]}` : DATA.years[0];
   $("#subtitle").textContent =
     `Arrival additional time in the terminal airspace at the ${Object.keys(DATA.airports).length} Brazilian study airports, ` +
-    `${span}, against a ${CONFIG.refYear} GANP 20th-percentile reference.` +
+    `${span}, against a ${CONFIG.refYear} GANP 20th-percentile reference per ASMA ring.` +
     (Object.keys(partial).length ? "  * partial year." : "");
-  if (DATA.meta && DATA.meta.ring) $("#foot-ring").textContent = DATA.meta.ring;
 
   $("#state").hidden = true;
   $("#app").hidden = false;

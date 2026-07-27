@@ -32,7 +32,8 @@ if (!requireNamespace("jsonlite", quietly = TRUE)) {
 #
 #   data_dir  : where the ASMA analytic CSV lives          (default data/)
 #   html_file : the dashboard page to embed the data into  (default kpi08.html)
-#   ref_year / variant / ring : must match _chapter-setup.R
+#   ref_year / variant : must match _chapter-setup.R
+#   rings     : ASMA rings to expose, in display order
 #
 # Returns, invisibly, the path of the page written.
 # =============================================================================
@@ -40,7 +41,7 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
                                   html_file = here::here("kpi08.html"),
                                   ref_year  = 2024,
                                   variant   = "icao_ganp_p20",
-                                  ring      = "C40") {
+                                  rings     = c("C40", "C100")) {
 
   pat <- sprintf("^PBWG-BRA-asma-analytic-[0-9]{4}-[0-9]{4}-ref%d-%s\\.csv$",
                  ref_year, variant)
@@ -87,15 +88,15 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
     lapply(split(df, df[[keys[1]]]), function(s) nest(s, keys[-1], fun))
   }
 
-  ap_df <- agg(raw, c("ICAO", "YEAR"))
-  ov_df <- agg(raw, c("YEAR"))
+  ap_df <- agg(raw, c("ICAO", "RANGE", "YEAR"))
+  ov_df <- agg(raw, c("RANGE", "YEAR"))
   mo_df <- raw |>
-    group_by(YEAR, MONTH) |>
+    group_by(RANGE, YEAR, MONTH) |>
     summarise(avg_add = round(sum(TOT_ADD_TIME) / sum(MVTS_VALID), 3), .groups = "drop")
 
-  airports <- nest(ap_df, c("ICAO", "YEAR"),  leaf)
-  overall  <- nest(ov_df, c("YEAR"),          leaf)
-  monthly  <- nest(mo_df, c("YEAR", "MONTH"), function(r) r$avg_add)
+  airports <- nest(ap_df, c("ICAO", "RANGE", "YEAR"), leaf)
+  overall  <- nest(ov_df, c("RANGE", "YEAR"),        leaf)
+  monthly  <- nest(mo_df, c("RANGE", "YEAR", "MONTH"), function(r) r$avg_add)
 
   # a year whose last day is before 31 Dec is flagged as partial in the page
   partial <- list()
@@ -104,7 +105,8 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
   for (i in seq_len(nrow(pd))) partial[[pd$YEAR[i]]] <- pd$maxd[i]
 
   payload <- list(airports = airports, overall = overall, monthly = monthly,
-                  meta = list(partial = partial, ring = ring),
+                  meta = list(partial = partial),
+                  rings = intersect(rings, unique(raw$RANGE)),
                   years = sort(unique(raw$YEAR)))
   json <- as.character(jsonlite::toJSON(payload, auto_unbox = TRUE, digits = 6, na = "null"))
 

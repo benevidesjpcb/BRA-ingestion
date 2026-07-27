@@ -141,7 +141,8 @@ metric. For arrivals, the study airport is the destination aerodrome (`ades`).
 | `aldt` | `ALDT` / `MVT_TIME` | Landing time (the arrival movement time) |
 | `aibt` | `AIBT` | In-block time (blank where unmatched) |
 | `sibt` | `SIBT` | Scheduled in-block time (often blank) |
-| `c_time` | `C_CROSS_TIME` | ASMA ring crossing time (single generic point) |
+| `c` | `RANGE` | **ASMA ring in NM (40 / 100)** → `C40` / `C100`; one row per ring |
+| `c_time` | `C_CROSS_TIME` | Crossing time at that ring |
 | `bear` | `BEARING` | Bearing at the crossing point |
 | `setor` | `SECTOR` | Entry sector |
 | `transito` | `ASMA_TRANSIT` | Supplied ASMA transit time (duration) |
@@ -151,10 +152,12 @@ metric. For arrivals, the study airport is the destination aerodrome (`ades`).
 
 Two source conventions differ between the archives and are normalised on read: the
 monthly files carry a leading `row_index` column and use a comma delimiter, while the
-annual files are semicolon-delimited. The single `c_time`/`bear` pair represents **one**
-ASMA crossing point; the source does not state whether it is the 40 NM (C40) or 100 NM
-(C100) ring, so it is labelled with the configurable `asma_ring` (default `C40`) pending
-confirmation from DECEA.
+annual files are semicolon-delimited.
+
+**Each arrival appears once per ASMA ring**, identified by `c` (40 or 100 NM), with
+`c_time`/`bear` giving that ring's crossing. The two are roughly half the rows each and
+about 10 minutes apart, so they are carried as separate `RANGE` values (`C40`, `C100`) and
+never pooled: the reference is computed per ring and the dashboard switches between them.
 
 ## Preparation Code
 
@@ -269,10 +272,14 @@ harmonise_bra_asma <- function(raw) {
     # ARR-oriented data: phase is arrival, study airport is the destination
     PHASE = "ARR",
     ICAO  = normalise_text(gcol("ades")),
-    RANGE = asma_ring,
+    # The ring the row was measured at (40 or 100 NM). Each arrival appears once
+    # per ring and the two are ~10 minutes apart, so this must come from the data
+    # — labelling every row with one ring mixes the two distributions and makes
+    # the p20 reference meaningless.
+    RANGE = paste0("C", normalise_text(gcol(asma_ring_col))),
     SECTOR_GROUP = sector
   ) |>
-    dplyr::filter(ICAO %in% bra_apts)
+    dplyr::filter(ICAO %in% bra_apts, RANGE %in% asma_rings)
 }
 
 # ---- observed ASMA transit + validity --------------------------------------
@@ -284,7 +291,9 @@ prepare_asma <- function(df) {
       ASMA_TRANSIT_CALC = as.numeric(difftime(ALDT, C_CROSS_TIME, units = "mins")),
       ASMA = dplyr::coalesce(ASMA_TRANSIT_CALC, ASMA_TRANSIT),
       DATE = as_date(ALDT),
-      VALID_ASMA = !is.na(ASMA) & ASMA > 0 & ASMA <= asma_max_asma
+      # the plausibility cap is per ring: 100 NM legitimately takes much longer
+      MAX_ASMA = unname(asma_max_asma[RANGE]),
+      VALID_ASMA = !is.na(ASMA) & ASMA > 0 & !is.na(MAX_ASMA) & ASMA <= MAX_ASMA
     )
 }
 
@@ -400,17 +409,20 @@ if (length(parquet_files) == 0) {
 
 ## Comparability Check — is the reference transferable?
 
-The reference is built from `asma_ref_year` and applied to every other year. That is only
-valid while all years measure the ASMA transit the same way. They do **not** automatically:
-the ODIN API and the older DECEA archives were observed to sit about 2.8 minutes apart
-(API years ≈ 20.7 min, archive years ≈ 23.5 min), because their `c_time` marks a different
-ASMA crossing point.
+The reference is built from `asma_ref_year` and applied to every other year, **within each
+ring**. Two things can break that, and both have bitten this pipeline:
 
-Mixing them silently flips the metric: a reference built on the slower ruler and applied
-to the faster one produced a *negative* average additional time for 2026 while the
-supplied `kpi08` stayed positive. The table below is the guard — every year must sit close
-to the reference year, otherwise the years come from different sources and must be
-re-downloaded from a single one.
+1. **Mixing the rings.** The source has one row per ring per arrival, ~50/50, and they are
+   about 10 minutes apart (measured 2026: C40 median 13.8 min, C100 23.7 min). Labelling
+   every row with a single ring pooled the two distributions, so the "reference" tracked
+   the ring mix rather than the operation — a year with proportionally more C100 looked
+   slower, and 2026 came out with a *negative* average additional time while the supplied
+   `kpi08` stayed positive. `RANGE` now comes from the source column, never a constant.
+2. **Mixing sources.** Years pulled with different download code can still cover different
+   flights.
+
+The table below is the guard. It reports the transit level per year **and ring**; every
+year should sit close to the reference year within its own ring.
 
 ```{r}
 #| label: tbl-bra-asma-comparability
@@ -422,32 +434,42 @@ if (length(parq) == 0) {
     note = "No ASMA extracts yet. Run the `prepare-bra-asma-data` chunk."
   ))
 } else {
+  # per YEAR *and* RANGE: the two rings are ~10 minutes apart, so a table that
+  # pooled them would compare the ring mix rather than the operation
   lvl <- purrr::map(parq, function(f) {
-    d <- arrow::read_parquet(f)
-    tibble::tibble(
-      YEAR = lubridate::year(min(d$ALDT, na.rm = TRUE)),
-      N = nrow(d),
-      MED_TRANSIT = round(median(
-        as.numeric(difftime(d$ALDT, d$C_CROSS_TIME, units = "mins")), na.rm = TRUE), 2),
-      MED_SUPPLIED_ADD = round(median(d$ASMA_ADD_SUPPLIED, na.rm = TRUE), 2),
-      NO_CROSSING_PCT  = round(100 * mean(is.na(d$C_CROSS_TIME)), 1)
-    )
-  }) |> purrr::list_rbind() |> dplyr::arrange(YEAR)
+    arrow::read_parquet(f) |>
+      dplyr::mutate(
+        YEAR = lubridate::year(ALDT),
+        TRANSIT = as.numeric(difftime(ALDT, C_CROSS_TIME, units = "mins"))
+      ) |>
+      dplyr::group_by(YEAR, RANGE) |>
+      dplyr::summarise(
+        N = dplyr::n(),
+        MED_TRANSIT = round(median(TRANSIT, na.rm = TRUE), 2),
+        MED_SUPPLIED_ADD = round(median(ASMA_ADD_SUPPLIED, na.rm = TRUE), 2),
+        NO_CROSSING_PCT = round(100 * mean(is.na(C_CROSS_TIME)), 1),
+        .groups = "drop"
+      )
+  }) |> purrr::list_rbind() |> dplyr::arrange(RANGE, YEAR)
 
-  ref_lvl <- lvl$MED_TRANSIT[lvl$YEAR == asma_ref_year]
   # 1 minute is well inside year-to-year operational drift; beyond that the years
   # are not on the same ruler and the shared reference cannot be trusted
   tol <- 1.0
+  ref <- lvl |>
+    dplyr::filter(YEAR == asma_ref_year) |>
+    dplyr::select(RANGE, REF_LEVEL = MED_TRANSIT)
 
   lvl |>
+    dplyr::left_join(ref, by = "RANGE") |>
     dplyr::mutate(
-      VS_REF = if (length(ref_lvl) == 1) round(MED_TRANSIT - ref_lvl, 2) else NA_real_,
+      VS_REF = round(MED_TRANSIT - REF_LEVEL, 2),
       COMPARABLE = dplyr::case_when(
-        is.na(VS_REF)        ~ paste0("reference year ", asma_ref_year, " missing"),
-        abs(VS_REF) <= tol   ~ "yes",
-        TRUE                 ~ "NO — different source/ruler"
+        is.na(VS_REF)      ~ paste0("reference year ", asma_ref_year, " missing"),
+        abs(VS_REF) <= tol ~ "yes",
+        TRUE               ~ "NO — check the source of this year"
       )
     ) |>
+    dplyr::select(-REF_LEVEL) |>
     knitr::kable()
 }
 ```
@@ -504,12 +526,10 @@ reference reproduces the supplied KPI08 for the populated rows.
 
 Before treating the output as final, confirm with DECEA/ICEA:
 
-1. What `c_time` / `bear` represent — the C40 (40 NM), C100 (100 NM), or another ASMA ring
-   (drives the `asma_ring` / `RANGE` label). **This is no longer theoretical:** the ODIN
-   API and the older archives disagree by ~2.8 minutes on the same metric (API years
-   median transit ≈ 20.7 min, archive years ≈ 23.5 min), which is consistent with the two
-   marking different crossing points. Until DECEA confirms, use one source for all years
-   — the comparability table above is the guard.
+1. ~~What `c_time` / `bear` represent~~ — **resolved.** The `c` column holds the ring in
+   nautical miles (40 or 100) and each arrival appears once per ring; `c_time` is that
+   ring's crossing time. `RANGE` is derived from it and the two rings are kept apart
+   throughout.
 2. Whether `transito`, `desimp` and `kpi08` definitions match the KPI08 expectations used
    for the reference.
 3. Whether to use the annual 2025 file or reconstruct 2025 from the monthly files, after

@@ -77,8 +77,14 @@ asma_ref_year   <- ref_year                        # reference year (shared, 202
 asma_data_years <- 2023:2026                       # <- CHANGE THE STUDY PERIOD HERE
 asma_min_n      <- min_n                           # min samples per ref group
 asma_p_ref      <- p_ref                           # reference percentile (0.20)
-asma_max_asma   <- 60                              # ASMA transit cap (minutes)
-asma_ring       <- "C40"                           # label for the crossing ring
+# The source carries BOTH ASMA rings, one row per ring per arrival, told apart by
+# the `c` column (40 / 100 NM). They measure different distances, so they are kept
+# apart everywhere: the reference is built per ring and the dashboard switches
+# between them. Never collapse them into a single label.
+asma_ring_col   <- "c"                             # source column holding the ring
+asma_rings      <- c("C40", "C100")                # rings, in display order
+# transit cap per ring (minutes): 100 NM legitimately takes far longer than 40 NM
+asma_max_asma   <- c(C40 = 60, C100 = 120)
 # reference grouping key for ASMA (richer than taxi: adds RANGE/CLASS/SECTOR)
 asma_ref_key    <- c("ICAO", "PHASE", "RANGE", "CLASS", "RWY", "SECTOR_GROUP")
 
