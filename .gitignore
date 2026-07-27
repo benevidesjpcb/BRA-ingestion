@@ -4,6 +4,9 @@
 
 .Rproj.user/
 
+# Secrets — holds TATIC_TOKEN; must never be committed
+.Renviron
+
 data-raw/*
 !data-raw/.gitkeep
 # Track the analytic CSV outputs in data/, but not the large parquet extracts.
