@@ -560,15 +560,17 @@ build_kpi08_dashboard(ring = asma_ring)
 ```{r}
 #| label: check-bra-kpi08-dashboard
 
-# is the page currently carrying data, or does it still need a build?
+# The page is tracked in git; its numbers live in the generated, git-ignored
+# kpi08-data.js next to it. Report whether that data file has been built.
 dash_file <- here::here("kpi08.html")
+data_file <- here::here("kpi08-data.js")
 dash_state <- if (!file.exists(dash_file)) {
   "kpi08.html not found"
-} else if (grepl('id="dash-data" type="application/json">\\s*\\{\\s*\\}',
-                 readr::read_file(dash_file))) {
-  "no data embedded yet — run the `build-bra-kpi08-dashboard` chunk above"
+} else if (!file.exists(data_file)) {
+  "no data yet — run the `build-bra-kpi08-dashboard` chunk above"
 } else {
-  "data embedded — open kpi08.html to view the dashboard"
+  paste0("built ", format(file.info(data_file)$mtime, "%Y-%m-%d %H:%M"),
+         " — open kpi08.html to view the dashboard")
 }
 knitr::kable(tibble::tibble(dashboard = basename(dash_file), status = dash_state))
 ```

@@ -195,7 +195,12 @@
 
 <!-- Data embedded by build_kpi08_dashboard.R so the page opens by double-click (offline).
      Left as {} it falls back to reading the analytic CSV in data/ when served over HTTP. -->
-<script id="dash-data" type="application/json">{}</script>
+<!-- The numbers live in their OWN generated file, never inside this page: a build
+     rewriting a tracked HTML file makes every rebuild a merge conflict. A plain
+     <script src> also works from file://, so double-clicking still works offline.
+     kpi08-data.js is written by KPI08/build_kpi08_dashboard.R; if it is absent the
+     page falls back to reading the analytic CSV live (when served over HTTP). -->
+<script src="kpi08-data.js" onerror="window.DASH_DATA=null"></script>
 
 <script>
 "use strict";
@@ -240,9 +245,9 @@ const aptEntries = () => Object.entries(DATA.airports)
 // Preferred: the JSON embedded by build_kpi08_dashboard.R (works offline, file://).
 // Fallback: when served over HTTP, read the analytic CSV in data/ and aggregate here.
 async function loadData(){
-  const embedded = JSON.parse($("#dash-data").textContent || "{}");
+  const embedded = (typeof window !== "undefined" && window.DASH_DATA) || null;
   if (embedded && embedded.years && embedded.years.length){
-    $("#foot-data-src").textContent = "Embedded in this page.";
+    $("#foot-data-src").textContent = "Loaded from kpi08-data.js.";
     return embedded;
   }
   if (location.protocol === "file:") return null;   // cannot fetch from file://
@@ -670,7 +675,8 @@ loadData().then(d=>{
        <p>This page shows the ASMA (KPI08) analytic output, which has not been built yet.</p>
        <p>Run the <code>prepare-bra-asma-data</code> chunk in <code>ASMA-BRA-ingestion.qmd</code>
           to create the analytic CSV in <code>data/</code>, then run
-          <code>Rscript KPI08/build_kpi08_dashboard.R</code> to embed it here.</p>`;
+          <code>Rscript KPI08/build_kpi08_dashboard.R</code>, which writes
+          <code>kpi08-data.js</code> next to this page.</p>`;
     return;
   }
   DATA = d; boot();

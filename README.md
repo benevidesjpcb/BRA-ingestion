@@ -60,7 +60,7 @@ All paths and analysis parameters live in one place, `_chapter-setup.R`:
 - **taxi-time** — `variant`, `ref_year`, `data_years`, `min_n`, `max_txxt`, `p_ref`,
   `ref_key`;
 - **ASMA (KPI08)** — `asma_variant`, `asma_ref_year`, `asma_data_years`, `asma_min_n`,
-  `asma_max_asma`, `asma_p_ref`, `asma_ring`, `asma_ref_key`;
+  `asma_max_asma` (per ring), `asma_p_ref`, `asma_ring_col`, `asma_rings`, `asma_ref_key`;
 - the project directories and the generated output file names for both.
 
 Change the study period (`asma_data_years`) or the reference year there and the file
@@ -145,7 +145,8 @@ folder so it stays independent of the `dsTaxi`/TATIC ingestion.
 | `KPI08/download_kpi08.R` | Downloads the `kpi08` table from the ODIN API, one file per year | yes |
 | `KPI08/build_kpi08_dashboard.R` | Embeds the analytic numbers into `kpi08.html` | yes |
 | `ASMA-BRA-ingestion.qmd` | Documented ASMA ingestion pipeline (arrival KPI08) | yes |
-| `kpi08.html` | Interactive ASMA dashboard | yes |
+| `kpi08.html` | Interactive ASMA dashboard (C40 / C100) | yes |
+| `kpi08-data.js` | Numbers the dashboard loads, written by the build | no (git-ignored) |
 | `data-raw/kpi08/` | Raw `kpi08_*.csv` source files (and `parts/` month files) | no (git-ignored) |
 | `data/asma/` | Generated harmonised ASMA parquet extracts | no (git-ignored) |
 
@@ -228,8 +229,13 @@ source(here::here("KPI08", "build_kpi08_dashboard.R"))
 build_kpi08_dashboard(ring = asma_ring)
 ```
 
-Then double-click `kpi08.html`. Re-run it whenever the ASMA analytic CSV changes.
-Served over HTTP the page can also read that CSV live, so no rebuild is needed there.
+It writes **`kpi08-data.js`** next to the page — the page itself is never rewritten.
+Then double-click `kpi08.html`. Re-run the build whenever the ASMA analytic CSV changes.
+
+`kpi08-data.js` is generated and **git-ignored on purpose**: a build that rewrites a
+tracked HTML file turns every rebuild into a merge conflict on one enormous line. Nothing
+is lost by not tracking it — served over HTTP the page reads the analytic CSV in `data/`
+live, so a published dashboard still shows data without it.
 
 It shows, for the selected year and metric (additional time / ASMA transit /
 reference): headline tiles, additional time by year, an airport ranking, the
