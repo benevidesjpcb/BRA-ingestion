@@ -208,12 +208,17 @@ parse_duration_minutes <- function(x) {
   )
 }
 
-# 8-point compass sector from a bearing in degrees (fallback when SECTOR blank).
-bearing_to_sector <- function(deg) {
-  deg <- suppressWarnings(as.numeric(deg)) %% 360
-  labels <- c("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-  idx <- floor((deg + 22.5) / 45) %% 8 + 1
-  ifelse(is.na(deg), NA_character_, labels[idx])
+# Entry sector as the official report codes it: SIX 60-degree sectors labelled
+# S000, S060, ... S300 (NOT an 8-point compass — that binning creates smaller
+# reference groups, pushes them under min_n and inflates the "no reference"
+# count). `setor` is used when it already carries those codes; otherwise the
+# sector is binned from the bearing.
+sector_group <- function(setor, bear) {
+  setor <- normalise_text(setor)
+  deg   <- suppressWarnings(as.numeric(normalise_text(bear))) %% 360
+  binned <- ifelse(is.na(deg), NA_character_,
+                   sprintf("S%03d", (floor(deg / 60) * 60) %% 360))
+  ifelse(!is.na(setor) & grepl("^S[0-9]{3}$", setor), setor, binned)
 }
 
 # ---- read one kpi08 file (annual ; or monthly ,) ----------------------------
@@ -247,8 +252,7 @@ harmonise_bra_asma <- function(raw) {
 
   rwy    <- dplyr::coalesce(normalise_text(gcol("drwy_validado")),
                             normalise_text(gcol("drwy")))
-  sector <- dplyr::coalesce(normalise_text(gcol("setor")),
-                            bearing_to_sector(gcol("bear")))
+  sector <- sector_group(gcol("setor"), gcol("bear"))
 
   tibble::tibble(
     IM_SAMAD_ID = normalise_text(gcol("id")),
@@ -320,20 +324,21 @@ summarise_asma_daily <- function(mov, reference) {
     filter(!is.na(DATE)) |>
     left_join(reference, by = asma_ref_key) |>
     mutate(VALID = VALID_ASMA & !is.na(ASMA_REF)) |>
-    group_by(ICAO, PHASE, RANGE, DATE) |>
+    # Grouped exactly as the official report: the reference breakdown is kept in
+    # the daily table, so results can be validated group by group against golden/.
+    group_by(ICAO, PHASE, DATE, RANGE, CLASS, RWY, SECTOR_GROUP) |>
     summarise(
-      MVTS_VALID       = sum(VALID),
-      MVTS_NA          = sum(!VALID),
-      TOT_ASMA         = sum(ASMA[VALID]),
-      TOT_REF          = sum(ASMA_REF[VALID]),
-      TOT_ADD_TIME     = sum(ASMA[VALID] - ASMA_REF[VALID]),
-      # supplied values kept for validation
-      TOT_ASMA_SUPPLIED   = sum(ASMA_TRANSIT[VALID], na.rm = TRUE),
-      TOT_UNIMP_SUPPLIED  = sum(ASMA_UNIMPEDED[VALID], na.rm = TRUE),
-      TOT_ADD_SUPPLIED    = sum(ASMA_ADD_SUPPLIED[VALID], na.rm = TRUE),
+      MVTS_VALID    = sum(VALID),
+      MVTS_NA       = sum(!VALID),
+      TOT_ASMA      = sum(ASMA[VALID]),
+      TOT_REF       = sum(ASMA_REF[VALID]),
+      TOT_ADD_TIME  = sum(ASMA[VALID] - ASMA_REF[VALID]),
+      # the Brazil-supplied unimpeded and KPI08 totals, kept for validation
+      TOT_BRA_REF   = sum(ASMA_UNIMPEDED[VALID], na.rm = TRUE),
+      TOT_BRA_KPI08 = sum(ASMA_ADD_SUPPLIED[VALID], na.rm = TRUE),
       .groups = "drop"
     ) |>
-    arrange(ICAO, PHASE, DATE)
+    arrange(ICAO, PHASE, DATE, RANGE, CLASS, RWY, SECTOR_GROUP)
 }
 
 # ---- run the pipeline -------------------------------------------------------
@@ -368,16 +373,18 @@ write_csv(daily, path(report_data_dir, bra_asma_analytic_file))
 
 # ---- coverage summaries -----------------------------------------------------
 coverage_summary <- movements |>
-  group_by(YEAR) |>
+  group_by(ICAO, PHASE, YEAR) |>
   summarise(
-    N_TOTAL         = n(),
-    N_VALID_ASMA    = sum(VALID_ASMA),
-    N_MISSING_RANGE = sum(is.na(RANGE)),
-    N_MISSING_CLASS = sum(is.na(CLASS)),
-    N_MISSING_RWY   = sum(is.na(RWY)),
-    N_MISSING_SECTOR= sum(is.na(SECTOR_GROUP)),
+    N_TOTAL          = n(),
+    N_VALID_ASMA     = sum(VALID_ASMA),
+    N_MISSING_RANGE  = sum(is.na(RANGE)),
+    N_MISSING_CLASS  = sum(is.na(CLASS)),
+    N_MISSING_RWY    = sum(is.na(RWY)),
+    N_MISSING_SECTOR = sum(is.na(SECTOR_GROUP)),
     .groups = "drop"
-  )
+  ) |>
+  mutate(PCT_VALID_ASMA = N_VALID_ASMA / N_TOTAL) |>
+  arrange(ICAO, PHASE, YEAR)
 write_csv(coverage_summary, path(report_data_dir, bra_asma_coverage_file))
 
 reference_coverage <- reference_data |>

@@ -63,14 +63,14 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
     mutate(YEAR = substr(DATE, 1, 4), MONTH = substr(DATE, 6, 7))
 
   # the supplied-KPI08 column is optional; treat it as missing rather than failing
-  if (!"TOT_ADD_SUPPLIED" %in% names(raw)) raw$TOT_ADD_SUPPLIED <- NA_real_
+  if (!"TOT_BRA_KPI08" %in% names(raw)) raw$TOT_BRA_KPI08 <- NA_real_
 
   agg <- function(df, keys) {
     df |>
       group_by(across(all_of(keys))) |>
       summarise(mvts = sum(MVTS_VALID), na = sum(MVTS_NA),
                 asma = sum(TOT_ASMA), ref = sum(TOT_REF), add = sum(TOT_ADD_TIME),
-                sup = sum(TOT_ADD_SUPPLIED, na.rm = TRUE),
+                sup = sum(TOT_BRA_KPI08, na.rm = TRUE),
                 .groups = "drop") |>
       mutate(avg_asma    = round(asma / mvts, 3),
              avg_ref     = round(ref  / mvts, 3),
