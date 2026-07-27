@@ -90,6 +90,32 @@ validate_asma_golden <- function(
     by = key, suffix = c("_g", "_o")
   )
 
+  # Per-year first: a single pooled table hides a year whose reference file was
+  # produced differently from the others.
+  by_year <- joined |>
+    dplyr::mutate(YEAR = substr(DATE, 1, 4)) |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(
+      GROUPS      = dplyr::n(),
+      VALID_GOLD  = sum(MVTS_VALID_g), VALID_OURS = sum(MVTS_VALID_o),
+      NA_GOLD     = sum(MVTS_NA_g),    NA_OURS    = sum(MVTS_NA_o),
+      ADD_GOLD    = round(sum(TOT_ADD_TIME_g), 1),
+      ADD_OURS    = round(sum(TOT_ADD_TIME_o), 1),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(ADD_PCT = round(100 * (ADD_OURS - ADD_GOLD) / ADD_GOLD, 3))
+  message("\nper year (shared groups):")
+  print(as.data.frame(by_year), row.names = FALSE)
+
+  # groups only on one side, per year — this is where a differently-built year shows
+  oy <- only_o |> dplyr::mutate(YEAR = substr(DATE, 1, 4)) |> dplyr::count(YEAR, name = "ONLY_OURS")
+  gy <- only_g   |> dplyr::mutate(YEAR = substr(DATE, 1, 4)) |> dplyr::count(YEAR, name = "ONLY_GOLDEN")
+  if (nrow(oy) > 0 || nrow(gy) > 0) {
+    message("\ngroups present on one side only:")
+    print(as.data.frame(dplyr::full_join(gy, oy, by = "YEAR")), row.names = FALSE)
+  }
+
+  message("\nall years pooled:")
   summary <- purrr::map(vals, function(v) {
     a <- joined[[paste0(v, "_g")]]; b <- joined[[paste0(v, "_o")]]
     d <- abs(a - b)

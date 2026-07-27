@@ -545,6 +545,14 @@ Before treating the output as final, confirm with DECEA/ICEA:
    for the reference.
 3. Whether to use the annual 2025 file or reconstruct 2025 from the monthly files, after
    resolving the `feb`/`fev` duplicate.
+4. **How the 2023 slice of `golden/` was built.** Our movement universe reproduces the
+   reference exactly for 2024 (1,423,648 movements, of which 269,207 without a sector —
+   both identical to the golden). For 2023, however, the golden contains *zero* movements
+   without a sector, while the source for that year has ~15% of rows with `setor`/`c_time`
+   blank. The reference file therefore seems to drop unmatched 2023 movements instead of
+   counting them as `MVTS_NA`, which is where our extra groups for that year come from.
+   Those rows carry no valid movement and all-zero totals, so no computed metric is
+   affected — only the `MVTS_NA` count and the number of rows written.
 4. Whether any DEP/DSMA (departure) evidence exists; these files are arrival-only, so a
    separate DSMA source is still needed for the departure side.
 
