@@ -65,11 +65,13 @@ kpi08_rbind_fill <- function(lst) {
 #
 #   years   : years to fetch, e.g. 2026 or 2023:2026 (default: current year)
 #   out_dir : where the kpi08_<year>.csv files live (created if missing)
+#   force   : TRUE re-downloads every month even if it is already on disk
 #
 # Returns, invisibly, the paths of the year files written.
 # =============================================================================
 download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
-                           out_dir = file.path("data-raw", "kpi08")) {
+                           out_dir = file.path("data-raw", "kpi08"),
+                           force   = FALSE) {
 
   base_url  <- Sys.getenv("ODIN_KPI08_URL",
                           unset = "https://odin-ms.icea.decea.mil.br/api/kpi08")
@@ -159,8 +161,30 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
                        quote = TRUE, na = "", fileEncoding = "UTF-8")
   }
   read_csv2 <- function(path) {
-    utils::read.csv(path, sep = ";", colClasses = "character",
-                    check.names = FALSE, na.strings = "")
+    if (requireNamespace("data.table", quietly = TRUE))
+      as.data.frame(data.table::fread(path, sep = ";", colClasses = "character",
+                                      na.strings = "", showProgress = FALSE))
+    else
+      utils::read.csv(path, sep = ";", colClasses = "character",
+                      check.names = FALSE, na.strings = "")
+  }
+
+  # Which months does an existing year file already cover? Reads only the date
+  # column, so a large year file is cheap to inspect. Returns integer months.
+  months_in_year_file <- function(path) {
+    if (!file.exists(path)) return(integer(0))
+    dates <- tryCatch({
+      if (requireNamespace("data.table", quietly = TRUE))
+        data.table::fread(path, sep = ";", select = date_col,
+                          colClasses = "character", na.strings = "",
+                          showProgress = FALSE)[[1]]
+      else
+        utils::read.csv(path, sep = ";", colClasses = "character",
+                        na.strings = "")[[date_col]]
+    }, error = function(e) NULL)
+    if (is.null(dates) || length(dates) == 0) return(integer(0))
+    mo <- suppressWarnings(as.integer(substr(dates, 6, 7)))
+    sort(unique(mo[!is.na(mo)]))
   }
 
   written <- character(0)
@@ -170,6 +194,14 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
       message(sprintf("Year %d is in the future; skipped.", yr)); next
     }
     last_month <- if (yr == this_year) this_month else 12L
+    out_csv    <- file.path(out_dir, sprintf("kpi08_%d.csv", yr))
+
+    # months already held by a previously downloaded year file count as done, so
+    # an existing kpi08_<year>.csv is not downloaded all over again
+    have_months <- if (force) integer(0) else months_in_year_file(out_csv)
+    if (length(have_months) > 0)
+      message(sprintf("Year %d: existing file already covers month(s) %s",
+                      yr, paste(sprintf("%02d", have_months), collapse = ", ")))
     message(sprintf("Year %d: months 01-%02d", yr, last_month))
 
     for (mo in seq_len(last_month)) {
@@ -180,8 +212,9 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
                    else sprintf("%d-%02d-01", yr, mo + 1L)
 
       is_open <- (yr == this_year && mo == this_month)   # still receiving data
-      if (file.exists(part_csv) && !is_open) {
-        message(sprintf("  %d-%02d  skip (already downloaded)", yr, mo)); next
+      already <- file.exists(part_csv) || mo %in% have_months
+      if (already && !is_open && !force) {
+        message(sprintf("  %d-%02d  skip (already have)", yr, mo)); next
       }
 
       message(sprintf("  %d-%02d  downloading %s ...", yr, mo,
@@ -202,7 +235,16 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
     part_files <- list.files(parts_dir,
                              pattern = sprintf("^kpi08_%d-[0-9]{2}\\.csv$", yr),
                              full.names = TRUE)
+    if (length(part_files) == 0) {
+      message(sprintf("Year %d: nothing new to merge; %s left as is.", yr,
+                      basename(out_csv)))
+      if (file.exists(out_csv)) written <- c(written, out_csv)
+      next
+    }
     parts <- lapply(part_files, read_csv2)
+    # the existing year file is just another part, so months it already holds
+    # are preserved instead of being overwritten by the newly fetched ones
+    if (file.exists(out_csv)) parts <- c(list(read_csv2(out_csv)), parts)
     parts <- Filter(function(d) !is.null(d) && nrow(d) > 0, parts)
     if (length(parts) == 0) {
       message(sprintf("Year %d: no rows in any month; nothing written.", yr)); next
