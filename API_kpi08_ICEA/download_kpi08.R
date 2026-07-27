@@ -111,13 +111,22 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
     )
     rows   <- list()
     offset <- 0L
+    total  <- 0L
     repeat {
       page <- fetch_page(filters, offset)
       n <- if (is.data.frame(page)) nrow(page) else 0L
-      if (n > 0) rows[[length(rows) + 1L]] <- page
-      message(sprintf("    offset %-7d +%d rows", offset, n))
-      if (n < page_size) break
-      offset <- offset + page_size
+      if (n == 0L) break                  # an empty page is the only end signal
+      if (offset == 0L && n < page_size)
+        message(sprintf("    note: server capped the page at %d rows (asked %d); ",
+                        n, page_size),
+                "raising ODIN_PAGE_SIZE further will not help.")
+      rows[[length(rows) + 1L]] <- page
+      total  <- total + n
+      # advance by what the server actually returned: PostgREST may cap the page
+      # size below the requested limit, and stepping by `limit` would skip rows
+      # (or stop early) whenever that happens.
+      offset <- offset + n
+      message(sprintf("    +%-6d rows  (total %d)", n, total))
     }
     if (length(rows) == 0) return(NULL)
     kpi08_rbind_fill(rows)
