@@ -2,8 +2,7 @@
 
 ```{r}
 #| label: setup
-#| message: false
-#| warning: false
+#| include: false
 
 # Libraries, project paths and analysis parameters — including every ASMA
 # setting (asma_data_years, asma_ref_key, asma_max_asma, the directories and the

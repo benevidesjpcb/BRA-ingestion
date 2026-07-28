@@ -1,6 +1,12 @@
 # Brazil Taxi Data Ingestion
 
 ```{r}
+#| label: setup
+#| include: false
+
+# Libraries, project paths and analysis parameters. `include: false` keeps the
+# rendered document free of the package startup banners and "built under R
+# version" warnings that loading the tidyverse emits.
 source(here::here("_chapter-setup.R"))
 ```
 

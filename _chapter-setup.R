@@ -5,6 +5,10 @@
 ###############################################################################
 
 # load required libraries for each chapter ====================================
+# Wrapped so the tidyverse banner and the conflicts block do not print on every
+# script run or chunk. Only startup *messages* are suppressed; warnings still
+# surface, so a genuine problem loading a package is not hidden.
+suppressPackageStartupMessages({
 library(tidyverse)
 library(lubridate)
 library(ggrepel)
@@ -29,6 +33,7 @@ library(gt)
 library(kableExtra)
 library(data.table)
 library(fs)
+})
 
 # ============== DEFAULTS and DEFINITIONS =====================================
 # study year
