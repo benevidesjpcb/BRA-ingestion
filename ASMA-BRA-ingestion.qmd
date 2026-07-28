@@ -346,9 +346,21 @@ summarise_asma_daily <- function(mov, reference) {
 # Resolve the source files: annual files are preferred; monthly files are used
 # only to fill years the annual set does not cover.
 raw_files <- list.files(bra_asma_raw_dir, pattern = "^kpi08_.*\\.csv$", full.names = TRUE)
+
+# Read only the files whose year is in the study period. The year filter used to
+# run after harmonising, so a file outside the period (e.g. 2023 when the period
+# starts at 2024) was still read in full — over a million rows for nothing.
+file_year  <- as.integer(stringr::str_extract(basename(raw_files), "20[0-9]{2}"))
+keep       <- is.na(file_year) | file_year %in% asma_data_years
+if (any(!keep))
+  message("Skipping ", sum(!keep), " file(s) outside ",
+          min(asma_data_years), "-", max(asma_data_years), ": ",
+          paste(basename(raw_files[!keep]), collapse = ", "))
+raw_files <- raw_files[keep]
+
 if (length(raw_files) == 0 && !nzchar(zip_path))
-  stop("No ASMA source found. Put kpi08_*.csv in ", bra_asma_raw_dir,
-       " or set BRA_ASMA_ZIP.")
+  stop("No ASMA source found for ", min(asma_data_years), "-", max(asma_data_years),
+       ". Put kpi08_*.csv in ", bra_asma_raw_dir, " or set BRA_ASMA_ZIP.")
 
 harmonised <- purrr::map(raw_files, function(f) harmonise_bra_asma(read_bra_asma_file(f))) |>
   purrr::list_rbind() |>
