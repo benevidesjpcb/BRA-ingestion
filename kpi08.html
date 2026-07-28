@@ -237,6 +237,28 @@ const state = { ring:null, year:null, metric:"add" };
 // distances (~10 min apart in the source) and must never be pooled
 const ovOf  = y => (DATA.overall[state.ring] || {})[y];
 const moOf  = y => (DATA.monthly[state.ring] || {})[y];
+
+// A month is {add, mvts} (older payloads carry a bare number). Months whose
+// sample is negligible are not plotted: a source extract that ends at midnight
+// leaves a single boundary arrival in the next month, and one flight is not a
+// monthly average — drawn as a point it reads as a collapse in performance.
+const MIN_MONTH_SHARE = 0.05;      // of that ring/year's median month
+function monthSeries(year){
+  const mm = moOf(year); if (!mm) return {};
+  const val = m => (mm[m] && typeof mm[m] === "object") ? mm[m].add : mm[m];
+  const cnt = m => (mm[m] && typeof mm[m] === "object") ? mm[m].mvts : null;
+  const counts = MONTHS.map(cnt).filter(v => v != null && v > 0).sort((a,b)=>a-b);
+  const median = counts.length ? counts[Math.floor(counts.length/2)] : null;
+  const out = {};
+  for (const m of MONTHS){
+    const v = val(m); if (v == null) continue;
+    const n = cnt(m);
+    // keep months whose count is unknown (legacy payload) or big enough
+    if (median != null && n != null && n < median * MIN_MONTH_SHARE) continue;
+    out[m] = v;
+  }
+  return out;
+}
 const aptEntries = () => Object.entries(DATA.airports)
   .map(([icao,byRing]) => ({icao, d: ((byRing[state.ring] || {})[state.year])}))
   .filter(r => r.d);
@@ -509,9 +531,8 @@ function renderTrend(){
   const x0 = padL, x1 = w - padR, yTop = padT, yBot = h - padB;
 
   const allVals = [];
-  DATA.years.forEach(y => MONTHS.forEach(m => {
-    const mm = moOf(y); const v = mm && mm[m]; if (v!=null) allVals.push(v);
-  }));
+  DATA.years.forEach(y => { const mm = monthSeries(y);
+    MONTHS.forEach(m => { if (mm[m]!=null) allVals.push(mm[m]); }); });
   if (!allVals.length){ host.innerHTML = `<p class="note">No monthly data.</p>`; return; }
   const max = niceMax(Math.max(...allVals));
   yAxis(s, x0, x1, yTop, yBot, max);
@@ -527,7 +548,7 @@ function renderTrend(){
   // ending at a similar value never print on top of each other
   const labels = [];
   const draw = (year, isCurrent) => {
-    const mm = moOf(year); if (!mm) return;
+    const mm = monthSeries(year); if (!Object.keys(mm).length) return;
     const pts = MONTHS.map((m,i)=> mm[m]!=null ? [xAt(i), yAt(mm[m])] : null).filter(Boolean);
     if (pts.length < 2) return;
     const d = pts.map((p,i)=> (i?"L":"M")+p[0]+","+p[1]).join(" ");

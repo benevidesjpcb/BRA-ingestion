@@ -90,13 +90,18 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
 
   ap_df <- agg(raw, c("ICAO", "RANGE", "YEAR"))
   ov_df <- agg(raw, c("RANGE", "YEAR"))
+  # Carry the movement count with each month, not just the average: a month can
+  # hold a single boundary flight (a source extract ending at midnight leaves one
+  # arrival in the next month), and one movement is not a monthly average.
   mo_df <- raw |>
     group_by(RANGE, YEAR, MONTH) |>
-    summarise(avg_add = round(sum(TOT_ADD_TIME) / sum(MVTS_VALID), 3), .groups = "drop")
+    summarise(avg_add = round(sum(TOT_ADD_TIME) / sum(MVTS_VALID), 3),
+              mvts = sum(MVTS_VALID), .groups = "drop")
 
   airports <- nest(ap_df, c("ICAO", "RANGE", "YEAR"), leaf)
   overall  <- nest(ov_df, c("RANGE", "YEAR"),        leaf)
-  monthly  <- nest(mo_df, c("RANGE", "YEAR", "MONTH"), function(r) r$avg_add)
+  monthly  <- nest(mo_df, c("RANGE", "YEAR", "MONTH"),
+                   function(r) list(add = r$avg_add, mvts = r$mvts))
 
   # a year whose last day is before 31 Dec is flagged as partial in the page
   partial <- list()
