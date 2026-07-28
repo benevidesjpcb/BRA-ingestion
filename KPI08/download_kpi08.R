@@ -172,9 +172,18 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
 
   # Which months does an existing year file already cover? Reads only the date
   # column, so a large year file is cheap to inspect. Returns integer months.
-  months_in_year_file <- function(path) {
-    if (!file.exists(path)) return(integer(0))
-    dates <- tryCatch({
+  # How many days of the year is a month, at minimum, expected to have? A month
+  # downloaded while it was still the current one holds only part of its days, so
+  # "the file exists" is not evidence the month is complete: once that month falls
+  # into the past it would be skipped forever, frozen partial. Judge a month by
+  # the days it actually contains.
+  days_in_month <- function(yr, mo) {
+    first <- as.Date(sprintf("%d-%02d-01", yr, mo))
+    as.integer(seq(first, by = "month", length.out = 2)[2] - first)
+  }
+
+  read_date_col <- function(path) {
+    tryCatch({
       if (requireNamespace("data.table", quietly = TRUE))
         data.table::fread(path, sep = ";", select = date_col,
                           colClasses = "character", na.strings = "",
@@ -183,9 +192,25 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
         utils::read.csv(path, sep = ";", colClasses = "character",
                         na.strings = "")[[date_col]]
     }, error = function(e) NULL)
+  }
+
+  # distinct days present per month, from any file holding the date column
+  month_day_counts <- function(path) {
+    if (!file.exists(path)) return(integer(0))
+    dates <- read_date_col(path)
     if (is.null(dates) || length(dates) == 0) return(integer(0))
-    mo <- suppressWarnings(as.integer(substr(dates, 6, 7)))
-    sort(unique(mo[!is.na(mo)]))
+    d <- unique(substr(dates[!is.na(dates)], 1, 10))
+    mo <- suppressWarnings(as.integer(substr(d, 6, 7)))
+    table(mo[!is.na(mo)])
+  }
+
+  # Months a file covers well enough to skip. One missing day is tolerated, so a
+  # source that genuinely has no movements on a single day does not cause the
+  # month to be re-fetched on every run.
+  complete_months <- function(counts, yr) {
+    if (length(counts) == 0) return(integer(0))
+    mo <- as.integer(names(counts))
+    mo[as.integer(counts) >= days_in_month(yr, mo) - 1L]
   }
 
   written <- character(0)
@@ -199,10 +224,15 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
 
     # months already held by a previously downloaded year file count as done, so
     # an existing kpi08_<year>.csv is not downloaded all over again
-    have_months <- if (force) integer(0) else months_in_year_file(out_csv)
+    year_counts <- if (force) integer(0) else month_day_counts(out_csv)
+    have_months <- complete_months(year_counts, yr)
+    partial_in_file <- setdiff(as.integer(names(year_counts)), have_months)
     if (length(have_months) > 0)
       message(sprintf("Year %d: existing file already covers month(s) %s",
                       yr, paste(sprintf("%02d", have_months), collapse = ", ")))
+    if (length(partial_in_file) > 0)
+      message(sprintf("Year %d: month(s) %s are only partially covered; re-fetching",
+                      yr, paste(sprintf("%02d", partial_in_file), collapse = ", ")))
     message(sprintf("Year %d: months 01-%02d", yr, last_month))
 
     for (mo in seq_len(last_month)) {
@@ -213,7 +243,20 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
                    else sprintf("%d-%02d-01", yr, mo + 1L)
 
       is_open <- (yr == this_year && mo == this_month)   # still receiving data
-      already <- file.exists(part_csv) || mo %in% have_months
+      # A saved part is only evidence of a finished month if it actually holds the
+      # month's days. A part written while the month was still open holds a few
+      # days; once the month passes it would otherwise be skipped forever.
+      part_ok <- if (!file.exists(part_csv)) FALSE else {
+        cnt <- month_day_counts(part_csv)
+        # An empty part is the marker for a past month the API had no rows for;
+        # that is a finished answer, not a partial one.
+        if (length(cnt) == 0) file.info(part_csv)$size < 1024
+        else mo %in% complete_months(cnt, yr)
+      }
+      already <- part_ok || mo %in% have_months
+      if (file.exists(part_csv) && !part_ok && !is_open)
+        message(sprintf("  %d-%02d  re-fetching (saved part covers only part of the month)",
+                        yr, mo))
       if (already && !is_open && !force) {
         message(sprintf("  %d-%02d  skip (already have)", yr, mo)); next
       }
