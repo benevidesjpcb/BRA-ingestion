@@ -533,6 +533,34 @@ The `AVG_ADD_TIME` (in-repo GANP p20 reference) and `AVG_BRA_KPI08` (Brazil-supp
 `kpi08`) columns are directly comparable: a close match validates that the in-repo
 reference reproduces the supplied KPI08 for the populated rows.
 
+## Validation Against the Official Report
+
+`KPI08/validate_asma_golden.R` compares this pipeline's output with the reference file
+used in the official report (`golden/`), group by group on the full reference key.
+
+**2024 reproduces exactly**: 164,244 groups, 1,152,288 valid movements, 271,360 without a
+reference and 3,100,634 minutes of additional time — every figure identical to the
+reference. Across 2024–2025, 326,423 of 326,441 shared groups match on every column.
+
+The residual is 18 groups, all in late 2025, differing by 1–6 movements (0.0015% of the
+movements). The reference file was built from an archive received in April 2026 while this
+pipeline pulls from the ODIN API, so a handful of late-arriving or corrected 2025 records
+is expected. That the whole of 2024 matches to the unit is what rules out a difference in
+the calculation.
+
+Getting there required deriving three things from the reference rather than assuming them:
+the ASMA ring must come from the `c` column (the source carries both rings per arrival),
+the entry sector is the source's own 60-degree `setor` (not a compass binning), and the
+plausibility cap is 180 minutes for both rings.
+
+```{r}
+#| label: validate-bra-asma-golden
+#| eval: false
+
+source(here::here("KPI08", "validate_asma_golden.R"))
+validate_asma_golden()
+```
+
 ## Open Points to Confirm
 
 Before treating the output as final, confirm with DECEA/ICEA:

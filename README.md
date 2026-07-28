@@ -261,7 +261,21 @@ and writes the daily analytic ASMA table plus coverage summaries to `data/` — 
 Brazil-supplied `kpi08`/`transito`/`desimp` alongside for validation. Like the taxi
 pipeline, its `prepare-bra-asma-data` chunk is `eval: false` and is run once manually.
 
-> A few source conventions still need confirmation with DECEA/ICEA before the output is
-> final (what `c_time`/`bear` represent — C40 vs C100; the `feb`/`fev` monthly duplicate;
-> and that these files are arrival-only, so a separate DSMA source is needed for
+### Validating the ASMA reproduction
+
+`KPI08/validate_asma_golden.R` checks the output against the reference file used in the
+official report, stored in `golden/`, group by group on the full reference key:
+
+```r
+source(here::here("KPI08", "validate_asma_golden.R"))
+validate_asma_golden()
+```
+
+**2024 reproduces the official figures exactly** (1,152,288 valid movements, 3,100,634
+minutes of additional time); 326,423 of 326,441 shared 2024–2025 groups match on every
+column. The residual 18 groups are all in late 2025 and reflect the reference file and the
+ODIN API being different vintages of the same data, not a difference in calculation.
+
+> Some source conventions still need confirmation with DECEA/ICEA (the `feb`/`fev` monthly
+> duplicate, and that these files are arrival-only so a separate DSMA source is needed for
 > departures). These are listed at the end of the `.qmd`.
