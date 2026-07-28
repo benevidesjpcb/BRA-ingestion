@@ -21,7 +21,7 @@ and daily additional time) is computed in this repository with base tidyverse, s
 | `data/apdf/` | Generated harmonised parquet extracts | no |
 | `outputs/` | Generated per-year daily outputs | no (only `.gitkeep`) |
 | `index.html` | Interactive dashboard — reads the CSVs in `data/` live | yes |
-| `index-data.js` | Numbers the dashboard loads, written by `build_dashboard.R` | no (git-ignored) |
+| `index-data.js` | Numbers the dashboard loads, written by `build_taxi_dashboard.R` | no (git-ignored) |
 | `golden/` | Reference result CSVs used to validate the reproduction | yes |
 | `_chapter-setup.R` | Shared libraries, project paths, analysis parameters | yes |
 | `Taxi-BRA-ingestion.qmd` | The documented pipeline | yes |
@@ -68,7 +68,19 @@ Change the study period (`asma_data_years`) or the reference year there and the 
 names, regex, download years, and reporting period follow automatically — the `.qmd`
 files only source this script.
 
-## Dashboard
+## Dashboards
+
+There are **two**, one per metric. Each has its own page and its own build script:
+
+| Metric | Page | Build script | Shows |
+| --- | --- | --- | --- |
+| Taxi time | `index.html` | `build_taxi_dashboard.R` | Brazil × Europe, arrivals and departures |
+| ASMA (KPI08) | `kpi08.html` | `KPI08/build_kpi08_dashboard.R` | Brazil only, arrivals, C40 / C100 rings |
+
+Both pages live at the repository root so GitHub Pages can serve them, and both load
+their numbers from a generated, git-ignored `*-data.js` beside them.
+
+### Taxi time
 
 `index.html` is a self-contained interactive dashboard comparing taxi time between
 Brazil and Europe. It has **no build step**: it reads the analytic CSVs in `data/`
@@ -78,7 +90,7 @@ live in the browser and discovers the available years and airports on its own.
 
 The page loads its numbers from a small generated file beside it, so:
 
-1. Run once: **`Rscript build_dashboard.R`** — it reads `data/` and writes
+1. Run once: **`Rscript build_taxi_dashboard.R`** — it reads `data/` and writes
    **`index-data.js`**. (Needs R with the `jsonlite` package: `install.packages("jsonlite")`.)
 2. **Double-click `index.html`.** It opens in your browser, offline, no server needed.
 
@@ -117,7 +129,7 @@ where `<REGION>` is `BRA` or `EUR`. So:
 | **Add more airports** | Nothing — new ICAO codes in the CSVs appear automatically. Add a label in `CONFIG.names` (in `index.html`) if you want a name instead of the code. |
 
 No code edit is needed for years or airports. After changing files in `data/`, run
-**`Rscript build_dashboard.R`** to refresh `index-data.js` for the double-click page.
+**`Rscript build_taxi_dashboard.R`** to refresh `index-data.js` for the double-click page.
 (A published/served copy reads `data/` live, so it updates on its own once you commit
 and `push`.)
 

@@ -188,12 +188,12 @@
 
 <div id="tip" role="status" aria-live="polite"></div>
 
-<!-- Data embedded by build_dashboard.R so the page opens by double-click (offline).
+<!-- Data embedded by build_taxi_dashboard.R so the page opens by double-click (offline).
      Left as {} it falls back to reading data/ live when served over HTTP. -->
 <!-- The numbers live in their OWN generated file, never inside this page: a build
      rewriting a tracked HTML file makes every rebuild a merge conflict. A plain
      <script src> also works from file://, so double-clicking still works offline.
-     index-data.js is written by build_dashboard.R; without it the page reads the
+     index-data.js is written by build_taxi_dashboard.R; without it the page reads the
      CSVs in data/ live (when served over HTTP). -->
 <script src="index-data.js" onerror="window.DASH_DATA=null"></script>
 
@@ -490,12 +490,12 @@ function boot(d){
   let embedded=null;
   try{ const j=window.DASH_DATA; if(j&&j.years&&j.years.length) embedded=j; }catch(e){}
   if(embedded){
-    document.getElementById('foot-data-src').textContent='Loaded from index-data.js — refresh with Rscript build_dashboard.R after changing data/.';
+    document.getElementById('foot-data-src').textContent='Loaded from index-data.js — refresh with Rscript build_taxi_dashboard.R after changing data/.';
     boot(embedded); return;
   }
   // 2) No embedded data and opened as a local file → explain how to build it.
   if(location.protocol==='file:'){
-    stateBox.innerHTML='<h3>Build the page once</h3>This copy has no data file yet. Run <code>Rscript build_dashboard.R</code> in the repo (it reads <code>data/</code> and writes <code>index-data.js</code> next to this page), then just double-click <code>index.html</code> — no server needed.';
+    stateBox.innerHTML='<h3>Build the page once</h3>This copy has no data file yet. Run <code>Rscript build_taxi_dashboard.R</code> in the repo (it reads <code>data/</code> and writes <code>index-data.js</code> next to this page), then just double-click <code>index.html</code> — no server needed.';
     return;
   }
   // 3) Served over HTTP → read the CSVs in data/ live.
