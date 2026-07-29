@@ -22,6 +22,40 @@ The project paths and analysis parameters are defined once in `_chapter-setup.R`
 The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Before rendering, place them in `data-raw/` (or set the `BRA_TAXI_ZIP` environment variable) and run the `prepare-bra-taxi-data` chunk once to generate the analytic outputs. Until then, the tables below render with a short notice instead of failing. See `README.md` for the full setup.
 :::
 
+## Getting the Source Data
+
+Unlike the ASMA/KPI08 side, taxi time has **no API**: the `dsTaxiYYYY.csv` files are
+delivered as an archive and are not shipped with the repository. Provide them in one of
+two ways, then everything below runs from the project root on any machine:
+
+- copy the `dsTaxiYYYY.csv` files into `data-raw/`, or
+- set `BRA_TAXI_ZIP` to a zip archive containing them (nothing is unpacked into the
+  project tree; the preparation reads the members directly).
+
+```{r}
+#| label: check-bra-taxi-data
+
+# what is on disk right now, and what to do if nothing is
+have_files <- list.files(bra_raw_data_dir, pattern = "^dsTaxi20\\d{2}\\.csv$")
+have_zip   <- Sys.getenv("BRA_TAXI_ZIP", unset = "")
+
+status <- if (length(have_files) > 0) {
+  tibble::tibble(
+    source = paste0(length(have_files), " file(s) in ", bra_raw_data_dir),
+    years  = paste(sort(stringr::str_extract(have_files, "\\d{4}")), collapse = ", ")
+  )
+} else if (nzchar(have_zip) && file.exists(have_zip)) {
+  tibble::tibble(source = paste0("zip archive: ", basename(have_zip)), years = "read on demand")
+} else {
+  tibble::tibble(
+    source = "no source data yet",
+    years  = paste0("copy dsTaxiYYYY.csv into ", bra_raw_data_dir,
+                    ", or set BRA_TAXI_ZIP to an archive holding them")
+  )
+}
+knitr::kable(status)
+```
+
 ## Source Inventory
 
 ```{r}
@@ -219,10 +253,16 @@ read_bra_taxi_year <- function(year) {
 prepare_txxt <- function(df) {
   df |>
     mutate(
-      TXXT = if_else(
-        PHASE == "ARR",
-        as.numeric(difftime(BLOCK_TIME, MVT_TIME, units = "mins")),
-        as.numeric(difftime(MVT_TIME, BLOCK_TIME, units = "mins"))
+      # Taxi runs in opposite directions per phase, so only the order of the
+      # subtraction changes. Spelled out rather than left as the "else" branch of
+      # an if_else: DEP is a case in its own right, and any unexpected phase
+      # yields NA instead of silently being treated as a departure.
+      TXXT = case_when(
+        # taxi-in: landing -> on-block
+        PHASE == "ARR" ~ as.numeric(difftime(BLOCK_TIME, MVT_TIME, units = "mins")),
+        # taxi-out: off-block -> take-off
+        PHASE == "DEP" ~ as.numeric(difftime(MVT_TIME, BLOCK_TIME, units = "mins")),
+        TRUE ~ NA_real_
       ),
       DATE = as_date(coalesce(BLOCK_TIME, MVT_TIME)),
       VALID_TXXT = !is.na(TXXT) & TXXT > 0 & TXXT <= max_txxt
@@ -377,3 +417,82 @@ if (file.exists(coverage_path)) {
 
 The current extracts retain the source KPI payload in the harmonised parquet files for later diagnostic comparison.
 It is not used in the 2024 GANP 20th percentile PBWG reference calculation.
+
+## Validation Against the Original Results
+
+`reproduce_txxt.R` rebuilds the daily analytic outputs straight from the raw data and
+compares them row by row with the original PBWG results kept in `golden/`. It is the
+regression check that proves this repository's metric reproduces the published figures
+without the private `PBWG` package.
+
+It reads the raw source, so it is `eval: false` and run on demand.
+
+```{r}
+#| label: validate-bra-taxi-golden
+#| eval: false
+
+source(here::here("reproduce_txxt.R"))
+```
+
+```{r}
+#| label: check-bra-taxi-golden
+
+# which reference files are available to validate against
+gold <- list.files(here::here("golden"), pattern = bra_txxt_analytic_pattern)
+knitr::kable(tibble::tibble(
+  `golden files` = if (length(gold) == 0) "none found in golden/" else
+    paste(sort(gold), collapse = ", "),
+  status = if (length(gold) == 0)
+    "nothing to validate against" else
+    "run the `validate-bra-taxi-golden` chunk above to compare"
+))
+```
+
+## Dashboard
+
+`index.html` is the interactive companion to this document: taxi time and additional time
+per movement, Brazil against Europe, by year, airport and month.
+
+The page carries its numbers in a generated `index-data.js` beside it, so it opens offline
+by double-clicking. Run the chunk below whenever the analytic CSVs change to refresh them.
+It is `eval: false` so rendering this document never rewrites the dashboard by surprise.
+
+```{r}
+#| label: build-bra-taxi-dashboard
+#| eval: false
+
+source(here::here("build_taxi_dashboard.R"))
+```
+
+```{r}
+#| label: check-bra-taxi-dashboard
+
+# is the page currently carrying data, or does it still need a build?
+dash_file <- here::here("index.html")
+data_file <- here::here("index-data.js")
+dash_state <- if (!file.exists(dash_file)) {
+  "index.html not found"
+} else if (!file.exists(data_file)) {
+  "no data yet — run the `build-bra-taxi-dashboard` chunk above"
+} else {
+  paste0("built ", format(file.info(data_file)$mtime, "%Y-%m-%d %H:%M"),
+         " — open index.html to view the dashboard")
+}
+knitr::kable(tibble::tibble(dashboard = basename(dash_file), status = dash_state))
+```
+
+## The Pipeline End to End
+
+Every step of the taxi-time workflow lives in this document, in the order it runs:
+
+| Step | Section | Chunk | Runs on render? |
+| --- | --- | --- | --- |
+| 1. Provide the source | Getting the Source Data | `check-bra-taxi-data` | yes (reports only) |
+| 2. Inspect what arrived | Source Inventory | `tbl-bra-source-inventory` | yes |
+| 3. Harmonise and compute | Preparation Code | `prepare-bra-taxi-data` | **no** — run once, manually |
+| 4. Check what was produced | Retained Artefacts / Coverage Check | `tbl-bra-*` | yes |
+| 5. Validate against `golden/` | Validation | `validate-bra-taxi-golden` | **no** — reads the raw source |
+| 6. Refresh the dashboard | Dashboard | `build-bra-taxi-dashboard` | **no** — writes a file |
+
+The three heavy steps are `eval: false` on purpose: rendering the document is a read-only
+report of the current state, never a re-run of the pipeline.
