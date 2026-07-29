@@ -170,6 +170,12 @@ folder so it stays independent of the `dsTaxi`/TATIC ingestion.
 | `data-raw/kpi08/` | Raw `kpi08_*.csv` source files (and `parts/` month files) | no (git-ignored) |
 | `data/asma/` | Generated harmonised ASMA parquet extracts | no (git-ignored) |
 
+The ASMA parquet follows the APDF convention: **one row per arrival**, with the two ASMA
+rings side by side as `C40_`/`C100_` prefixed columns (`CROSS_TIME`, `BEARING`, `SECTOR`,
+`SECTOR_GROUP`, `TRANSIT`, `UNIMPEDED`, `KPI08`). Both ring times are therefore readable
+from a single row, with no filtering or self-join. The metric itself works on the long
+shape internally, because the reference is built per ring.
+
 Both scripts are usable two ways: `Rscript KPI08/<script>.R` from a terminal, or
 `source()` + call the function from R — which is how the `.qmd` chunks drive them.
 
