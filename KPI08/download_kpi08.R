@@ -122,17 +122,15 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
     filters <- list(
       and = sprintf("(%s.gte.%s,%s.lt.%s)", date_col, from_date, date_col, to_date)
     )
-    rows   <- list()
-    offset <- 0L
-    total  <- 0L
+    rows    <- list()
+    offset  <- 0L
+    total   <- 0L
+    first_n <- NA_integer_
     repeat {
       page <- fetch_page(filters, offset)
       n <- if (is.data.frame(page)) nrow(page) else 0L
       if (n == 0L) break                  # an empty page is the only end signal
-      if (offset == 0L && n < page_size)
-        message(sprintf("    note: server capped the page at %d rows (asked %d); ",
-                        n, page_size),
-                "raising ODIN_PAGE_SIZE further will not help.")
+      if (offset == 0L) first_n <- n      # remembered to tell a cap from a short window
       rows[[length(rows) + 1L]] <- page
       total  <- total + n
       # advance by what the server actually returned: PostgREST may cap the page
@@ -141,6 +139,12 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
       offset <- offset + n
       message(sprintf("    +%-6d rows  (total %d)", n, total))
     }
+    # A short first page only means the server capped it if more pages followed;
+    # if that page was the whole window, the window simply held fewer rows.
+    if (!is.na(first_n) && first_n < page_size && total > first_n)
+      message(sprintf("    note: the server caps the page at %d rows (asked %d); ",
+                      first_n, page_size),
+              "raising ODIN_PAGE_SIZE further will not help.")
     if (length(rows) == 0) return(NULL)
     kpi08_rbind_fill(rows)
   }

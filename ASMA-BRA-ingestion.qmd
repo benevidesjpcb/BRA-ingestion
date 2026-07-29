@@ -494,22 +494,33 @@ if (length(parq) == 0) {
   ))
 } else {
   # per YEAR *and* RANGE: the two rings are ~10 minutes apart, so a table that
-  # pooled them would compare the ring mix rather than the operation
+  # pooled them would compare the ring mix rather than the operation.
+  # The extract stores one row per arrival with the rings as C40_/C100_ columns,
+  # so each ring is read from its own prefix and stacked back into rows here.
   lvl <- purrr::map(parq, function(f) {
-    arrow::read_parquet(f) |>
-      dplyr::mutate(
-        YEAR = lubridate::year(ALDT),
-        TRANSIT = as.numeric(difftime(ALDT, C_CROSS_TIME, units = "mins"))
-      ) |>
-      dplyr::group_by(YEAR, RANGE) |>
-      dplyr::summarise(
-        N = dplyr::n(),
-        MED_TRANSIT = round(median(TRANSIT, na.rm = TRUE), 2),
-        MED_SUPPLIED_ADD = round(median(ASMA_ADD_SUPPLIED, na.rm = TRUE), 2),
-        NO_CROSSING_PCT = round(100 * mean(is.na(C_CROSS_TIME)), 1),
-        .groups = "drop"
+    d <- arrow::read_parquet(f)
+    purrr::map(asma_rings, function(ring) {
+      cross <- d[[paste0(ring, "_CROSS_TIME")]]
+      kpi   <- d[[paste0(ring, "_KPI08")]]
+      if (is.null(cross)) return(NULL)          # ring absent from this extract
+      tibble::tibble(
+        YEAR     = lubridate::year(d$ALDT),
+        RANGE    = ring,
+        TRANSIT  = as.numeric(difftime(d$ALDT, cross, units = "mins")),
+        SUPPLIED = kpi,
+        NO_CROSS = is.na(cross)
       )
-  }) |> purrr::list_rbind() |> dplyr::arrange(RANGE, YEAR)
+    }) |> purrr::list_rbind()
+  }) |> purrr::list_rbind() |>
+    dplyr::group_by(YEAR, RANGE) |>
+    dplyr::summarise(
+      N = dplyr::n(),
+      MED_TRANSIT = round(median(TRANSIT, na.rm = TRUE), 2),
+      MED_SUPPLIED_ADD = round(median(SUPPLIED, na.rm = TRUE), 2),
+      NO_CROSSING_PCT = round(100 * mean(NO_CROSS), 1),
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(RANGE, YEAR)
 
   # 1 minute is well inside year-to-year operational drift; beyond that the years
   # are not on the same ruler and the shared reference cannot be trusted
