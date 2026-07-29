@@ -158,6 +158,17 @@ annual files are semicolon-delimited.
 about 10 minutes apart, so they are carried as separate `RANGE` values (`C40`, `C100`) and
 never pooled: the reference is computed per ring and the dashboard switches between them.
 
+The two shapes serve different purposes and both exist on purpose:
+
+| Shape | Where | Why |
+| --- | --- | --- |
+| **long** — one row per arrival *per ring*, with `RANGE` | in memory, during preparation | the reference is built per ring, so the metric needs the rings as rows |
+| **wide** — one row per arrival, rings as columns | the stored parquet extract | the APDF convention: `C40_CROSS_TIME`, `C100_CROSS_TIME`, `C40_TRANSIT`, `C100_TRANSIT` … so both rings can be read from one row |
+
+The parquet columns are the identity and aircraft fields once, then per ring:
+`<RING>_CROSS_TIME`, `<RING>_BEARING`, `<RING>_SECTOR`, `<RING>_SECTOR_GROUP`,
+`<RING>_TRANSIT`, `<RING>_UNIMPEDED` and `<RING>_KPI08`.
+
 ## Preparation Code
 
 The following chunk is the reproducible preparation script. It is not evaluated during
@@ -370,11 +381,37 @@ harmonised <- purrr::map(raw_files, function(f) harmonise_bra_asma(read_bra_asma
   # silently deletes a whole ring.
   distinct(IM_SAMAD_ID, RANGE, .keep_all = TRUE)
 
+# ---- APDF-like extract: one row per arrival, both rings side by side --------
+# The metric works on the long shape (one row per arrival PER RING), because the
+# reference is built per ring. The stored extract, however, follows the APDF
+# convention of one row per movement with the rings as columns — C40_CROSS_TIME,
+# C100_CROSS_TIME and so on — so both rings can be read without pivoting or
+# self-joining the file.
+to_apdf_wide <- function(df) {
+  df |>
+    select(IM_SAMAD_ID, FLTID, ADEP, ADES, ICAO, PHASE, REG, ARCTYP, CLASS,
+           RWY, STND, ALDT, AIBT, SIBT, YEAR, RANGE,
+           CROSS_TIME = C_CROSS_TIME, BEARING, SECTOR, SECTOR_GROUP,
+           TRANSIT = ASMA_TRANSIT, UNIMPEDED = ASMA_UNIMPEDED,
+           KPI08 = ASMA_ADD_SUPPLIED) |>
+    tidyr::pivot_wider(
+      id_cols = c(IM_SAMAD_ID, FLTID, ADEP, ADES, ICAO, PHASE, REG, ARCTYP,
+                  CLASS, RWY, STND, ALDT, AIBT, SIBT, YEAR),
+      names_from  = RANGE,
+      values_from = c(CROSS_TIME, BEARING, SECTOR, SECTOR_GROUP,
+                      TRANSIT, UNIMPEDED, KPI08),
+      names_glue  = "{RANGE}_{.value}"
+    )
+}
+
 # write one harmonised parquet extract per year
 walk(asma_data_years, function(y) {
   ext <- filter(harmonised, YEAR == y)
-  if (nrow(ext) > 0)
-    write_parquet(ext, path(bra_asma_apdf_dir, paste0("PBWG-BRA-asma-apdf-", y, ".parquet")))
+  if (nrow(ext) > 0) {
+    wide <- to_apdf_wide(ext)
+    write_parquet(wide, path(bra_asma_apdf_dir, paste0("PBWG-BRA-asma-apdf-", y, ".parquet")))
+    message(sprintf("  %d: %d arrival(s) -> %d column(s)", y, nrow(wide), ncol(wide)))
+  }
 })
 
 movements <- prepare_asma(harmonised)
