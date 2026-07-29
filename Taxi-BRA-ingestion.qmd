@@ -24,13 +24,29 @@ The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Before r
 
 ## Getting the Source Data
 
-Unlike the ASMA/KPI08 side, taxi time has **no API**: the `dsTaxiYYYY.csv` files are
-delivered as an archive and are not shipped with the repository. Provide them in one of
-two ways, then everything below runs from the project root on any machine:
+An API for the taxi source is planned but **not available yet**, so today the
+`dsTaxiYYYY.csv` files arrive as an archive. They are not shipped with the repository;
+provide them in one of two ways and everything below runs from the project root on any
+machine:
 
 - copy the `dsTaxiYYYY.csv` files into `data-raw/`, or
 - set `BRA_TAXI_ZIP` to a zip archive containing them (nothing is unpacked into the
   project tree; the preparation reads the members directly).
+
+::: {.callout-note}
+## When the API arrives
+It slots in here, following the shape already proven on the KPI08 side: a
+`download_taxi(years, out_dir)` function in its own script, sourced by an `eval: false`
+chunk in this section, writing one file per year into `data-raw/`. Everything downstream —
+the inventory, the preparation, the validation, the dashboard — reads from `data-raw/` and
+does not care how the files got there, so no other section changes.
+
+Two lessons from the KPI08 downloader are worth carrying over: fetch in windows small
+enough to save progress as it goes (a long run that only writes at the end loses
+everything when it is interrupted), and judge a period as already downloaded by the days
+it actually contains, not by a file existing — a period fetched while still open is
+partial and must be fetched again later.
+:::
 
 ```{r}
 #| label: check-bra-taxi-data

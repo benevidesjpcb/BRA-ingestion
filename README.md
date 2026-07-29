@@ -33,7 +33,8 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 ## How to run anywhere
 
 1. **Clone** the repository and open the project (`BRA-ingestion.Rproj`).
-2. **Provide the source data** — either:
+2. **Provide the source data.** An API for the taxi source is planned but not available
+   yet, so for now either:
    - copy `dsTaxi2023.csv`, `dsTaxi2024.csv`, `dsTaxi2025.csv` into `data-raw/`, **or**
    - set the environment variable `BRA_TAXI_ZIP` to a zip archive that contains them.
 3. **Run the preparation.** The `prepare-bra-taxi-data` chunk is `eval: false`
