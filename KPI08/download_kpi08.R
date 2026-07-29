@@ -177,9 +177,16 @@ download_kpi08 <- function(years   = as.integer(format(Sys.Date(), "%Y")),
   # "the file exists" is not evidence the month is complete: once that month falls
   # into the past it would be skipped forever, frozen partial. Judge a month by
   # the days it actually contains.
+  # Vectorised over `mo`: it is called with every month a file holds at once, and
+  # seq() on dates only accepts a single `from`. The next month's first day is
+  # built arithmetically instead, rolling the year over at December.
   days_in_month <- function(yr, mo) {
+    mo    <- as.integer(mo)
     first <- as.Date(sprintf("%d-%02d-01", yr, mo))
-    as.integer(seq(first, by = "month", length.out = 2)[2] - first)
+    nxt   <- as.Date(sprintf("%d-%02d-01",
+                             yr + as.integer(mo == 12L),
+                             ifelse(mo == 12L, 1L, mo + 1L)))
+    as.integer(nxt - first)
   }
 
   read_date_col <- function(path) {
