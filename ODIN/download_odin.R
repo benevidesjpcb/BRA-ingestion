@@ -51,6 +51,42 @@ flatten_list_cols <- function(df) {
   df
 }
 
+# =============================================================================
+# odin_probe(table, n)
+#
+# One small request against a table, to confirm an endpoint and its column names
+# BEFORE committing to a download that takes hours. Prints the columns and shows
+# the first rows, so `date_col` and `id_col` can be chosen from what is actually
+# there rather than guessed.
+#
+#   odin_probe("total_brasil")     # -> columns, incl. which date columns exist
+# =============================================================================
+odin_probe <- function(table, n = 5L) {
+  api_root <- Sys.getenv("ODIN_API_ROOT",
+                         unset = "https://odin-ms.icea.decea.mil.br/api")
+  req <- httr2::request(paste0(api_root, "/", table)) |>
+    httr2::req_url_query(limit = n) |>
+    httr2::req_user_agent(paste0("BRA-ingestion/", table)) |>
+    httr2::req_timeout(120)
+  token <- Sys.getenv("ODIN_TOKEN", unset = "")
+  if (nzchar(token))
+    req <- httr2::req_headers(req, Authorization = paste("Bearer", token))
+
+  df <- flatten_list_cols(
+    jsonlite::fromJSON(httr2::resp_body_string(httr2::req_perform(req)),
+                       flatten = TRUE))
+  if (!is.data.frame(df) || nrow(df) == 0) {
+    message("The endpoint answered, but with no rows."); return(invisible(df))
+  }
+  message("Columns (", ncol(df), "): ", paste(names(df), collapse = ", "))
+  # anything that looks like a date/time is a candidate for date_col
+  cand <- grep("^(dt|dh|d[ah]_|.*(data|date|time|dt|hora)).*", names(df),
+               value = TRUE, ignore.case = TRUE)
+  if (length(cand) > 0)
+    message("Date-like column(s): ", paste(cand, collapse = ", "))
+  invisible(df)
+}
+
 odin_rbind_fill <- function(lst) {
   cols <- unique(unlist(lapply(lst, names)))
   lst <- lapply(lst, function(d) {
@@ -180,9 +216,13 @@ download_odin <- function(table,
     utils::write.table(df, path, sep = ";", row.names = FALSE,
                        quote = TRUE, na = "", fileEncoding = "UTF-8")
   }
+  # fread(path) treats its first argument as `input`, which on a path holding
+  # spaces (OneDrive folders do) is read as a literal string instead of a file.
+  # Passing file = is the only form that is unambiguous.
   read_csv2 <- function(path) {
     if (requireNamespace("data.table", quietly = TRUE))
-      as.data.frame(data.table::fread(path, sep = ";", colClasses = "character",
+      as.data.frame(data.table::fread(file = path, sep = ";",
+                                      colClasses = "character",
                                       na.strings = "", showProgress = FALSE))
     else
       utils::read.csv(path, sep = ";", colClasses = "character",
@@ -211,7 +251,7 @@ download_odin <- function(table,
   read_date_col <- function(path) {
     tryCatch({
       if (requireNamespace("data.table", quietly = TRUE))
-        data.table::fread(path, sep = ";", select = date_col,
+        data.table::fread(file = path, sep = ";", select = date_col,
                           colClasses = "character", na.strings = "",
                           showProgress = FALSE)[[1]]
       else

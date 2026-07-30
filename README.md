@@ -205,6 +205,19 @@ shorter `totalbr_<year>.csv`.
 > repeats on every flight of that route. De-duplicating on it would delete almost
 > everything.
 
+Before a first download of a table, check the endpoint with a single small request instead
+of discovering a wrong column name hours in:
+
+```r
+source(here::here("ODIN", "download_odin.R"))
+odin_probe("total_brasil")   # prints the columns and flags the date-like ones
+```
+
+Every column the engine keys on is overridable per dataset without touching code —
+`TOTALBR_DATE_COL`, `TOTALBR_ID_COL`, `TOTALBR_DEDUP_COL` (and `ODIN_DATE_COL`,
+`ODIN_ID_COL`, `ODIN_RING_COL` for KPI08) — so if the probe disagrees with the table
+above, set the variable rather than editing the wrapper.
+
 ### The ODIN API (PostgREST)
 
 Base endpoint: `https://odin-ms.icea.decea.mil.br/api/kpi08`
