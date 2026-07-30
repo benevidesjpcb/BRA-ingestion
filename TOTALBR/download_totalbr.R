@@ -2,7 +2,7 @@
 # =============================================================================
 # download_totalbr.R
 #
-# Downloads the TOTALBR dataset from the ICEA/DECEA ODIN API into ONE FILE PER
+# Downloads the TOTALBR dataset (ODIN table `total_brasil`) into ONE FILE PER
 # YEAR, fetching one month at a time and resuming whatever is already on disk.
 #
 # The download logic lives in ODIN/download_odin.R and is shared with every
@@ -45,7 +45,10 @@ download_totalbr <- function(years   = as.integer(format(Sys.Date(), "%Y")),
                              force   = FALSE) {
   dedup <- Sys.getenv("TOTALBR_DEDUP_COL", unset = "")
   download_odin(
-    table     = "totalbr",
+    # the ODIN table is total_brasil; the shorter `totalbr` names the files and
+    # the folder, so the endpoint and the local naming stay independent
+    table     = Sys.getenv("TOTALBR_TABLE", unset = "total_brasil"),
+    prefix    = "totalbr",
     years     = years,
     out_dir   = out_dir,
     date_col  = Sys.getenv("TOTALBR_DATE_COL", unset = "dt_dia"),

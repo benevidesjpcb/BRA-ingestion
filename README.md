@@ -187,7 +187,7 @@ wrapper per dataset supplying only what differs:
 | Dataset | Wrapper | Table | Date column | Unique key |
 | --- | --- | --- | --- | --- |
 | KPI08 (ASMA) | `KPI08/download_kpi08.R` | `kpi08` | `aldt` | `id` + `c` (the ASMA ring) |
-| TOTALBR | `TOTALBR/download_totalbr.R` | `totalbr` | `dt_dia` | `pk` |
+| TOTALBR | `TOTALBR/download_totalbr.R` | `total_brasil` | `dt_dia` | `pk` |
 
 The engine fetches **one month per request window**, saves each month as it arrives so an
 interrupted run keeps its progress, judges a month downloaded by the **days it contains**
@@ -196,8 +196,10 @@ advances pagination by the **rows actually returned** rather than the requested 
 collapses JSON array columns to pipe-separated strings so they survive the CSV.
 
 Earlier years already held as files go straight into the dataset's `data-raw/` folder with
-the same naming (`<table>_<year>.csv`); the downloader inspects what each covers and only
-fetches what is missing.
+the same naming (`<prefix>_<year>.csv`, e.g. `data-raw/totalbr/totalbr_2019.csv`); the
+downloader inspects what each covers and only fetches what is missing. The endpoint table
+and the local file prefix are separate, so TOTALBR reads `total_brasil` but writes the
+shorter `totalbr_<year>.csv`.
 
 > TOTALBR's unique key is `pk`, not `id`: `id` is the callsign plus the airport pair, so it
 > repeats on every flight of that route. De-duplicating on it would delete almost
