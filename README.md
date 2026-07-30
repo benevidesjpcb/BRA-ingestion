@@ -179,6 +179,30 @@ shape internally, because the reference is built per ring.
 Both scripts are usable two ways: `Rscript KPI08/<script>.R` from a terminal, or
 `source()` + call the function from R — which is how the `.qmd` chunks drive them.
 
+### One download engine, one folder per dataset
+
+Every ODIN table is fetched by the same engine, `ODIN/download_odin.R`, with a thin
+wrapper per dataset supplying only what differs:
+
+| Dataset | Wrapper | Table | Date column | Unique key |
+| --- | --- | --- | --- | --- |
+| KPI08 (ASMA) | `KPI08/download_kpi08.R` | `kpi08` | `aldt` | `id` + `c` (the ASMA ring) |
+| TOTALBR | `TOTALBR/download_totalbr.R` | `totalbr` | `dt_dia` | `pk` |
+
+The engine fetches **one month per request window**, saves each month as it arrives so an
+interrupted run keeps its progress, judges a month downloaded by the **days it contains**
+(a month fetched while still open is partial and is fetched again once it closes),
+advances pagination by the **rows actually returned** rather than the requested limit, and
+collapses JSON array columns to pipe-separated strings so they survive the CSV.
+
+Earlier years already held as files go straight into the dataset's `data-raw/` folder with
+the same naming (`<table>_<year>.csv`); the downloader inspects what each covers and only
+fetches what is missing.
+
+> TOTALBR's unique key is `pk`, not `id`: `id` is the callsign plus the airport pair, so it
+> repeats on every flight of that route. De-duplicating on it would delete almost
+> everything.
+
 ### The ODIN API (PostgREST)
 
 Base endpoint: `https://odin-ms.icea.decea.mil.br/api/kpi08`
