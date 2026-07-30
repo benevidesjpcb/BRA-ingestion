@@ -660,7 +660,7 @@ below whenever the analytic CSV changes to refresh those embedded numbers. It is
 # sourcing only defines build_kpi08_dashboard(); nothing is written until it is called
 source(here::here("KPI08", "build_kpi08_dashboard.R"))
 
-build_kpi08_dashboard(ring = asma_ring)
+build_kpi08_dashboard(rings = asma_rings)
 ```
 
 ```{r}

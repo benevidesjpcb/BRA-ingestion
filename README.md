@@ -205,6 +205,19 @@ shorter `totalbr_<year>.csv`.
 > repeats on every flight of that route. De-duplicating on it would delete almost
 > everything.
 
+`TOTALBR-BRA-ingestion.qmd` documents that dataset end to end, the same way
+`Taxi-BRA-ingestion.qmd` and `ASMA-BRA-ingestion.qmd` do their own: probe the endpoint,
+download, verify what arrived (year completeness, duplicate keys, month-by-month coverage)
+and profile the traffic. TOTALBR is the national movement table — one row per flight
+anywhere in Brazil — so unlike the other two it carries no metric, no reference year and no
+percentile; it is the volume/denominator dataset.
+
+| Path | Role | Tracked in git? |
+| --- | --- | --- |
+| `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
+| `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
+| `data-raw/totalbr/` | Raw `totalbr_*.csv` source files (and `parts/` month files) | no (git-ignored) |
+
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:
 

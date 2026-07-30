@@ -1,0 +1,376 @@
+# Brazil TOTALBR Ingestion
+
+```{r}
+#| label: setup
+#| include: false
+
+# Libraries, project paths and parameters — including every TOTALBR setting
+# (totalbr_data_years, the directories, the column names). Change the study
+# period there, not here.
+source(here::here("_chapter-setup.R"))
+```
+
+This note documents the preparation of the Brazilian **TOTALBR** files — the all-Brazil
+movement table, ODIN table `total_brasil`. It follows the same shape as
+`Taxi-BRA-ingestion.qmd` and `ASMA-BRA-ingestion.qmd`: get the data, check what arrived,
+inventory it, harmonise it, and verify the coverage before anything downstream uses it.
+
+TOTALBR differs from the other two in what it is *for*. Taxi-time and ASMA are performance
+metrics computed at the twelve study airports; TOTALBR is **national traffic volume** — one
+row per flight anywhere in Brazil, including aerodromes outside the study set and flights
+with no aerodrome at all (`AFIL` departures, `ZZZZ` destinations). It carries no times to
+subtract and no unimpeded reference, so there is no reference year and no percentile here.
+It is the denominator and the context: how much traffic there was, where, and of what kind.
+
+::: {.callout-important}
+## Prerequisites to run this document
+The raw `totalbr` CSV files are **not** shipped with the repository. Get them with the
+download chunk below (ODIN API), or drop files you already hold into
+`data-raw/totalbr/` named `totalbr_<year>.csv`. Until then, the tables below render with
+a short notice instead of failing.
+:::
+
+## Getting the Source Data
+
+### Check the endpoint first
+
+A full download runs for hours, so confirm the endpoint and its column names with a single
+small request before starting one. This is cheap and catches a renamed column immediately
+instead of after a wasted afternoon.
+
+```{r}
+#| label: probe-bra-totalbr-api
+#| eval: false
+
+source(here::here("ODIN", "download_odin.R"))
+odin_probe(totalbr_table)      # prints the columns and flags the date-like ones
+```
+
+Run on 2026-07-30 this answered with 18 columns —
+`pk, id, dt_dia, dh_inicio, dh_fim, co_indicativo, co_addep, co_addes, dh_eobt, dh_eet,
+co_matricula, co_modelo, ds_rota, li_orgaos, li_tipovoo, li_regravoo, li_prnav, li_rvsm` —
+of which five are date-like (`dt_dia`, `dh_inicio`, `dh_fim`, `dh_eobt`, `dh_eet`). That
+confirms the two choices the downloader is built on: the month windows filter on `dt_dia`,
+and the unique key is `pk`.
+
+### Download
+
+The chunk below is `eval: false` — the download is slow, so it is not executed on render;
+run it manually when you need data.
+
+It is **incremental and resumable**, exactly like the KPI08 downloader (they share the
+engine in `ODIN/download_odin.R`): one month per request window, each month saved under
+`parts/` the moment it arrives, and a month judged already-downloaded by **the days it
+contains** rather than by a file existing. So an interrupted run keeps everything it had,
+and a month fetched while it was still the current month is fetched again once it closes
+instead of staying frozen half-full.
+
+Years you already hold as files go straight into `data-raw/totalbr/` with the same naming
+(`totalbr_2019.csv`); the downloader inspects what each covers and fetches only the gaps.
+
+```{r}
+#| label: download-bra-totalbr-data
+#| eval: false
+
+# sourcing only defines download_totalbr(); nothing is fetched until it is called
+source(here::here("TOTALBR", "download_totalbr.R"))
+
+# the full study period; drop to the current year for the routine refresh
+download_totalbr(totalbr_data_years, out_dir = bra_totalbr_raw_dir)
+```
+
+## Checking What Arrived
+
+```{r}
+#| label: check-bra-totalbr-data
+
+# what is on disk right now, and what to do if nothing is
+have_files <- list.files(bra_totalbr_raw_dir,
+                         pattern = "^totalbr_[0-9]{4}\\.csv$")
+
+if (length(have_files) == 0) {
+  knitr::kable(tibble::tibble(
+    status = "no source data yet",
+    `what to do` = paste0(
+      "Run the `download-bra-totalbr-data` chunk above (or, from a terminal, ",
+      "`Rscript TOTALBR/download_totalbr.R ",
+      min(totalbr_data_years), " … ", max(totalbr_data_years), "`)."
+    )
+  ))
+} else {
+  knitr::kable(tibble::tibble(
+    status = paste0(length(have_files), " source file(s) in ", bra_totalbr_raw_dir),
+    years  = paste(sort(stringr::str_extract(have_files, "[0-9]{4}")), collapse = ", ")
+  ))
+}
+```
+
+## Source Inventory
+
+```{r}
+#| label: tbl-bra-totalbr-source-inventory
+#| tbl-cap: "Inventory of the raw TOTALBR source files"
+
+files <- list.files(bra_totalbr_raw_dir, pattern = "^totalbr_[0-9]{4}\\.csv$",
+                    full.names = TRUE)
+
+if (length(files) == 0) {
+  knitr::kable(tibble::tibble(
+    note = paste0("No source files in ", bra_totalbr_raw_dir,
+                  " yet. Run the `download-bra-totalbr-data` chunk above.")
+  ))
+} else {
+  purrr::map(files, function(file) {
+    tibble::tibble(
+      File        = basename(file),
+      Year        = stringr::str_extract(basename(file), "[0-9]{4}"),
+      `Size (MB)` = round(file.info(file)$size / 1024^2, 1),
+      Downloaded  = format(file.info(file)$mtime, "%Y-%m-%d %H:%M")
+    )
+  }) |>
+    purrr::list_rbind() |>
+    dplyr::arrange(Year) |>
+    knitr::kable()
+}
+```
+
+The files are semicolon-delimited UTF-8, written by the downloader. The per-month parts it
+fetched live under `data-raw/totalbr/parts/` and are what makes a re-run cheap; the year
+file is the merge of them, de-duplicated on `pk` and sorted by `dt_dia`.
+
+## What the Columns Mean
+
+| Source field | Meaning | Note |
+| --- | --- | --- |
+| `pk` | Row hash | **The unique key.** De-duplication keys on this |
+| `id` | Callsign + ADEP + ADES | e.g. `PPBLVSBPASBSM`. **Repeats** on every flight of that route — never a key |
+| `dt_dia` | Movement day/time | What the month windows filter on |
+| `dh_inicio` | Start of the movement | Equal to `dt_dia` in most sampled rows |
+| `dh_fim` | End of the movement | Equal to `dh_inicio` when no duration was recorded |
+| `co_indicativo` | Callsign | `PPBLV`, `AZU2429` |
+| `co_addep` | Departure aerodrome | `AFIL` = flight plan filed airborne, i.e. no departure aerodrome |
+| `co_addes` | Destination aerodrome | `ZZZZ` = destination not an ICAO aerodrome |
+| `dh_eobt` | Estimated off-block time | From the flight plan |
+| `dh_eet` | Estimated elapsed time | Encoded as a timestamp, not a duration — read with care |
+| `co_matricula` | Registration | Largely null in the sample |
+| `co_modelo` | Aircraft type | `SR22`, `AT76`; `XXXX` where unknown |
+| `ds_rota` | Route | Largely null in the sample |
+| `li_orgaos` | ATS units involved | JSON array, e.g. `["APPFI"]` |
+| `li_tipovoo` | Flight type | JSON array: `S` scheduled, `G` general aviation |
+| `li_regravoo` | Flight rule | JSON array: `I` IFR, `V` VFR |
+| `li_prnav` | P-RNAV capability | JSON array of 0/1 |
+| `li_rvsm` | RVSM capability | JSON array of 0/1 |
+
+Two conventions matter when reading these files:
+
+**The five `li_*` columns are JSON arrays.** They cannot be written to a delimited file as
+they stand, so the downloader collapses each to a pipe-separated string. A row with
+`["APPFI","ACCCW"]` is stored as `APPFI|ACCCW`. Split them again on read when a row can
+carry more than one value:
+
+```r
+d$orgaos <- strsplit(d$li_orgaos, "|", fixed = TRUE)
+```
+
+**`id` is not an identifier.** It is the callsign glued to the airport pair, so the same
+`id` returns on every flight of that route — `PPBLVSBPASBSM` appears on 2019-03-12 and
+again months later. De-duplicating on it would delete almost the entire dataset. `pk` is
+the key, and the downloader uses it.
+
+## Verifying the Contents
+
+Downloading a file is not the same as having the data. This chunk opens each year file and
+answers the three questions that decide whether it is usable: does it cover the whole year,
+are the keys unique, and are the essential fields populated.
+
+```{r}
+#| label: tbl-bra-totalbr-contents
+
+if (length(files) == 0) {
+  knitr::kable(tibble::tibble(
+    note = "No source files yet — nothing to verify."
+  ))
+} else {
+  contents <- purrr::map(files, function(file) {
+    # only the columns needed for the checks, so a large year file stays cheap
+    d <- data.table::fread(
+      file = file, sep = ";", colClasses = "character", na.strings = "",
+      select = c(totalbr_id_col, totalbr_date_col, "co_addep", "co_addes"),
+      showProgress = FALSE
+    )
+    day <- substr(d[[totalbr_date_col]], 1, 10)
+    tibble::tibble(
+      Year          = stringr::str_extract(basename(file), "[0-9]{4}"),
+      Rows          = nrow(d),
+      `Unique pk`   = dplyr::n_distinct(d[[totalbr_id_col]]),
+      `Days`        = dplyr::n_distinct(day, na.rm = TRUE),
+      `Months`      = dplyr::n_distinct(substr(day, 6, 7), na.rm = TRUE),
+      `First day`   = min(day, na.rm = TRUE),
+      `Last day`    = max(day, na.rm = TRUE),
+      `No ADEP (%)` = round(100 * mean(is.na(d$co_addep) | d$co_addep == "AFIL"), 1),
+      `No ADES (%)` = round(100 * mean(is.na(d$co_addes) | d$co_addes == "ZZZZ"), 1)
+    )
+  }) |> purrr::list_rbind()
+
+  contents |>
+    dplyr::mutate(
+      Complete = dplyr::case_when(
+        Months < 12 ~ paste0("NO — only ", Months, " month(s)"),
+        Days   < 360 ~ paste0("NO — only ", Days, " day(s)"),
+        TRUE ~ "yes"
+      ),
+      Duplicates = ifelse(Rows == `Unique pk`, "none",
+                          paste0(Rows - `Unique pk`, " duplicate pk"))
+    ) |>
+    knitr::kable()
+}
+```
+
+Read the table like this:
+
+- **Complete** reading `NO` for a past year means the download stopped short. Re-run the
+  download chunk — it resumes and fetches only the missing months. For the current year an
+  incomplete count is expected and correct.
+- **Duplicates** should read `none`. The downloader de-duplicates on `pk` when it merges
+  the months, so anything else means a file was assembled by other means.
+- **No ADEP / No ADES** counts `AFIL` and `ZZZZ`, which are legitimate values, not errors:
+  a flight plan filed airborne has no departure aerodrome, and `ZZZZ` marks a destination
+  that is not an ICAO aerodrome. They matter because any airport-level use of this table
+  must decide what to do with them, and any count of "flights between two aerodromes" that
+  ignores them is wrong.
+
+## Monthly Coverage
+
+The completeness check above is per year. This one is per month, which is where a partial
+download actually shows up — a month with a handful of days is the signature of an
+extraction that was cut off, and it is exactly what produced a bogus collapse in the ASMA
+monthly trend before it was caught.
+
+```{r}
+#| label: tbl-bra-totalbr-monthly-coverage
+
+if (length(files) == 0) {
+  knitr::kable(tibble::tibble(note = "No source files yet — nothing to check."))
+} else {
+  purrr::map(files, function(file) {
+    d <- data.table::fread(file = file, sep = ";", colClasses = "character",
+                           na.strings = "", select = totalbr_date_col,
+                           showProgress = FALSE)
+    day <- substr(d[[1]], 1, 10)
+    tibble::tibble(YEAR = substr(day, 1, 4), MONTH = substr(day, 6, 7), DAY = day)
+  }) |>
+    purrr::list_rbind() |>
+    dplyr::filter(!is.na(MONTH), MONTH != "") |>
+    dplyr::group_by(YEAR, MONTH) |>
+    dplyr::summarise(MOVEMENTS = dplyr::n(),
+                     DAYS = dplyr::n_distinct(DAY),
+                     .groups = "drop") |>
+    dplyr::mutate(
+      # a month holding only a few days is a truncated extraction, not a quiet month
+      STATUS = dplyr::case_when(
+        DAYS >= 28 ~ "complete",
+        DAYS >= 20 ~ "partial — check",
+        TRUE       ~ "TRUNCATED — re-download"
+      )
+    ) |>
+    knitr::kable()
+}
+```
+
+A month flagged `TRUNCATED` is re-fetched by simply re-running the download chunk: the
+engine judges a month by the days it holds, so a partial month is not treated as done.
+Forcing a re-download of specific years is the heavier option:
+
+```r
+source(here::here("TOTALBR", "download_totalbr.R"))
+download_totalbr(<the offending years>, out_dir = bra_totalbr_raw_dir, force = TRUE)
+```
+
+## Traffic Profile
+
+A first look at what the table actually contains, once a year is complete: the mix of
+flight rules and flight types, and the busiest aerodromes. This is the sanity check that
+the file describes Brazilian traffic and not a filtered subset of it.
+
+```{r}
+#| label: tbl-bra-totalbr-profile
+
+if (length(files) == 0) {
+  knitr::kable(tibble::tibble(note = "No source files yet — nothing to profile."))
+} else {
+  prof <- purrr::map(files, function(file) {
+    d <- data.table::fread(file = file, sep = ";", colClasses = "character",
+                           na.strings = "", showProgress = FALSE,
+                           select = c(totalbr_date_col, "li_regravoo", "li_tipovoo"))
+    tibble::tibble(
+      YEAR = substr(d[[totalbr_date_col]], 1, 4),
+      # the li_* columns are pipe-separated after the CSV round-trip; the first
+      # value is the flight's own rule/type, further values are later changes
+      RULE = sub("\\|.*$", "", d$li_regravoo),
+      TYPE = sub("\\|.*$", "", d$li_tipovoo)
+    )
+  }) |> purrr::list_rbind()
+
+  prof |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(
+      MOVEMENTS = dplyr::n(),
+      `IFR (%)` = round(100 * mean(RULE == "I", na.rm = TRUE), 1),
+      `VFR (%)` = round(100 * mean(RULE == "V", na.rm = TRUE), 1),
+      `Scheduled (%)`  = round(100 * mean(TYPE == "S", na.rm = TRUE), 1),
+      `General av. (%)` = round(100 * mean(TYPE == "G", na.rm = TRUE), 1),
+      .groups = "drop"
+    ) |>
+    knitr::kable()
+}
+```
+
+```{r}
+#| label: tbl-bra-totalbr-study-airports
+#| tbl-cap: "Movements at the twelve study airports (departures + arrivals)"
+
+if (length(files) == 0) {
+  knitr::kable(tibble::tibble(note = "No source files yet — nothing to summarise."))
+} else {
+  purrr::map(files, function(file) {
+    d <- data.table::fread(file = file, sep = ";", colClasses = "character",
+                           na.strings = "", showProgress = FALSE,
+                           select = c(totalbr_date_col, "co_addep", "co_addes"))
+    yr <- substr(d[[totalbr_date_col]], 1, 4)
+    # one movement per end of the flight, so a domestic flight between two study
+    # airports counts once at each — the same convention as an airport movement count
+    dplyr::bind_rows(
+      tibble::tibble(YEAR = yr, ICAO = d$co_addep, PHASE = "DEP"),
+      tibble::tibble(YEAR = yr, ICAO = d$co_addes, PHASE = "ARR")
+    )
+  }) |>
+    purrr::list_rbind() |>
+    dplyr::filter(ICAO %in% bra_apts) |>
+    dplyr::count(YEAR, ICAO, name = "MOVEMENTS") |>
+    tidyr::pivot_wider(names_from = YEAR, values_from = MOVEMENTS, values_fill = 0) |>
+    dplyr::left_join(bra_apts_names, by = "ICAO") |>
+    dplyr::relocate(NAME, .after = ICAO) |>
+    dplyr::arrange(ICAO) |>
+    knitr::kable()
+}
+```
+
+## Open Points
+
+1. **What a "movement" is in this table.** Each row is a flight, with `co_addep` and
+   `co_addes` as its two ends, so an airport count has to decide whether to count the
+   flight once or once per end. The table above counts per end; confirm that this matches
+   how DECEA reports movements before comparing the numbers to a published figure.
+2. **`dh_eet` is stored as a timestamp, not a duration** (e.g. `2019-03-13T08:00:00` for a
+   flight on 2019-03-12). It looks like an elapsed time encoded onto an arbitrary date;
+   confirm the convention with ICEA before using it.
+3. **`dt_dia` versus `dh_inicio`.** They are identical in every sampled row. Confirm they
+   are meant to be, or which one is authoritative if they can differ — the month windows
+   filter on `dt_dia`, and a divergence would put rows in the wrong month file.
+4. **`co_matricula` and `ds_rota` are largely null** in the sample. Confirm whether they
+   are populated for later years before any analysis depends on them.
+5. **Harmonisation to APDF is not defined yet.** Unlike taxi-time and ASMA, this table has
+   no metric attached; what it gets harmonised into depends on what it is used for
+   (traffic volumes, an IFR/VFR split, a national denominator). That step is deliberately
+   left out of this document until the use is fixed, so nothing here bakes in a wrong
+   assumption.

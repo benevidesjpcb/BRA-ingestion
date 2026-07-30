@@ -115,6 +115,27 @@ bra_asma_reference_coverage_file <- paste0(
   "BRA-asma-reference-coverage-", asma_ref_year, ".csv"
 )
 
+# TOTALBR ingestion: parameters and paths =====================================
+# TOTALBR is the all-Brazil movement table (ODIN table `total_brasil`): one row
+# per flight, national coverage, not restricted to the study airports. It is the
+# denominator/context dataset — traffic volumes — rather than a performance
+# metric, so it has no reference year or percentile.
+totalbr_data_years <- 2024:2026            # <- CHANGE THE STUDY PERIOD HERE
+# The ODIN table and the local file prefix are deliberately separate: the
+# endpoint is `total_brasil`, the files are the shorter `totalbr_<year>.csv`.
+totalbr_table      <- "total_brasil"
+totalbr_prefix     <- "totalbr"
+# `pk` is the row hash. NOT `id`: `id` is the callsign plus the airport pair, so
+# it repeats on every flight of that route.
+totalbr_id_col     <- "pk"
+totalbr_date_col   <- "dt_dia"             # the column the month windows filter on
+# Columns that arrive as JSON arrays and are stored pipe-separated in the CSV.
+totalbr_list_cols  <- c("li_orgaos", "li_tipovoo", "li_regravoo",
+                        "li_prnav", "li_rvsm")
+
+bra_totalbr_raw_dir  <- here::here("data-raw", "totalbr")   # raw CSVs (ODIN)
+bra_totalbr_apdf_dir <- here::here("data", "totalbr")       # harmonised extracts
+
 # set ggplot2 default theme
 ggplot2::theme_set(theme_minimal())
 
