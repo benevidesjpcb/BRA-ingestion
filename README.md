@@ -215,8 +215,18 @@ percentile; it is the volume/denominator dataset.
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
+| `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
-| `data-raw/totalbr/` | Raw `totalbr_*.csv` source files (and `parts/` month files) | no (git-ignored) |
+| `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
+
+TOTALBR has two sources and both count: a **parquet archive** holding the history (all
+airports, up to 2025), and the **ODIN API** for the rest. `totalbr_sources.R` reads them as
+one dataset, so `totalbr_missing_years()` asks the API only for what the archive lacks. Set
+`BRA_TOTALBR_PARQUET` if the archive is kept outside the repository — it is around 1 GB.
+
+> The API holds only a token sample of the early years: a 2019 download returns a few dozen
+> rows in total. That is the source answering truthfully, not a broken filter. Judge
+> coverage by the day counts in the qmd, never by the fact that a download ran.
 
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:

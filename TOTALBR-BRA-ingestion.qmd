@@ -22,12 +22,31 @@ with no aerodrome at all (`AFIL` departures, `ZZZZ` destinations). It carries no
 subtract and no unimpeded reference, so there is no reference year and no percentile here.
 It is the denominator and the context: how much traffic there was, where, and of what kind.
 
+### Two sources, one dataset
+
+TOTALBR reaches this project two ways, and both are first-class:
+
+| Source | What it holds | Where |
+| --- | --- | --- |
+| **parquet archive** | the history, all airports, up to 2025 | `data-raw/totalbr/*.parquet` (or `BRA_TOTALBR_PARQUET`) |
+| **ODIN API** | whatever the archive does not cover | downloaded to `data-raw/totalbr/totalbr_<year>.csv` |
+
+Every check below reads both through `TOTALBR/totalbr_sources.R`, so a year is judged
+covered by the days it actually holds regardless of which source holds them. That is what
+keeps the download honest: years already in the archive are not fetched again, and the
+API is asked only for the gap.
+
+Nothing in the ingestion filters by airport. TOTALBR is the national table and is kept
+whole — restricting it to the twelve study airports is a downstream decision, and doing it
+on the way in would discard data that could only be recovered by downloading the year
+again.
+
 ::: {.callout-important}
 ## Prerequisites to run this document
-The raw `totalbr` CSV files are **not** shipped with the repository. Get them with the
-download chunk below (ODIN API), or drop files you already hold into
-`data-raw/totalbr/` named `totalbr_<year>.csv`. Until then, the tables below render with
-a short notice instead of failing.
+Neither the parquet archive nor the CSVs are shipped with the repository. Put the archive
+in `data-raw/totalbr/` (or point `BRA_TOTALBR_PARQUET` at it if you keep it elsewhere —
+it is large), and get the remaining years with the download chunk below. Until then, the
+tables render with a short notice instead of failing.
 :::
 
 ## Getting the Source Data
@@ -72,35 +91,65 @@ Years you already hold as files go straight into `data-raw/totalbr/` with the sa
 #| label: download-bra-totalbr-data
 #| eval: false
 
-# sourcing only defines download_totalbr(); nothing is fetched until it is called
+# sourcing only defines the functions; nothing is fetched until they are called
 source(here::here("TOTALBR", "download_totalbr.R"))
+source(here::here("TOTALBR", "totalbr_sources.R"))
 
-# the full study period; drop to the current year for the routine refresh
-download_totalbr(totalbr_data_years, out_dir = bra_totalbr_raw_dir)
+# only the years the parquet archive does not already cover
+need <- totalbr_missing_years(totalbr_data_years, raw_dir = bra_totalbr_raw_dir)
+message("Years to fetch: ", if (length(need)) paste(need, collapse = ", ") else "none")
+
+if (length(need) > 0)
+  download_totalbr(need, out_dir = bra_totalbr_raw_dir)
 ```
+
+To fetch one year regardless of what is on disk — which is the right way to test the
+endpoint before trusting a long run — call the downloader directly:
+
+```r
+source(here::here("TOTALBR", "download_totalbr.R"))
+download_totalbr(2026, out_dir = bra_totalbr_raw_dir)
+```
+
+A word on years that come back nearly empty. Asking for 2019 returns a few dozen rows
+(14 in March, 32 in May) and "no rows" for every other month. That is the API answering
+truthfully, not a broken filter: `total_brasil` holds only a token sample for the early
+years. The history comes from the parquet archive, and the API is there for the present.
+The rule to apply is the same either way — trust the day counts in the coverage tables
+below, not the fact that a download ran.
 
 ## Checking What Arrived
 
 ```{r}
 #| label: check-bra-totalbr-data
 
-# what is on disk right now, and what to do if nothing is
-have_files <- list.files(bra_totalbr_raw_dir,
-                         pattern = "^totalbr_[0-9]{4}\\.csv$")
+source(here::here("TOTALBR", "totalbr_sources.R"))
 
-if (length(have_files) == 0) {
+src <- totalbr_sources(bra_totalbr_raw_dir)
+
+if (length(src$parquet) == 0 && length(src$csv) == 0) {
   knitr::kable(tibble::tibble(
     status = "no source data yet",
     `what to do` = paste0(
-      "Run the `download-bra-totalbr-data` chunk above (or, from a terminal, ",
-      "`Rscript TOTALBR/download_totalbr.R ",
-      min(totalbr_data_years), " … ", max(totalbr_data_years), "`)."
+      "Put the parquet archive in ", bra_totalbr_raw_dir,
+      " (or set BRA_TOTALBR_PARQUET), and/or run the ",
+      "`download-bra-totalbr-data` chunk above."
     )
   ))
 } else {
+  # the day counts are computed once here and reused by every table below, so a
+  # large archive is scanned once per render rather than five times
+  totalbr_counts <- totalbr_day_counts(bra_totalbr_raw_dir, totalbr_date_col)
+
   knitr::kable(tibble::tibble(
-    status = paste0(length(have_files), " source file(s) in ", bra_totalbr_raw_dir),
-    years  = paste(sort(stringr::str_extract(have_files, "[0-9]{4}")), collapse = ", ")
+    `parquet archive` = if (length(src$parquet) == 0) "none"
+                        else paste(basename(src$parquet), collapse = ", "),
+    `downloaded CSVs` = if (length(src$csv) == 0) "none"
+                        else paste(sort(stringr::str_extract(basename(src$csv),
+                                                             "[0-9]{4}")),
+                                   collapse = ", "),
+    `days held`       = dplyr::n_distinct(totalbr_counts$DATE),
+    movements         = format(sum(totalbr_counts$MOVEMENTS), big.mark = ",")
   ))
 }
 ```
@@ -111,25 +160,27 @@ if (length(have_files) == 0) {
 #| label: tbl-bra-totalbr-source-inventory
 #| tbl-cap: "Inventory of the raw TOTALBR source files"
 
-files <- list.files(bra_totalbr_raw_dir, pattern = "^totalbr_[0-9]{4}\\.csv$",
-                    full.names = TRUE)
+files <- c(src$parquet, src$csv)
 
 if (length(files) == 0) {
   knitr::kable(tibble::tibble(
     note = paste0("No source files in ", bra_totalbr_raw_dir,
-                  " yet. Run the `download-bra-totalbr-data` chunk above.")
+                  " yet. See the prerequisites above.")
   ))
 } else {
   purrr::map(files, function(file) {
     tibble::tibble(
       File        = basename(file),
-      Year        = stringr::str_extract(basename(file), "[0-9]{4}"),
+      Kind        = ifelse(grepl("\\.parquet$", file), "parquet archive",
+                           "downloaded CSV"),
+      Year        = tidyr::replace_na(
+                      stringr::str_extract(basename(file), "[0-9]{4}"), "several"),
       `Size (MB)` = round(file.info(file)$size / 1024^2, 1),
-      Downloaded  = format(file.info(file)$mtime, "%Y-%m-%d %H:%M")
+      Modified    = format(file.info(file)$mtime, "%Y-%m-%d %H:%M")
     )
   }) |>
     purrr::list_rbind() |>
-    dplyr::arrange(Year) |>
+    dplyr::arrange(Kind, Year) |>
     knitr::kable()
 }
 ```
@@ -179,9 +230,10 @@ the key, and the downloader uses it.
 
 ## Verifying the Contents
 
-Downloading a file is not the same as having the data. This chunk opens each year file and
-answers the three questions that decide whether it is usable: does it cover the whole year,
-are the keys unique, and are the essential fields populated.
+Having a file is not the same as having the data. This table answers the question that
+decides whether a year is usable — **how many of its days are actually present** — over
+both sources at once, so a year split between the archive and a download is judged on the
+union rather than on either half.
 
 ```{r}
 #| label: tbl-bra-totalbr-contents
@@ -191,36 +243,16 @@ if (length(files) == 0) {
     note = "No source files yet — nothing to verify."
   ))
 } else {
-  contents <- purrr::map(files, function(file) {
-    # only the columns needed for the checks, so a large year file stays cheap
-    d <- data.table::fread(
-      file = file, sep = ";", colClasses = "character", na.strings = "",
-      select = c(totalbr_id_col, totalbr_date_col, "co_addep", "co_addes"),
-      showProgress = FALSE
-    )
-    day <- substr(d[[totalbr_date_col]], 1, 10)
-    tibble::tibble(
-      Year          = stringr::str_extract(basename(file), "[0-9]{4}"),
-      Rows          = nrow(d),
-      `Unique pk`   = dplyr::n_distinct(d[[totalbr_id_col]]),
-      `Days`        = dplyr::n_distinct(day, na.rm = TRUE),
-      `Months`      = dplyr::n_distinct(substr(day, 6, 7), na.rm = TRUE),
-      `First day`   = min(day, na.rm = TRUE),
-      `Last day`    = max(day, na.rm = TRUE),
-      `No ADEP (%)` = round(100 * mean(is.na(d$co_addep) | d$co_addep == "AFIL"), 1),
-      `No ADES (%)` = round(100 * mean(is.na(d$co_addes) | d$co_addes == "ZZZZ"), 1)
-    )
-  }) |> purrr::list_rbind()
-
-  contents |>
-    dplyr::mutate(
-      Complete = dplyr::case_when(
-        Months < 12 ~ paste0("NO — only ", Months, " month(s)"),
-        Days   < 360 ~ paste0("NO — only ", Days, " day(s)"),
-        TRUE ~ "yes"
-      ),
-      Duplicates = ifelse(Rows == `Unique pk`, "none",
-                          paste0(Rows - `Unique pk`, " duplicate pk"))
+  totalbr_year_coverage(counts = totalbr_counts) |>
+    dplyr::transmute(
+      Year        = YEAR,
+      Sources     = SOURCES,
+      Movements   = format(MOVEMENTS, big.mark = ","),
+      `Days held` = DAYS_HELD,
+      `Days possible` = DAYS_POSSIBLE,
+      Complete = dplyr::if_else(
+        COVERED, "yes",
+        paste0("NO — ", DAYS_POSSIBLE - DAYS_HELD, " day(s) missing"))
     ) |>
     knitr::kable()
 }
@@ -228,16 +260,13 @@ if (length(files) == 0) {
 
 Read the table like this:
 
-- **Complete** reading `NO` for a past year means the download stopped short. Re-run the
-  download chunk — it resumes and fetches only the missing months. For the current year an
-  incomplete count is expected and correct.
-- **Duplicates** should read `none`. The downloader de-duplicates on `pk` when it merges
-  the months, so anything else means a file was assembled by other means.
-- **No ADEP / No ADES** counts `AFIL` and `ZZZZ`, which are legitimate values, not errors:
-  a flight plan filed airborne has no departure aerodrome, and `ZZZZ` marks a destination
-  that is not an ICAO aerodrome. They matter because any airport-level use of this table
-  must decide what to do with them, and any count of "flights between two aerodromes" that
-  ignores them is wrong.
+- **Days possible** is the whole year for a past year and the days elapsed so far for the
+  current one, so 2026 reading fewer days than 2025 is expected, not a gap.
+- **Complete** reading `NO` for a past year means that year is short. Re-run the download
+  chunk: it fetches only the missing months, and it skips whatever the parquet archive
+  already covers.
+- **Sources** shows where each year came from. A year reading `parquet + csv` is held by
+  both; the day count is de-duplicated across them, so the overlap is not double-counted.
 
 ## Monthly Coverage
 
@@ -252,18 +281,11 @@ monthly trend before it was caught.
 if (length(files) == 0) {
   knitr::kable(tibble::tibble(note = "No source files yet — nothing to check."))
 } else {
-  purrr::map(files, function(file) {
-    d <- data.table::fread(file = file, sep = ";", colClasses = "character",
-                           na.strings = "", select = totalbr_date_col,
-                           showProgress = FALSE)
-    day <- substr(d[[1]], 1, 10)
-    tibble::tibble(YEAR = substr(day, 1, 4), MONTH = substr(day, 6, 7), DAY = day)
-  }) |>
-    purrr::list_rbind() |>
-    dplyr::filter(!is.na(MONTH), MONTH != "") |>
+  totalbr_counts |>
     dplyr::group_by(YEAR, MONTH) |>
-    dplyr::summarise(MOVEMENTS = dplyr::n(),
-                     DAYS = dplyr::n_distinct(DAY),
+    dplyr::summarise(MOVEMENTS = sum(MOVEMENTS),
+                     # distinct days: a month present in both sources counts once
+                     DAYS = dplyr::n_distinct(DATE),
                      .groups = "drop") |>
     dplyr::mutate(
       # a month holding only a few days is a truncated extraction, not a quiet month
@@ -298,30 +320,31 @@ the file describes Brazilian traffic and not a filtered subset of it.
 if (length(files) == 0) {
   knitr::kable(tibble::tibble(note = "No source files yet — nothing to profile."))
 } else {
-  prof <- purrr::map(files, function(file) {
-    d <- data.table::fread(file = file, sep = ";", colClasses = "character",
-                           na.strings = "", showProgress = FALSE,
-                           select = c(totalbr_date_col, "li_regravoo", "li_tipovoo"))
-    tibble::tibble(
-      YEAR = substr(d[[totalbr_date_col]], 1, 4),
+  prof <- totalbr_count_by(c("li_regravoo", "li_tipovoo"),
+                           bra_totalbr_raw_dir, totalbr_date_col)
+
+  if (nrow(prof) == 0) {
+    knitr::kable(tibble::tibble(
+      note = "Neither source exposes li_regravoo / li_tipovoo as plain columns."
+    ))
+  } else {
+    prof |>
       # the li_* columns are pipe-separated after the CSV round-trip; the first
       # value is the flight's own rule/type, further values are later changes
-      RULE = sub("\\|.*$", "", d$li_regravoo),
-      TYPE = sub("\\|.*$", "", d$li_tipovoo)
-    )
-  }) |> purrr::list_rbind()
-
-  prof |>
-    dplyr::group_by(YEAR) |>
-    dplyr::summarise(
-      MOVEMENTS = dplyr::n(),
-      `IFR (%)` = round(100 * mean(RULE == "I", na.rm = TRUE), 1),
-      `VFR (%)` = round(100 * mean(RULE == "V", na.rm = TRUE), 1),
-      `Scheduled (%)`  = round(100 * mean(TYPE == "S", na.rm = TRUE), 1),
-      `General av. (%)` = round(100 * mean(TYPE == "G", na.rm = TRUE), 1),
-      .groups = "drop"
-    ) |>
-    knitr::kable()
+      dplyr::mutate(RULE = sub("\\|.*$", "", li_regravoo),
+                    TYPE = sub("\\|.*$", "", li_tipovoo)) |>
+      dplyr::group_by(YEAR) |>
+      dplyr::summarise(
+        MOVEMENTS = sum(MOVEMENTS),
+        `IFR (%)` = round(100 * sum(MOVEMENTS[RULE == "I"]) / sum(MOVEMENTS), 1),
+        `VFR (%)` = round(100 * sum(MOVEMENTS[RULE == "V"]) / sum(MOVEMENTS), 1),
+        `Scheduled (%)`   = round(100 * sum(MOVEMENTS[TYPE == "S"]) / sum(MOVEMENTS), 1),
+        `General av. (%)` = round(100 * sum(MOVEMENTS[TYPE == "G"]) / sum(MOVEMENTS), 1),
+        .groups = "drop"
+      ) |>
+      dplyr::mutate(MOVEMENTS = format(MOVEMENTS, big.mark = ",")) |>
+      knitr::kable()
+  }
 }
 ```
 
@@ -332,28 +355,65 @@ if (length(files) == 0) {
 if (length(files) == 0) {
   knitr::kable(tibble::tibble(note = "No source files yet — nothing to summarise."))
 } else {
-  purrr::map(files, function(file) {
-    d <- data.table::fread(file = file, sep = ";", colClasses = "character",
-                           na.strings = "", showProgress = FALSE,
-                           select = c(totalbr_date_col, "co_addep", "co_addes"))
-    yr <- substr(d[[totalbr_date_col]], 1, 4)
-    # one movement per end of the flight, so a domestic flight between two study
-    # airports counts once at each — the same convention as an airport movement count
-    dplyr::bind_rows(
-      tibble::tibble(YEAR = yr, ICAO = d$co_addep, PHASE = "DEP"),
-      tibble::tibble(YEAR = yr, ICAO = d$co_addes, PHASE = "ARR")
-    )
-  }) |>
-    purrr::list_rbind() |>
-    dplyr::filter(ICAO %in% bra_apts) |>
-    dplyr::count(YEAR, ICAO, name = "MOVEMENTS") |>
-    tidyr::pivot_wider(names_from = YEAR, values_from = MOVEMENTS, values_fill = 0) |>
-    dplyr::left_join(bra_apts_names, by = "ICAO") |>
-    dplyr::relocate(NAME, .after = ICAO) |>
-    dplyr::arrange(ICAO) |>
+  # one movement per END of the flight, so a domestic flight between two study
+  # airports counts once at each — the usual airport movement convention. The two
+  # ends are counted separately and stacked, never joined.
+  dep <- totalbr_count_by("co_addep", bra_totalbr_raw_dir, totalbr_date_col) |>
+    dplyr::rename(ICAO = co_addep)
+  arr <- totalbr_count_by("co_addes", bra_totalbr_raw_dir, totalbr_date_col) |>
+    dplyr::rename(ICAO = co_addes)
+
+  movements <- dplyr::bind_rows(dep, arr)
+
+  if (nrow(movements) == 0) {
+    knitr::kable(tibble::tibble(
+      note = "Neither source exposes co_addep / co_addes."
+    ))
+  } else {
+    movements |>
+      dplyr::filter(ICAO %in% bra_apts) |>
+      dplyr::group_by(YEAR, ICAO) |>
+      dplyr::summarise(MOVEMENTS = sum(MOVEMENTS), .groups = "drop") |>
+      tidyr::pivot_wider(names_from = YEAR, values_from = MOVEMENTS,
+                         values_fill = 0) |>
+      dplyr::left_join(bra_apts_names, by = "ICAO") |>
+      dplyr::relocate(NAME, .after = ICAO) |>
+      dplyr::arrange(ICAO) |>
+      knitr::kable(format.args = list(big.mark = ","))
+  }
+}
+```
+
+The same two counts also say how much of the table is *not* airport-to-airport traffic:
+
+```{r}
+#| label: tbl-bra-totalbr-no-aerodrome
+
+if (length(files) == 0 || !exists("movements") || nrow(movements) == 0) {
+  knitr::kable(tibble::tibble(note = "No source files yet — nothing to summarise."))
+} else {
+  dplyr::bind_rows(
+    dplyr::mutate(dep, END = "departure"),
+    dplyr::mutate(arr, END = "destination")
+  ) |>
+    dplyr::group_by(YEAR, END) |>
+    dplyr::summarise(
+      # AFIL = flight plan filed airborne (no departure aerodrome);
+      # ZZZZ = the end is not an ICAO aerodrome. Both are valid values.
+      `No aerodrome (%)` = round(
+        100 * sum(MOVEMENTS[is.na(ICAO) | ICAO %in% c("AFIL", "ZZZZ")]) /
+          sum(MOVEMENTS), 1),
+      .groups = "drop"
+    ) |>
+    tidyr::pivot_wider(names_from = END, values_from = `No aerodrome (%)`) |>
     knitr::kable()
 }
 ```
+
+`AFIL` and `ZZZZ` are legitimate values, not errors: a flight plan filed airborne has no
+departure aerodrome, and `ZZZZ` marks an end that is not an ICAO aerodrome. They matter
+because any count of "flights between two aerodromes" that ignores them is wrong, and any
+airport-level use of this table has to decide what to do with them.
 
 ## Open Points
 
