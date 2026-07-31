@@ -416,9 +416,40 @@ per year.
 totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)
 ```
 
-The consequence for the pipeline: **use `dh_inicio` wherever a movement time is needed.**
-`dt_dia` stays fine for the monthly download windows, because a midnight stamp still lands
-on the right day.
+**The fallback is not confined to `dt_dia`.** Running the near-duplicate check on 2026
+turned up rows where `dh_inicio` and `dh_fim` are *also* exactly midnight:
+
+```
+co_matricula co_indicativo co_addep co_addes dh_inicio            dh_fim               GAP_MIN
+00403A       UAF1225       GMMX     SBEG     2026-06-27 00:00:00  2026-06-27 00:00:00       NA
+00403A       UAF1225       GMMX     SBEG     2026-06-27 00:00:00  2026-06-27 00:00:00        0
+1002         GAF922        SBBR     EDDB     2026-07-03 00:00:00  2026-07-03 00:00:00        0
+```
+
+A `GAP_MIN` of 0 there is not two records of one movement — it is two empty stamps. Left
+alone, every such row of an aircraft on one day would be flagged as a duplicate of the
+others, and the check would measure the missing clock rather than the traffic. So rows
+without a time of day are **excluded from the near test and reported separately** as
+`NO_TIME`, exactly as rows without a registration are reported as `NO_REG`. The `TESTED_PCT`
+column says what share of the year the rule could actually judge.
+
+So the consequence for the pipeline is not "use `dh_inicio` instead of `dt_dia`" — it is
+that **none of the three timestamps can be trusted to carry a time of day without
+checking**. `totalbr_midnight_share()` reports all three at once:
+
+```{r}
+#| label: tbl-bra-totalbr-midnight-cols
+#| eval: false
+
+totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)
+```
+
+`dt_dia` remains fine for the monthly download windows, because a midnight stamp still
+lands on the right day. It is time-of-day that is missing, not the date.
+
+Worth checking whether the zeroed rows are a particular class of traffic — the examples
+above are foreign and military (`UAF1225` GMMX→SBEG, `GAF922` SBBR→EDDB), which would
+suggest movements known to Brazil only as a flight plan, without observed times.
 
 #### `dh_eet` is not a timestamp, and is encoded differently in each source
 

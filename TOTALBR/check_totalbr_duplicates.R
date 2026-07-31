@@ -85,6 +85,14 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
   d
 }
 
+# A timestamp of exactly 00:00:00 is a date with no time, not a movement at
+# midnight. Genuine midnight movements exist but are ~1 in 1440, so treating the
+# whole class as "no time known" costs almost nothing and removes an artefact
+# that would otherwise dominate every count built on these columns.
+totalbr_is_midnight <- function(x) {
+  !is.na(x) & format(x, "%H:%M:%S", tz = "UTC") == "00:00:00"
+}
+
 # ---- rows that repeat an aircraft in one place within the tolerance ---------
 # Sorted by the time column within (registration, aerodrome pair): a row whose
 # gap to the previous row of the same group is within the tolerance is a repeat
@@ -97,7 +105,15 @@ totalbr_flag_near <- function(d, tol_min) {
 
   flagged <- integer(0)
   for (tcol in c("dh_inicio", "dh_fim")) {
-    sub <- dt[!is.na(get(tcol)) & !is.na(co_matricula) & nzchar(co_matricula)]
+    # Rows whose time is exactly midnight carry no time of day: like dt_dia, these
+    # columns fall back to the bare date on part of the data. Left in, every such
+    # row of one aircraft on one day would sit at the same instant and be flagged
+    # as a duplicate of the others — the test would measure the missing clock
+    # rather than the traffic. They are untestable by this rule and counted as
+    # NO_TIME. Done per column: a row with no dh_inicio can still be judged on
+    # dh_fim.
+    sub <- dt[!is.na(get(tcol)) & !totalbr_is_midnight(get(tcol)) &
+              !is.na(co_matricula) & nzchar(co_matricula)]
     if (nrow(sub) == 0) next
     data.table::setorderv(sub, c("GRP", tcol))
     sub[, GAP := as.numeric(difftime(get(tcol), data.table::shift(get(tcol)),
@@ -145,6 +161,9 @@ check_totalbr_duplicates <- function(years    = NULL,
         # rows the near test cannot judge, so the figure above is not mistaken
         # for a statement about the whole year
         NO_REG        = sum(is.na(co_matricula) | !nzchar(co_matricula)),
+        # ... and rows with no time of day on EITHER column to compare
+        NO_TIME       = sum((is.na(dh_inicio) | totalbr_is_midnight(dh_inicio)) &
+                            (is.na(dh_fim)    | totalbr_is_midnight(dh_fim))),
         .groups = "drop"
       )
   }) |> purrr::list_rbind()
@@ -172,14 +191,17 @@ check_totalbr_duplicates <- function(years    = NULL,
 
   out <- res |>
     dplyr::group_by(YEAR) |>
-    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG), sum),
-                     .groups = "drop")
+    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG, NO_TIME),
+                                   sum), .groups = "drop")
   if (!is.null(parts_pk)) out <- dplyr::left_join(out, parts_pk, by = "YEAR")
 
   out |>
     dplyr::mutate(
-      NEAR_PCT   = round(100 * NEAR_DUP / ROWS, 3),
-      NO_REG_PCT = round(100 * NO_REG   / ROWS, 1)
+      NEAR_PCT    = round(100 * NEAR_DUP / ROWS, 3),
+      NO_REG_PCT  = round(100 * NO_REG   / ROWS, 1),
+      NO_TIME_PCT = round(100 * NO_TIME  / ROWS, 1),
+      # the share the near test could actually look at
+      TESTED_PCT  = round(100 * (1 - (NO_REG + NO_TIME) / ROWS), 1)
     ) |>
     dplyr::arrange(YEAR)
 }
@@ -206,12 +228,16 @@ totalbr_duplicate_examples <- function(years    = NULL,
     if (length(near) == 0) next
 
     dt <- data.table::as.data.table(d)
+    dt[, ROW_ID := .I]
     dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
     # every row of the groups that contain a flagged row, so the repeat is shown
     # next to what it repeats rather than on its own
     grps <- unique(dt$GRP[near])
     grps <- head(grps, n)
     out  <- dt[GRP %in% grps]
+    # the whole group is shown for context, so mark which rows the rule actually
+    # caught — the others are there only to be compared against
+    out[, FLAGGED := ROW_ID %in% near]
     data.table::setorderv(out, c("GRP", "dh_inicio"))
     out[, GAP_MIN := round(as.numeric(difftime(dh_inicio,
                                                data.table::shift(dh_inicio),
@@ -221,7 +247,7 @@ totalbr_duplicate_examples <- function(years    = NULL,
             " (same registration, same aerodrome pair, within ", tol_min, " min)")
     return(tibble::as_tibble(out)[, c("co_matricula", "co_indicativo",
                                       "co_addep", "co_addes", "dh_inicio",
-                                      "dh_fim", "GAP_MIN", "pk")])
+                                      "dh_fim", "GAP_MIN", "FLAGGED", "pk")])
   }
 
   message("No near-duplicates found.")
@@ -229,57 +255,70 @@ totalbr_duplicate_examples <- function(years    = NULL,
 }
 
 # =============================================================================
-# totalbr_midnight_share(raw_dir, date_col)
+# totalbr_midnight_share(raw_dir, date_col, cols)
 #
-# Per year: how many rows carry a dt_dia of exactly 00:00:00.
+# Per year and per column: how many rows carry a time of exactly 00:00:00 — that
+# is, a date with no time of day.
 #
-# Not a duplication measure — the reason one is not needed on dt_dia. That field
-# falls back to midnight on a large minority of rows, so any key built on it
-# collapses every flight of an aircraft on that day into one. Ten flights are ten
-# flights; a stamp that cannot separate them is a precision problem. Use
-# dh_inicio wherever a movement time is needed.
+# Not a duplication measure. It is the measure that says how far the duplication
+# numbers can be trusted, because the fallback is NOT confined to dt_dia:
+# dh_inicio and dh_fim are zeroed on part of the data too. Rows like that all sit
+# at the same instant, so any rule comparing times would call them duplicates of
+# one another. Read this table before reading a duplication percentage.
 # =============================================================================
 totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
-                                   date_col = "dt_dia") {
+                                   date_col = "dt_dia",
+                                   cols     = c("dt_dia", "dh_inicio", "dh_fim")) {
   src <- totalbr_sources(raw_dir)
 
-  from_parquet <- function(path) {
-    ds <- arrow::open_dataset(path)
-    if (!date_col %in% names(ds)) return(NULL)
-    s <- rlang::sym(date_col)
-    tryCatch({
-      totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col)) |>
-        dplyr::mutate(MIDNIGHT = lubridate::hour(!!s) == 0 &
-                                 lubridate::minute(!!s) == 0 &
-                                 lubridate::second(!!s) == 0) |>
-        dplyr::group_by(YEAR, MIDNIGHT) |>
-        dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
-        dplyr::collect()
-    }, error = function(e) NULL)
+  one_col <- function(path, col) {
+    if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!all(c(col, date_col) %in% names(ds))) return(NULL)
+      cs <- rlang::sym(col)
+      tryCatch({
+        totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col)) |>
+          dplyr::mutate(MIDNIGHT = lubridate::hour(!!cs) == 0 &
+                                   lubridate::minute(!!cs) == 0 &
+                                   lubridate::second(!!cs) == 0) |>
+          dplyr::group_by(YEAR, MIDNIGHT) |>
+          dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
+          dplyr::collect() |>
+          dplyr::mutate(COLUMN = col)
+      }, error = function(e) NULL)
+    } else {
+      head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
+                                 showProgress = FALSE)
+      if (!all(c(col, date_col) %in% names(head1))) return(NULL)
+      x <- data.table::fread(file = path, sep = ";",
+                             select = unique(c(col, date_col)),
+                             colClasses = "character", na.strings = "",
+                             showProgress = FALSE)
+      tibble::tibble(
+        YEAR = substr(x[[date_col]], 1, 4),
+        # a bare date, or a date whose time part is exactly midnight
+        MIDNIGHT = is.na(x[[col]]) | substr(x[[col]], 12, 19) %in% c("00:00:00", "")
+      ) |>
+        dplyr::count(YEAR, MIDNIGHT, name = "N") |>
+        dplyr::mutate(COLUMN = col)
+    }
   }
 
-  from_csv <- function(path) {
-    v <- data.table::fread(file = path, sep = ";", select = date_col,
-                           colClasses = "character", na.strings = "",
-                           showProgress = FALSE)[[1]]
-    tibble::tibble(YEAR = substr(v, 1, 4),
-                   MIDNIGHT = substr(v, 12, 19) %in% c("00:00:00", "")) |>
-      dplyr::count(YEAR, MIDNIGHT, name = "N")
-  }
-
+  grid  <- expand.grid(path = c(src$parquet, src$csv), col = cols,
+                       stringsAsFactors = FALSE)
   parts <- Filter(Negate(is.null),
-                  c(lapply(src$parquet, from_parquet),
-                    lapply(src$csv, from_csv)))
+                  purrr::map2(grid$path, grid$col, one_col))
   if (length(parts) == 0) return(tibble::tibble())
 
   dplyr::bind_rows(parts) |>
-    dplyr::group_by(YEAR) |>
+    dplyr::group_by(YEAR, COLUMN) |>
     dplyr::summarise(
       ROWS         = sum(N),
       MIDNIGHT     = sum(N[MIDNIGHT]),
       MIDNIGHT_PCT = round(100 * sum(N[MIDNIGHT]) / sum(N), 2),
       .groups = "drop"
-    )
+    ) |>
+    dplyr::arrange(YEAR, match(COLUMN, cols))
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------
