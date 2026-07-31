@@ -216,6 +216,7 @@ percentile; it is the volume/denominator dataset.
 | --- | --- | --- |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
+| `TOTALBR/check_totalbr_duplicates.R` | Measures duplication at four levels, and pulls the offending rows | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
 | `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
 
@@ -227,6 +228,19 @@ one dataset, so `totalbr_missing_years()` asks the API only for what the archive
 > The API holds only a token sample of the early years: a 2019 download returns a few dozen
 > rows in total. That is the source answering truthfully, not a broken filter. Judge
 > coverage by the day counts in the qmd, never by the fact that a download ran.
+
+ICEA/DECEA have reported duplication in the ODIN data. `check_totalbr_duplicates()`
+measures it at four levels — repeated `pk`, the same record under a different `pk`, the
+same flight at the same timestamp, and same-callsign-same-day candidates — because those
+have different causes and only the first three are faults. It reads the per-month parts for
+the `pk` level, since the merge has already de-duplicated the year file, and it groups all
+the CSVs together so a key repeated across two months is not missed. It reports; it never
+repairs, because which copy to keep is DECEA's decision.
+
+> Pagination fix that came out of this: the downloader ordered by the date column alone, and
+> thousands of rows share a timestamp. Offset pagination over a non-total order can return a
+> row on two pages or on none. The order now includes the unique id, so the pages partition
+> the window. Parts downloaded before this may carry duplicates of our own making.
 
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:

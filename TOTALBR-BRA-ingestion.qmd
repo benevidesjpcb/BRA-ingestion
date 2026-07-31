@@ -308,6 +308,91 @@ source(here::here("TOTALBR", "download_totalbr.R"))
 download_totalbr(<the offending years>, out_dir = bra_totalbr_raw_dir, force = TRUE)
 ```
 
+## Duplication Check
+
+ICEA/DECEA have reported that the ODIN data contains duplication. "Duplicate" means four
+different things here, with different causes and different consequences, so they are
+measured separately — a single number would hide which problem is present.
+
+| Level | Key | What it means |
+| --- | --- | --- |
+| `key` | `pk` | the same row returned twice. `pk` is the row hash, so this is a delivery fault |
+| `record` | `id` + the three timestamps | the same movement stored twice under **different** `pk` — the source does not recognise them as the same row |
+| `movement` | `id` + `dt_dia` | the same flight at the same timestamp, other fields free to differ |
+| `daily` | callsign + route + calendar day | **candidates only** — an aircraft can genuinely fly a route twice a day |
+
+The `key` level is read from the per-month parts in `data-raw/totalbr/parts/`, not from the
+year file. The merge de-duplicates on `pk`, so by the time a year file exists the evidence
+of a repeated `pk` has already been removed; asking the year file could only ever answer
+"none". All the CSVs are also grouped together rather than one at a time, because a key
+repeated *across* two month files is exactly what an overlapping request window would
+produce and a per-file check would never see it.
+
+```{r}
+#| label: tbl-bra-totalbr-duplicates
+
+source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
+
+if (length(files) == 0) {
+  knitr::kable(tibble::tibble(note = "No source files yet — nothing to check."))
+} else {
+  dups <- check_totalbr_duplicates(raw_dir = bra_totalbr_raw_dir,
+                                   date_col = totalbr_date_col)
+  if (nrow(dups) == 0) {
+    knitr::kable(tibble::tibble(
+      result = "No duplication found at any level."
+    ))
+  } else {
+    dups |>
+      dplyr::select(Level = LEVEL, Source = SOURCE, Year = YEAR,
+                    `Repeated keys` = GROUPS, `Surplus rows` = EXTRA_ROWS,
+                    `Year rows` = TOTAL_ROWS, `% of year` = PCT) |>
+      knitr::kable(format.args = list(big.mark = ","))
+  }
+}
+```
+
+This is the heaviest table in the document — it groups the whole archive once per level —
+so expect it to take a while on the full parquet.
+
+How to read the result:
+
+- **`key` above zero** is a delivery fault: the API returned the same row twice. Our year
+  files are unaffected because the merge de-duplicates on `pk`, but any consumer reading
+  the raw parts would double-count. This is the one worth reporting back to ICEA with the
+  example rows.
+- **`record` or `movement` above zero** is duplication in the source itself: the same
+  movement is present twice and `pk` does not identify it as such, so no de-duplication key
+  can remove it without a rule about which copy to keep.
+- **`daily` on its own means nothing.** Two rows for the same callsign and route on one day
+  are usually two genuine rotations. The minute gap is what separates them from a repeat,
+  which is what the examples below report.
+
+```{r}
+#| label: examples-bra-totalbr-duplicates
+#| eval: false
+
+# the actual rows behind the most-repeated keys, with GAP_MIN between copies:
+# a gap near zero is the same movement stored twice, hours apart is real traffic
+totalbr_duplicate_examples("movement", n = 5, raw_dir = bra_totalbr_raw_dir)
+totalbr_duplicate_examples("key",      n = 5, raw_dir = bra_totalbr_raw_dir)
+```
+
+Nothing here repairs anything, deliberately. De-duplicating a national movement table
+changes every count computed from it, and which copy to keep is DECEA's call, not a choice
+this pipeline should make silently.
+
+### One cause we removed on our side first
+
+Before measuring anyone else's duplication it was worth removing ours. The downloader
+paginated with `order=dt_dia.asc`, and thousands of rows share a `dt_dia` — with ties, the
+order between pages is whatever the database happens to produce per request, so a row can
+come back on two consecutive pages (or on neither). The ordering now includes the unique
+id, which makes the sort total and the pages a genuine partition of the window.
+
+If your parts were downloaded before that fix, re-fetch one month with `force = TRUE` and
+compare the `key` level: any difference was ours, not the source's.
+
 ## Traffic Profile
 
 A first look at what the table actually contains, once a year is complete: the mix of

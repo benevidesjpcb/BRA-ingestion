@@ -144,11 +144,20 @@ download_odin <- function(table,
     message("Created ", out_dir)
   }
 
+  # Offset pagination is only safe over a TOTAL order. Sorting by the date alone
+  # leaves thousands of rows tied on the same timestamp, and their relative order
+  # is then whatever the database happens to produce for each request — so a row
+  # can be returned on two consecutive pages, or on neither. Adding the unique id
+  # (and the second de-duplication key, where the id repeats) breaks every tie, so
+  # the pages partition the window instead of overlapping it.
+  order_by <- paste0(
+    unique(c(date_col, id_col, ring_col)), ".asc", collapse = ",")
+
   # ---- one page of the API --------------------------------------------------
   fetch_page <- function(extra_filters, offset) {
     req <- httr2::request(base_url) |>
       httr2::req_url_query(!!!extra_filters,
-                           order  = paste0(date_col, ".asc"),
+                           order  = order_by,
                            limit  = page_size,
                            offset = offset) |>
       httr2::req_user_agent(paste0("BRA-ingestion/", table)) |>

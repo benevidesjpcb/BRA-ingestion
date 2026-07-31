@@ -25,7 +25,8 @@
 # Where the parquet archive lives. BRA_TOTALBR_PARQUET points at it directly
 # when it is kept outside the repository (it is large, and data-raw/ is
 # git-ignored); otherwise any .parquet in the raw folder is picked up.
-totalbr_sources <- function(raw_dir = here::here("data-raw", "totalbr")) {
+totalbr_sources <- function(raw_dir = here::here("data-raw", "totalbr"),
+                            include_parts = FALSE) {
   env_parq <- Sys.getenv("BRA_TOTALBR_PARQUET", unset = "")
   parquet <- if (nzchar(env_parq)) {
     if (file.exists(env_parq) || dir.exists(env_parq)) env_parq else character(0)
@@ -37,7 +38,35 @@ totalbr_sources <- function(raw_dir = here::here("data-raw", "totalbr")) {
     list.files(raw_dir, pattern = "^totalbr_[0-9]{4}\\.csv$", full.names = TRUE)
   else character(0)
 
-  list(parquet = parquet, csv = csv)
+  # The per-month parts, as downloaded, BEFORE the merge de-duplicates them. The
+  # year file cannot answer "did the API repeat a key?" — the merge has already
+  # removed the evidence — so the duplicate check reads these instead.
+  parts <- if (include_parts && dir.exists(file.path(raw_dir, "parts")))
+    list.files(file.path(raw_dir, "parts"),
+               pattern = "^totalbr_[0-9]{4}-[0-9]{2}\\.csv$", full.names = TRUE)
+  else character(0)
+
+  list(parquet = parquet, csv = csv, parts = parts)
+}
+
+# ---- deriving YEAR / DAY from the date column, in arrow or in R -------------
+# The date column may be a timestamp or text, and the two need different
+# expressions. Built with rlang symbols rather than the .data pronoun because
+# arrow's dplyr bindings evaluate these against its own query engine, where
+# .data is not reliably supported.
+totalbr_is_text_date <- function(ds, date_col) {
+  grepl("string|utf8",
+        ds$schema$GetFieldByName(date_col)$type$ToString(), ignore.case = TRUE)
+}
+
+totalbr_add_year_day <- function(q, date_col, is_text, day = FALSE) {
+  s <- rlang::sym(date_col)
+  q <- if (is_text) dplyr::mutate(q, YEAR = substr(!!s, 1, 4))
+       else dplyr::mutate(q, YEAR = as.character(lubridate::year(!!s)))
+  if (day)
+    q <- if (is_text) dplyr::mutate(q, DAY = substr(!!s, 1, 10))
+         else         dplyr::mutate(q, DAY = as.character(as.Date(!!s)))
+  q
 }
 
 # ---- days held by the parquet archive ---------------------------------------
@@ -52,15 +81,16 @@ totalbr_parquet_day_counts <- function(path, date_col = "dt_dia") {
 
   # the date column may be stored as a timestamp or as text; both reduce to the
   # first ten characters of an ISO date, which is all the day count needs
-  is_text <- grepl("string|utf8",
-                   ds$schema$GetFieldByName(date_col)$type$ToString(),
-                   ignore.case = TRUE)
+  is_text <- totalbr_is_text_date(ds, date_col)
 
   counted <- tryCatch({
-    q <- dplyr::select(ds, DT = dplyr::all_of(date_col))
-    q <- if (is_text) dplyr::mutate(q, DATE = substr(DT, 1, 10))
-         else         dplyr::mutate(q, DATE = as.character(as.Date(DT)))
-    q |> dplyr::count(DATE, name = "MOVEMENTS") |> dplyr::collect()
+    q <- dplyr::select(ds, dplyr::all_of(date_col))
+    q <- totalbr_add_year_day(q, date_col, is_text, day = TRUE)
+    q |>
+      dplyr::group_by(DAY) |>
+      dplyr::summarise(MOVEMENTS = dplyr::n(), .groups = "drop") |>
+      dplyr::collect() |>
+      dplyr::rename(DATE = DAY)
   }, error = function(e) {
     # the pushdown is an optimisation, not a requirement: if this arrow build
     # cannot do it, read the one column and count in R
@@ -133,10 +163,11 @@ totalbr_count_by <- function(cols,
     ds <- arrow::open_dataset(path)
     if (!all(c(date_col, cols) %in% names(ds))) return(NULL)
     tryCatch({
-      dplyr::select(ds, dplyr::all_of(c(date_col, cols))) |>
-        dplyr::mutate(YEAR = substr(as.character(.data[[date_col]]), 1, 4)) |>
-        dplyr::count(dplyr::across(dplyr::all_of(c("YEAR", cols))),
-                     name = "MOVEMENTS") |>
+      q <- dplyr::select(ds, dplyr::all_of(unique(c(date_col, cols))))
+      q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
+      q |>
+        dplyr::group_by(dplyr::across(dplyr::all_of(c("YEAR", cols)))) |>
+        dplyr::summarise(MOVEMENTS = dplyr::n(), .groups = "drop") |>
         dplyr::collect()
     }, error = function(e) {
       # a list-typed column (the li_* fields may still be arrays in the archive)
