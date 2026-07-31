@@ -505,6 +505,23 @@ gap  <- as.numeric(difftime(as.POSIXct(d$dh_eet, tz = "UTC"), eobt, units = "min
 summary(gap - tod)     # all zero confirms the pattern
 ```
 
+Run over the full 2026 file, that confirmed it and turned up a second fault:
+
+```
+     Min.   1st Qu.    Median      Mean   3rd Qu.      Max.
+-29750400         0         0    -92576         0      1440
+```
+
+The three quartiles are exactly zero, so the identity holds for at least 75% of rows — a
+rule, not an artefact of the sample. The minimum is roughly 56.6 years in minutes: the
+distance back to **1970-01-01**. Those rows carry the **epoch as a null sentinel** instead
+of an empty value, and the mean says they are about 0.31% of the file.
+
+That is the most dangerous shape a null can take. An `NA` propagates and shows itself; a
+1970 date enters an average silently and drags it — which is exactly what happened here,
+where 0.3% of the rows pulled the mean from 0 to −92,576. Anything reading `dh_eet` must
+reject epoch dates explicitly, not rely on `na.rm`.
+
 Nothing here repairs anything, deliberately. De-duplicating a national movement table
 changes every count computed from it, and which copy to keep is DECEA's call, not a choice
 this pipeline should make silently.
@@ -633,10 +650,12 @@ airport-level use of this table has to decide what to do with them.
    `co_addes` as its two ends, so an airport count has to decide whether to count the
    flight once or once per end. The table above counts per end; confirm that this matches
    how DECEA reports movements before comparing the numbers to a published figure.
-2. ~~`dh_eet` is stored as a timestamp, not a duration~~ — **measured.** The difference
-   from `dh_eobt` is the EOBT's own time of day in the API, and zero in the archive. The
-   EET is not recoverable from this column in either source; ICEA need to confirm what it
-   is meant to hold.
+2. ~~`dh_eet` is stored as a timestamp, not a duration~~ — **measured, twice.** The
+   difference from `dh_eobt` is the EOBT's own time of day in the API (75%+ of rows,
+   exactly), and zero in the archive. On top of that, ~0.3% of rows carry 1970-01-01 as a
+   null sentinel. The EET is not recoverable from this column in either source, and any
+   code touching it must exclude epoch dates rather than trust `na.rm`. ICEA need to
+   confirm what the field is meant to hold.
 3. **`dt_dia` versus `dh_inicio`.** They are equal on rows that carry a real time, but
    around 11% of rows have `dt_dia` at midnight while `dh_inicio` holds the actual movement
    time. Use `dh_inicio` for anything time-of-day; `dt_dia` is still safe for the month
