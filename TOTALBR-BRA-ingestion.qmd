@@ -412,6 +412,51 @@ Three readings, in order of how much they matter:
    equally be circuit training (`co_addep == co_addes`) that the archive excluded. Worth
    splitting those out before drawing any conclusion.
 
+Re-downloading 2026 after the ordering fix settled the second point on its own: the `key`
+level fell from 194 to 134 and the year gained exactly 60 rows. Sixty rows had been served
+twice, each in place of one that was never served at all — the signature of offset
+pagination over a non-total order. `key` and `record` now agree at 134 for every year, so
+every remaining repeated `pk` comes from the source.
+
+### What the anatomy showed, and the open question
+
+Over 2000 `movement` groups from the archive, the columns that disagree between the copies:
+
+| Column | Groups where it varies |
+| --- | --- |
+| `dh_fim` / `dh_inicio` | 100% / 99.8% |
+| `dh_eet` / `dh_eobt` | 95.7% / 89.9% |
+| `ds_rota` | 35.4% |
+| `li_orgaos` | 26.4% |
+| `co_matricula` | 17.3% |
+
+This **rules out the ATS-unit explanation**: `li_orgaos` is identical in 74% of the groups,
+so the rows are not one-per-unit. What the pattern does look like is **re-filed flight
+plans** — same flight, new EOBT (90%), sometimes a new route (35%) or a different aircraft
+(17%).
+
+But there is a contradiction in that table, and it points at the root cause. `dh_inicio`
+varies in 99.8% of the groups while `dt_dia` is, by construction, identical — it is the
+grouping key. In the API payload those two fields hold **the same value on every row**. So
+`dt_dia` in the archive is not the field it is in the API. If it were, it would vary along
+with `dh_inicio` and these groups would not exist — which is exactly what happens in the
+API year, where `movement` is 0.02%.
+
+The likely explanation is that the archive's `dt_dia` is **truncated** (to the hour), which
+fits the arithmetic: `movement` at 3.59% would be the subset of `daily` at 5.77% that falls
+in the same hour. Two flight plans for one flight, minutes apart, collide under a truncated
+stamp; two genuine rotations hours apart do not. Confirm with:
+
+```r
+ds <- arrow::open_dataset(here::here("data-raw", "totalbr", "<archive>.parquet"))
+ds |> dplyr::count(MIN = lubridate::minute(dt_dia)) |> dplyr::collect()
+```
+
+Everything landing on `MIN = 0` means the 3.6% is largely an **artefact of precision**, not
+duplication: the flights are distinct, the timestamp just cannot tell them apart. Until
+that is settled, the duplication confirmed to be real is the `record` level only — 13 to
+285 rows a year, at most 0.016%.
+
 Nothing here repairs anything, deliberately. De-duplicating a national movement table
 changes every count computed from it, and which copy to keep is DECEA's call, not a choice
 this pipeline should make silently.
