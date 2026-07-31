@@ -278,10 +278,16 @@ totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
       cs <- rlang::sym(col)
       tryCatch({
         totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col)) |>
-          dplyr::mutate(MIDNIGHT = lubridate::hour(!!cs) == 0 &
-                                   lubridate::minute(!!cs) == 0 &
-                                   lubridate::second(!!cs) == 0) |>
-          dplyr::group_by(YEAR, MIDNIGHT) |>
+          dplyr::mutate(
+            # a date with no time at all
+            IS_MIDNIGHT = lubridate::hour(!!cs) == 0 &
+                          lubridate::minute(!!cs) == 0 &
+                          lubridate::second(!!cs) == 0,
+            # a time rounded to the hour: 13:00:00 is as unable to separate two
+            # movements within that hour as midnight is within the day
+            IS_ON_HOUR  = lubridate::minute(!!cs) == 0 &
+                          lubridate::second(!!cs) == 0) |>
+          dplyr::group_by(YEAR, IS_MIDNIGHT, IS_ON_HOUR) |>
           dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
           dplyr::collect() |>
           dplyr::mutate(COLUMN = col)
@@ -297,9 +303,12 @@ totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
       tibble::tibble(
         YEAR = substr(x[[date_col]], 1, 4),
         # a bare date, or a date whose time part is exactly midnight
-        MIDNIGHT = is.na(x[[col]]) | substr(x[[col]], 12, 19) %in% c("00:00:00", "")
+        IS_MIDNIGHT = is.na(x[[col]]) |
+                      substr(x[[col]], 12, 19) %in% c("00:00:00", ""),
+        # minutes and seconds both zero: the stamp resolves to the hour only
+        IS_ON_HOUR  = is.na(x[[col]]) | substr(x[[col]], 15, 19) %in% c("00:00", "")
       ) |>
-        dplyr::count(YEAR, MIDNIGHT, name = "N") |>
+        dplyr::count(YEAR, IS_MIDNIGHT, IS_ON_HOUR, name = "N") |>
         dplyr::mutate(COLUMN = col)
     }
   }
@@ -313,12 +322,74 @@ totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
   dplyr::bind_rows(parts) |>
     dplyr::group_by(YEAR, COLUMN) |>
     dplyr::summarise(
-      ROWS         = sum(N),
-      MIDNIGHT     = sum(N[MIDNIGHT]),
-      MIDNIGHT_PCT = round(100 * sum(N[MIDNIGHT]) / sum(N), 2),
-      .groups = "drop"
+      ROWS     = sum(N),
+      # the logical flags keep their own names: reusing a name inside summarise
+      # makes the later expression see the value just created, not the vector
+      MIDNIGHT = sum(N[IS_MIDNIGHT]),
+      ON_HOUR  = sum(N[IS_ON_HOUR]),
+      .groups  = "drop"
+    ) |>
+    dplyr::mutate(
+      MIDNIGHT_PCT = round(100 * MIDNIGHT / ROWS, 2),
+      ON_HOUR_PCT  = round(100 * ON_HOUR  / ROWS, 2)
     ) |>
     dplyr::arrange(YEAR, match(COLUMN, cols))
+}
+
+# =============================================================================
+# totalbr_stamp_agreement(raw_dir, date_col)
+#
+# Per year: how often dt_dia equals dh_inicio, and by how much they differ when
+# they do not.
+#
+# This is the measure that says whether dt_dia is the movement time at all. The
+# API payload has the two equal on every sampled row; where they diverge, dt_dia
+# is something else — a filing time, a rounded stamp, or a bare date — and any
+# key built on it groups movements that are not the same movement.
+# =============================================================================
+totalbr_stamp_agreement <- function(raw_dir  = here::here("data-raw", "totalbr"),
+                                    date_col = "dt_dia") {
+  src <- totalbr_sources(raw_dir)
+
+  one <- function(path) {
+    want <- c(date_col, "dh_inicio")
+    d <- if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!all(want %in% names(ds))) return(NULL)
+      dplyr::collect(dplyr::select(ds, dplyr::all_of(want)))
+    } else {
+      head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
+                                 showProgress = FALSE)
+      if (!all(want %in% names(head1))) return(NULL)
+      tibble::as_tibble(
+        data.table::fread(file = path, sep = ";", select = want,
+                          colClasses = "character", na.strings = "",
+                          showProgress = FALSE))
+    }
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    to_time <- function(v) if (inherits(v, "POSIXct")) v
+                           else as.POSIXct(as.character(v), tz = "UTC")
+    a <- to_time(d[[date_col]]); b <- to_time(d$dh_inicio)
+    tibble::tibble(
+      YEAR = format(a, "%Y"),
+      SAME = !is.na(a) & !is.na(b) & a == b,
+      DIFF_MIN = abs(as.numeric(difftime(a, b, units = "mins")))
+    )
+  }
+
+  parts <- Filter(Negate(is.null), lapply(c(src$parquet, src$csv), one))
+  if (length(parts) == 0) return(tibble::tibble())
+
+  dplyr::bind_rows(parts) |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(
+      ROWS      = dplyr::n(),
+      SAME_PCT  = round(100 * mean(SAME, na.rm = TRUE), 1),
+      MED_DIFF_MIN = round(stats::median(DIFF_MIN[!SAME], na.rm = TRUE), 1),
+      MAX_DIFF_MIN = round(max(DIFF_MIN[!SAME], na.rm = TRUE), 1),
+      .groups = "drop"
+    )
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

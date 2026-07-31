@@ -387,9 +387,9 @@ callsign + route + day. Those are not duplication and the numbers were misleadin
 4% of the archive at one point. Two findings came out of chasing them, and both are about
 field quality rather than duplication:
 
-#### `dt_dia` falls back to midnight
+#### `dt_dia` does not resolve a movement
 
-Pulling the rows settled it. A group flagged by the old, looser test:
+Pulling the rows showed the shape of it. A group flagged by the old, looser test:
 
 ```
 pk        id      dt_dia               dh_inicio             dh_fim
@@ -400,24 +400,50 @@ E2F1E8D2… PPMFM…  2025-02-16 00:00:00  2025-02-16 18:12:15   2025-02-16 18:1
 ```
 
 Ten **different** flights by one aircraft (`ZZZZ` → `ZZZZ`, local flying) on one day, each
-with its own start and end, all carrying the same `dt_dia` because that field fell back to
-midnight. Any key built on `dt_dia` collapses them into one. They are not duplicates — and
-the strict rule agrees, because their `dh_inicio` are hours apart.
+with its own start and end, all sharing one `dt_dia`. Any key built on `dt_dia` collapses
+them into one. They are not duplicates, and the strict rule agrees: their `dh_inicio` are
+hours apart.
 
-The minute histogram shows this is not simple truncation: `dt_dia` is **not uniformly
-populated**. Around 11% of rows sit at exactly midnight, while the rest carry real times
-clustered on five-minute marks, as filed. `totalbr_midnight_share()` measures that share
-per year.
+How widespread that is needs measuring rather than eyeballing, and the first attempt at it
+was wrong. A histogram of `minute(dt_dia)` put 11% of rows at minute zero, which is **not**
+the same as midnight — 13:00:00 and 20:00:00 are minute zero too. Measured properly,
+`dt_dia` is a bare date on only about 0.1% of rows:
+
+| Year | `dt_dia` at midnight | of rows |
+| --- | --- | --- |
+| 2023 | 1,932 | 1,818,076 |
+| 2024 | 1,912 | 1,959,619 |
+| 2025 | 1,747 | 2,109,623 |
+| 2026 | 337 | 1,232,397 |
+
+So the bare-date rows are real but far too few to explain 3.6% of a year. What the minute
+histogram does show is a stamp **rounded to the hour** on a large share of rows, and a
+stamp that resolves only to the hour cannot separate two movements of one aircraft inside
+that hour any more than a bare date can separate them inside the day.
+
+`totalbr_midnight_share()` now reports both — bare dates and on-the-hour stamps — for all
+three time columns, and `totalbr_stamp_agreement()` answers the question underneath: how
+often `dt_dia` is the movement time at all.
 
 ```{r}
-#| label: tbl-bra-totalbr-midnight
+#| label: tbl-bra-totalbr-stamps
 #| eval: false
 
-totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)
+totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)   # per column, per year
+totalbr_stamp_agreement(raw_dir = bra_totalbr_raw_dir)  # dt_dia vs dh_inicio
 ```
 
+In the API payload `dt_dia` and `dh_inicio` are equal on every sampled row. Wherever they
+diverge, `dt_dia` is something else — a filing time, a rounded stamp, a bare date — and is
+not a movement time.
+
+**The rule for the pipeline:** `dt_dia` is safe for the monthly download windows, because
+even a bare date lands on the right day. It is not safe as a movement time, and neither
+`dh_inicio` nor `dh_fim` can be assumed to carry a time of day without checking — the near
+duplicate test excludes the rows where they do not and reports them as `NO_TIME`.
+
 **The fallback is not confined to `dt_dia`.** Running the near-duplicate check on 2026
-turned up rows where `dh_inicio` and `dh_fim` are *also* exactly midnight:
+turned up rows where `dh_inicio` and `dh_fim` are also bare dates:
 
 ```
 co_matricula co_indicativo co_addep co_addes dh_inicio            dh_fim               GAP_MIN
@@ -428,28 +454,14 @@ co_matricula co_indicativo co_addep co_addes dh_inicio            dh_fim        
 
 A `GAP_MIN` of 0 there is not two records of one movement — it is two empty stamps. Left
 alone, every such row of an aircraft on one day would be flagged as a duplicate of the
-others, and the check would measure the missing clock rather than the traffic. So rows
-without a time of day are **excluded from the near test and reported separately** as
-`NO_TIME`, exactly as rows without a registration are reported as `NO_REG`. The `TESTED_PCT`
-column says what share of the year the rule could actually judge.
-
-So the consequence for the pipeline is not "use `dh_inicio` instead of `dt_dia`" — it is
-that **none of the three timestamps can be trusted to carry a time of day without
-checking**. `totalbr_midnight_share()` reports all three at once:
-
-```{r}
-#| label: tbl-bra-totalbr-midnight-cols
-#| eval: false
-
-totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)
-```
-
-`dt_dia` remains fine for the monthly download windows, because a midnight stamp still
-lands on the right day. It is time-of-day that is missing, not the date.
+others, and the check would measure the missing clock rather than the traffic. Those rows
+are excluded from the test and counted as `NO_TIME`; `TESTED_PCT` says what share of the
+year the rule could actually judge.
 
 Worth checking whether the zeroed rows are a particular class of traffic — the examples
 above are foreign and military (`UAF1225` GMMX→SBEG, `GAF922` SBBR→EDDB), which would
-suggest movements known to Brazil only as a flight plan, without observed times.
+suggest movements known to Brazil only as a flight plan, with no observed times. That would
+make the absence expected rather than a fault.
 
 #### `dh_eet` is not a timestamp, and is encoded differently in each source
 
