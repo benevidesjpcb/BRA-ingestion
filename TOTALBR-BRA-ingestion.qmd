@@ -360,17 +360,28 @@ if (length(files) == 0) {
 }
 ```
 
-`No registration` is there so the near-duplicate figure is read for what it covers: rows
-with an empty `co_matricula` cannot be tested by this rule at all, and in the early samples
-that field was mostly null. A near-duplicate count of zero over a year that is 90% without
-registration says nothing.
+The two tests do not overlap. An exact `pk` repeat trivially satisfies the second rule as
+well — same aircraft, same place, zero minutes apart — so the near test runs only on
+pk-unique rows. `NEAR_DUP` is therefore duplication **beyond** what `SAME_PK` reports, and
+the near examples show pairs with different `pk`, which is the case the rule exists to
+find. Before this, the examples came back full of pairs sharing one `pk`: true duplicates,
+but already counted, and useless as evidence of anything new.
+
+`No registration` and `No time` are there so the near-duplicate figure is read for what it
+covers. Rows with an empty `co_matricula`, or with no time of day on either stamp, cannot
+be tested by this rule at all. A near-duplicate count of zero over a year that is 90%
+untestable says nothing, and `TESTED_PCT` is what makes that visible.
 
 ```{r}
 #| label: examples-bra-totalbr-duplicates
 #| eval: false
 
-# the flagged rows next to the ones they repeat, with the gap in minutes
-totalbr_duplicate_examples(2026, raw_dir = bra_totalbr_raw_dir)
+# the near-duplicates: rows with DIFFERENT pk that the rule caught, next to the
+# rows they repeat, with the gap in minutes
+totalbr_duplicate_examples(2026, "near", raw_dir = bra_totalbr_raw_dir)
+
+# the exact repeats: the same pk twice
+totalbr_duplicate_examples(2026, "pk", raw_dir = bra_totalbr_raw_dir)
 
 # widen or tighten what counts as "almost the same time"
 check_totalbr_duplicates(2026, tol_min = 5,  raw_dir = bra_totalbr_raw_dir)

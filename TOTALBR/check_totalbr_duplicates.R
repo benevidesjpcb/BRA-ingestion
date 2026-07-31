@@ -101,6 +101,12 @@ totalbr_is_midnight <- function(x) {
 totalbr_flag_near <- function(d, tol_min) {
   dt <- data.table::as.data.table(d)
   dt[, ROW_ID := .I]
+  # Exact pk repeats are already counted by the first test, and they trivially
+  # satisfy this one — same aircraft, same place, zero minutes apart — so leaving
+  # them in makes the near test report the same rows twice and fills the examples
+  # with pairs that share a pk instead of the case this rule exists to find:
+  # duplication the pk does NOT identify. Only the first copy of each pk is kept.
+  dt <- dt[!duplicated(pk)]
   dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
 
   flagged <- integer(0)
@@ -147,6 +153,8 @@ check_totalbr_duplicates <- function(years    = NULL,
     d <- totalbr_read_dup_cols(path, date_col, years)
     if (is.null(d)) return(NULL)
 
+    # the near test runs on the pk-unique rows, so NEAR_DUP is duplication BEYOND
+    # what SAME_PK already reports, never the same rows counted a second time
     near <- totalbr_flag_near(d, tol_min)
     d$IS_NEAR <- seq_len(nrow(d)) %in% near
 
@@ -214,10 +222,12 @@ check_totalbr_duplicates <- function(years    = NULL,
 # duplicate — and what to send to ICEA.
 # =============================================================================
 totalbr_duplicate_examples <- function(years    = NULL,
+                                       what     = c("near", "pk"),
                                        tol_min  = TOTALBR_NEAR_MIN,
                                        n        = 10L,
                                        raw_dir  = here::here("data-raw", "totalbr"),
                                        date_col = "dt_dia") {
+  what <- match.arg(what)
   src   <- totalbr_sources(raw_dir)
   paths <- unique(c(src$csv, src$parquet))   # the downloaded years first
 
@@ -229,6 +239,21 @@ totalbr_duplicate_examples <- function(years    = NULL,
 
     dt <- data.table::as.data.table(d)
     dt[, ROW_ID := .I]
+
+    if (what == "pk") {
+      # the exact repeats: every row whose pk occurs more than once
+      out <- dt[pk %in% dt[duplicated(pk), unique(pk)]]
+      if (nrow(out) == 0) next
+      out <- out[pk %in% head(unique(out$pk), n)]
+      data.table::setorderv(out, c("pk", "dh_inicio"))
+      message("Exact pk repeats in ", basename(path))
+      return(tibble::as_tibble(out)[, c("pk", "co_matricula", "co_indicativo",
+                                        "co_addep", "co_addes",
+                                        "dh_inicio", "dh_fim")])
+    }
+
+    # same rule as the count: the exact pk repeats belong to the other view
+    dt <- dt[!duplicated(pk)]
     dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
     # every row of the groups that contain a flagged row, so the repeat is shown
     # next to what it repeats rather than on its own
