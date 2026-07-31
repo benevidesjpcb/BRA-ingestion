@@ -251,8 +251,8 @@ totalbr_duplicate_examples <- function(years    = NULL,
       out <- out[pk %in% head(unique(out$pk), n)]
       data.table::setorderv(out, c("pk", "dh_inicio"))
       message("Exact pk repeats in ", basename(path))
-      return(tibble::as_tibble(out)[, c("pk", "co_matricula", "co_indicativo",
-                                        "co_addep", "co_addes",
+      return(tibble::as_tibble(out)[, c("SOURCE", "pk", "co_matricula",
+                                        "co_indicativo", "co_addep", "co_addes",
                                         "dh_inicio", "dh_fim")])
     }
 
@@ -274,7 +274,11 @@ totalbr_duplicate_examples <- function(years    = NULL,
 
     message("Examples from ", basename(path),
             " (same registration, same aerodrome pair, within ", tol_min, " min)")
-    return(tibble::as_tibble(out)[, c("co_matricula", "co_indicativo",
+    # SOURCE first: the function walks the sources and returns the first that has
+    # anything, so without it a result from the parquet archive reads as if it came
+    # from the downloaded year — which is exactly how a clean 2026 download looked
+    # like it had duplicates that were really the archive's.
+    return(tibble::as_tibble(out)[, c("SOURCE", "co_matricula", "co_indicativo",
                                       "co_addep", "co_addes", "dh_inicio",
                                       "dh_fim", "GAP_MIN", "FLAGGED", "pk")])
   }
@@ -476,6 +480,73 @@ totalbr_source_overlap <- function(raw_dir  = here::here("data-raw", "totalbr"),
       .groups = "drop"
     ) |>
     dplyr::arrange(YEAR)
+}
+
+# =============================================================================
+# totalbr_eet_check(raw_dir, date_col)
+#
+# What dh_eet actually holds, judged by whether it produces a plausible flight.
+#
+# Read as "estimated arrival", dh_eet - dh_eobt is the estimated elapsed time. In
+# the 2026 download that reads correctly: GLO2028 SBGL-SBFL comes out at about 75
+# minutes, which is the real block time. In the 2019 sample it does not — the
+# difference there equals the EOBT's own time of day, which is not a flight.
+#
+# So the field cannot be judged from a summary statistic alone: rows where both
+# stamps are a bare date give a difference of zero and pile up at the centre,
+# which is what made an earlier reading of this column wrong. Those rows are
+# excluded here and reported separately.
+# =============================================================================
+totalbr_eet_check <- function(raw_dir  = here::here("data-raw", "totalbr"),
+                              date_col = "dt_dia") {
+  src  <- totalbr_sources(raw_dir)
+  want <- c("dh_eobt", "dh_eet", date_col)
+
+  one <- function(path) {
+    d <- if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!all(want %in% names(ds))) return(NULL)
+      dplyr::collect(dplyr::select(ds, dplyr::all_of(want)))
+    } else {
+      head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
+                                 showProgress = FALSE)
+      if (!all(want %in% names(head1))) return(NULL)
+      tibble::as_tibble(
+        data.table::fread(file = path, sep = ";", select = want,
+                          colClasses = "character", na.strings = "",
+                          showProgress = FALSE))
+    }
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+    to_time <- function(v) if (inherits(v, "POSIXct")) v
+                           else as.POSIXct(as.character(v), tz = "UTC")
+    eobt <- to_time(d$dh_eobt); eet <- to_time(d$dh_eet)
+    tibble::tibble(
+      SOURCE  = basename(path),
+      YEAR    = substr(as.character(to_time(d[[date_col]])), 1, 4),
+      # rows where either stamp is a bare date cannot say anything about a duration
+      TIMELESS = totalbr_is_midnight(eobt) | totalbr_is_midnight(eet) |
+                 is.na(eobt) | is.na(eet),
+      MINUTES = as.numeric(difftime(eet, eobt, units = "mins"))
+    )
+  }
+
+  parts <- Filter(Negate(is.null), lapply(c(src$parquet, src$csv), one))
+  if (length(parts) == 0) return(tibble::tibble())
+
+  dplyr::bind_rows(parts) |>
+    dplyr::group_by(SOURCE, YEAR) |>
+    dplyr::summarise(
+      ROWS         = dplyr::n(),
+      TIMELESS_PCT = round(100 * mean(TIMELESS), 1),
+      # a plausible flight is minutes long, not negative and not days
+      MED_MINUTES  = round(stats::median(MINUTES[!TIMELESS], na.rm = TRUE), 1),
+      PLAUSIBLE_PCT = round(100 * mean(MINUTES[!TIMELESS] > 0 &
+                                       MINUTES[!TIMELESS] <= 20 * 60,
+                                       na.rm = TRUE), 1),
+      NEGATIVE_PCT = round(100 * mean(MINUTES[!TIMELESS] < 0, na.rm = TRUE), 1),
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(SOURCE, YEAR)
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

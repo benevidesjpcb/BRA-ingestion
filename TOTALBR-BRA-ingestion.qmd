@@ -377,7 +377,9 @@ untestable says nothing, and `TESTED_PCT` is what makes that visible.
 #| eval: false
 
 # the near-duplicates: rows with DIFFERENT pk that the rule caught, next to the
-# rows they repeat, with the gap in minutes
+# rows they repeat, with the gap in minutes. Read the SOURCE column: the function
+# walks the sources and returns the first that has anything, so a result can come
+# from the parquet archive even when the year you asked about was downloaded.
 totalbr_duplicate_examples(2026, "near", raw_dir = bra_totalbr_raw_dir)
 
 # the exact repeats: the same pk twice
@@ -502,54 +504,43 @@ above are foreign and military (`UAF1225` GMMX→SBEG, `GAF922` SBBR→EDDB), wh
 suggest movements known to Brazil only as a flight plan, with no observed times. That would
 make the absence expected rather than a fault.
 
-#### `dh_eet` is not a timestamp, and is encoded differently in each source
+#### `dh_eet`: correct in the API year, wrong in the 2019 sample
 
-In the API payload, `dh_eet` minus `dh_eobt` equals **the time of day of `dh_eobt`**, on
-every sampled row:
-
-| `dh_eobt` | `dh_eet` | difference | time of day |
-| --- | --- | --- | --- |
-| 2019-03-12 16:00 | 2019-03-13 08:00 | 16h00 | 16:00 |
-| 2019-03-12 18:50 | 2019-03-13 13:40 | 18h50 | 18:50 |
-| 2019-05-19 13:01 | 2019-05-20 02:02 | 13h01 | 13:01 |
-
-That is not an elapsed time — a light single from Porto Alegre to Santa Maria does not fly
-for sixteen hours. It reads as the EOBT having been added to itself as though it were a
-duration. In the parquet archive the field behaves differently again: `dh_eet` equals
-`dh_eobt` exactly, a difference of zero.
-
-Either way the real EET is not recoverable from this column, and it must never be read as a
-timestamp. Confirm at scale, then report:
-
-```r
-d <- data.table::fread(file = file.path(bra_totalbr_raw_dir, "totalbr_2026.csv"),
-                       sep = ";", select = c("dh_eobt", "dh_eet"),
-                       colClasses = "character")
-d    <- d[nzchar(dh_eet) & !is.na(dh_eet)]
-eobt <- as.POSIXct(d$dh_eobt, tz = "UTC")
-tod  <- as.numeric(difftime(eobt, trunc(eobt, "days"), units = "mins"))
-gap  <- as.numeric(difftime(as.POSIXct(d$dh_eet, tz = "UTC"), eobt, units = "mins"))
-summary(gap - tod)     # all zero confirms the pattern
-```
-
-Run over the full 2026 file, that confirmed it and turned up a second fault:
+Read as an estimated arrival time, `dh_eet` minus `dh_eobt` is the estimated elapsed time.
+In the 2026 download that comes out right. GLO2028, SBGL→SBFL:
 
 ```
-     Min.   1st Qu.    Median      Mean   3rd Qu.      Max.
--29750400         0         0    -92576         0      1440
+dh_eobt              dh_fim               dh_eet
+2026-01-01 00:03:00  2026-01-01 01:13:41  2026-01-01 01:18:00
 ```
 
-The three quartiles are exactly zero, so the identity holds for at least 75% of rows — a
-rule, not an artefact of the sample. The minimum is roughly 56.6 years in minutes: the
-distance back to **1970-01-01**. Those rows carry the **epoch as a null sentinel** instead
-of an empty value, and the mean says they are about 0.31% of the file.
+Seventy-five minutes Rio to Florianópolis, against an actual `dh_fim` of 01:13 — the field
+is doing exactly what its name says.
 
-That is the most dangerous shape a null can take. An `NA` propagates and shows itself; a
-1970 date enters an average silently and drags it — which is exactly what happened here,
-where 0.3% of the rows pulled the mean from 0 to −92,576. Anything reading `dh_eet` must
-reject epoch dates explicitly, not rely on `na.rm`. The duplicate check does this for
-`dh_inicio`/`dh_fim` already: without it, every epoch-stamped row would sit at the same
-instant and be flagged as a duplicate of every other.
+In the 2019 API sample it does not. There the difference from `dh_eobt` equals the EOBT's
+**own time of day**, on every row sampled — 16:00 filed, 16h00 "elapsed"; 18:50 filed,
+18h50 "elapsed" — which is not a flight a light single makes.
+
+An earlier reading of this column concluded the field was broken outright, from a `summary()`
+whose quartiles were all zero. That was wrong, and the way it was wrong is worth keeping:
+rows where both stamps are a **bare date** give a difference of zero and pile up at the
+centre of the distribution, so the median said "zero" about the empty rows rather than about
+the field. A statistic over a column with a large timeless class describes the class, not
+the column.
+
+`totalbr_eet_check()` judges it the only way that means anything — by whether the implied
+duration is a flight — and excludes the timeless rows instead of averaging over them:
+
+```{r}
+#| label: tbl-bra-totalbr-eet
+#| eval: false
+
+totalbr_eet_check(raw_dir = bra_totalbr_raw_dir)
+```
+
+`PLAUSIBLE_PCT` is the share landing between zero and twenty hours. High for a source means
+`dh_eet` can be used there as an estimated arrival; low means it cannot, whatever the median
+says.
 
 Nothing here repairs anything, deliberately. De-duplicating a national movement table
 changes every count computed from it, and which copy to keep is DECEA's call, not a choice
@@ -682,12 +673,12 @@ airport-level use of this table has to decide what to do with them.
    `co_addes` as its two ends, so an airport count has to decide whether to count the
    flight once or once per end. The table above counts per end; confirm that this matches
    how DECEA reports movements before comparing the numbers to a published figure.
-2. ~~`dh_eet` is stored as a timestamp, not a duration~~ — **measured, twice.** The
-   difference from `dh_eobt` is the EOBT's own time of day in the API (75%+ of rows,
-   exactly), and zero in the archive. On top of that, ~0.3% of rows carry 1970-01-01 as a
-   null sentinel. The EET is not recoverable from this column in either source, and any
-   code touching it must exclude epoch dates rather than trust `na.rm`. ICEA need to
-   confirm what the field is meant to hold.
+2. **`dh_eet` behaves differently by era.** In the 2026 download it is a sound estimated
+   arrival time (GLO2028 SBGL→SBFL: 75 minutes, against an actual 71). In the 2019 sample
+   the difference from `dh_eobt` is the EOBT's own time of day, which is not a flight.
+   Some rows also carry 1970-01-01 as a null sentinel, so any code touching the column must
+   exclude epoch dates rather than trust `na.rm`. Worth asking ICEA when the encoding
+   changed, rather than reporting the field as broken.
 3. **`dt_dia` versus `dh_inicio`.** They are equal on rows that carry a real time, but
    around 11% of rows have `dt_dia` at midnight while `dh_inicio` holds the actual movement
    time. Use `dh_inicio` for anything time-of-day; `dt_dia` is still safe for the month
