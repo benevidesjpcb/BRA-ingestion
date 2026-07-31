@@ -270,6 +270,91 @@ totalbr_duplicate_examples <- function(level    = "movement",
   tibble::tibble()
 }
 
+# =============================================================================
+# totalbr_duplicate_anatomy(level, max_groups, ...)
+#
+# Counting duplicates says HOW MANY; this says WHAT MAKES THEM DIFFERENT, which
+# is what decides whether they are duplication at all.
+#
+# For a sample of duplicate groups it reports, per column, the share of groups
+# in which that column varies between the copies. The reading:
+#
+#   li_orgaos varies in most groups   -> NOT duplication. The source emits one
+#                                        row per ATS unit crossed; the flight is
+#                                        one flight and the rows must be
+#                                        collapsed before counting movements.
+#   only dh_inicio/dh_fim vary        -> the same movement stored twice with a
+#                                        different window: duplication.
+#   nothing varies                    -> a plain repeated row.
+#
+# The sample is capped because this reads the actual rows; the shares are stable
+# well before the cap.
+# =============================================================================
+totalbr_duplicate_anatomy <- function(level      = "movement",
+                                      max_groups = 2000L,
+                                      raw_dir    = here::here("data-raw", "totalbr"),
+                                      date_col   = "dt_dia") {
+  spec <- totalbr_dup_levels[[level]]
+  if (is.null(spec)) stop("Unknown level '", level, "'.")
+
+  src   <- totalbr_sources(raw_dir, include_parts = TRUE)
+  paths <- if (isTRUE(spec$parts) && length(src$parts) > 0)
+    c(src$parquet, src$parts) else c(src$parquet, src$csv)
+
+  key_expr <- rlang::expr(paste(!!!lapply(spec$keys, function(k)
+                                  rlang::expr(as.character(!!rlang::sym(k)))),
+                                sep = !!TOTALBR_KEY_SEP))
+
+  out <- purrr::map(paths, function(path) {
+    d <- tryCatch({
+      if (grepl("\\.parquet$", path)) {
+        ds <- arrow::open_dataset(path)
+        if (!all(setdiff(spec$keys, "DAY") %in% names(ds))) return(NULL)
+        q  <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col),
+                                   day = spec$day) |>
+          dplyr::mutate(KEY = !!key_expr)
+        dup <- q |> dplyr::group_by(KEY) |>
+          dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
+          dplyr::filter(N > 1) |> head(max_groups) |> dplyr::collect()
+        if (nrow(dup) == 0) return(NULL)
+        dplyr::collect(dplyr::filter(q, KEY %in% dup$KEY))
+      } else {
+        raw <- data.table::fread(file = path, sep = ";", colClasses = "character",
+                                 na.strings = "", showProgress = FALSE)
+        if (!all(setdiff(spec$keys, "DAY") %in% names(raw))) return(NULL)
+        raw <- tibble::as_tibble(raw)
+        if (spec$day) raw$DAY <- substr(raw[[date_col]], 1, 10)
+        raw <- dplyr::mutate(raw, KEY = !!key_expr)
+        dup <- raw |> dplyr::count(KEY, name = "N") |> dplyr::filter(N > 1) |>
+          head(max_groups)
+        if (nrow(dup) == 0) return(NULL)
+        dplyr::filter(raw, KEY %in% dup$KEY)
+      }
+    }, error = function(e) NULL)
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+
+    cols <- setdiff(names(d), c("KEY", "YEAR", "DAY"))
+    varies <- d |>
+      dplyr::group_by(KEY) |>
+      dplyr::summarise(dplyr::across(dplyr::all_of(cols),
+                                     ~ dplyr::n_distinct(.x, na.rm = FALSE) > 1),
+                       .groups = "drop")
+    tibble::tibble(
+      SOURCE = basename(path),
+      COLUMN = cols,
+      `GROUPS WHERE IT VARIES (%)` =
+        round(100 * vapply(cols, function(c) mean(varies[[c]]), numeric(1)), 1),
+      GROUPS = nrow(varies)
+    )
+  }) |> purrr::list_rbind()
+
+  if (is.null(out) || nrow(out) == 0) {
+    message("No duplicate groups found at level '", level, "'.")
+    return(tibble::tibble())
+  }
+  dplyr::arrange(out, SOURCE, dplyr::desc(`GROUPS WHERE IT VARIES (%)`))
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({

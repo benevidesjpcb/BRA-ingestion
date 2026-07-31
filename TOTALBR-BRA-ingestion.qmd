@@ -376,7 +376,41 @@ How to read the result:
 # a gap near zero is the same movement stored twice, hours apart is real traffic
 totalbr_duplicate_examples("movement", n = 5, raw_dir = bra_totalbr_raw_dir)
 totalbr_duplicate_examples("key",      n = 5, raw_dir = bra_totalbr_raw_dir)
+
+# WHAT differs between the copies — the question the counts cannot answer
+totalbr_duplicate_anatomy("movement", raw_dir = bra_totalbr_raw_dir)
 ```
+
+The anatomy table is the one that decides whether the `movement` level is duplication at
+all. If `li_orgaos` varies in most groups, the source is emitting **one row per ATS unit
+crossed** and the flight is a single flight — the rows must be collapsed before anything
+counts movements, but nothing is duplicated. If only `dh_inicio`/`dh_fim` vary, the same
+movement really is stored twice.
+
+### What the first run showed
+
+Measured over 2023–2026 (the archive for 2023–2025, the API for 2026):
+
+| Level | 2023–2025 | 2026 |
+| --- | --- | --- |
+| `key` | 13–285 rows (≤0.016%) | 194 rows in the parts |
+| `record` | same rows as `key` | 134 rows (0.012%) |
+| `movement` | **~3.6% of every year** | 0.024% |
+| `daily` | 5.8–6.6% | 13.8% |
+
+Three readings, in order of how much they matter:
+
+1. **`movement` is ~3.6% in the archive and ~0.02% in the API year.** A 150-fold difference
+   between two producers of the same table is not an operational change, it is a difference
+   in how the rows are built. Until the anatomy table says what varies between the copies,
+   **do not compare a movement count from the archive with one from the API** — that is the
+   same trap that produced a negative additional time in the ASMA work, in a new place.
+2. **`key` and `record` agree exactly for 2023–2025**, which confirms those copies are
+   identical in every field: a plain repeated row, and rare enough to be ignorable.
+3. **`daily` doubles in 2026** while `movement` collapses, so the 2026 repeats are at
+   *different* times of day. That is what genuine repeated rotations look like — but it can
+   equally be circuit training (`co_addep == co_addes`) that the archive excluded. Worth
+   splitting those out before drawing any conclusion.
 
 Nothing here repairs anything, deliberately. De-duplicating a national movement table
 changes every count computed from it, and which copy to keep is DECEA's call, not a choice
