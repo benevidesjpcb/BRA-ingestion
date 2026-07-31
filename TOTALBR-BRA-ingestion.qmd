@@ -391,6 +391,34 @@ check_totalbr_duplicates(2026, tol_min = 30, raw_dir = bra_totalbr_raw_dir)
 Run the examples before reporting anything. The gap in minutes is what turns a count into
 evidence, and it is what ICEA need in order to find the records on their side.
 
+### The two sources overlap at the year boundary
+
+The archive labelled 2023–2025 carries rows dated **2026-01-01** in the first hours UTC —
+the evening of 31 December in Brazil — so its extraction was cut at a local-time boundary
+and spilled into the next year. Those same rows are in the downloaded 2026 file. Anything
+reading both sources counts them twice.
+
+It surfaced by accident: the near-duplicate examples came back full of pairs sharing one
+`pk`, all stamped 2026-01-01 between 00:29 and 00:57, all long-haul international. The
+uppercase hashes gave away which source they came from.
+
+Which is the second half of the finding. **The row hash arrives uppercase from the archive
+and lowercase from the API.** Compared as they come, the same row from the two sources
+looks like two different rows, and no de-duplication on `pk` matches across them. Every
+comparison here now folds the case first.
+
+```{r}
+#| label: tbl-bra-totalbr-overlap
+#| eval: false
+
+totalbr_source_overlap(raw_dir = bra_totalbr_raw_dir)
+```
+
+`IN_BOTH` above zero for a year means that year is held twice, and the movement counts for
+it are inflated by that much. The fix is a decision about precedence — for the overlapping
+window, keep the API rows or the archive rows, not both — and it belongs wherever the two
+sources are combined for analysis, not in the ingestion.
+
 ### Why the earlier, looser tests were dropped
 
 An earlier version of this check also counted rows sharing `id` + `dt_dia`, and rows sharing

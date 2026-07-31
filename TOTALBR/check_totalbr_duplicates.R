@@ -72,6 +72,10 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
   }
 
   if (is.null(d) || nrow(d) == 0) return(NULL)
+  # The row hash arrives UPPERCASE from the parquet archive and lowercase from the
+  # API. Compared as they come, the same row from both sources looks like two
+  # different rows and no de-duplication on pk can ever match across them.
+  d$pk <- toupper(trimws(as.character(d$pk)))
   # times as POSIXct whichever way they were stored, and the epoch sentinel
   # (1970-01-01, which ODIN uses in place of an empty value) treated as missing
   # so it cannot masquerade as a movement at the start of time
@@ -415,6 +419,63 @@ totalbr_stamp_agreement <- function(raw_dir  = here::here("data-raw", "totalbr")
       MAX_DIFF_MIN = round(max(DIFF_MIN[!SAME], na.rm = TRUE), 1),
       .groups = "drop"
     )
+}
+
+# =============================================================================
+# totalbr_source_overlap(raw_dir, date_col)
+#
+# Do the sources overlap? Per year: the rows each source holds, and how many row
+# hashes appear in BOTH.
+#
+# This is not a hypothetical. The parquet archive labelled 2023-2025 carries rows
+# dated 2026-01-01 in the first hours UTC — the evening of 31 December in Brazil,
+# so its extraction was cut at a local-time boundary and spilled into the next
+# year. Those rows are also in the downloaded 2026 file. Anything summing the two
+# sources counts them twice.
+#
+# The comparison folds case first: the archive writes the hash uppercase and the
+# API lowercase, so an unfolded comparison finds no overlap however much there is.
+# =============================================================================
+totalbr_source_overlap <- function(raw_dir  = here::here("data-raw", "totalbr"),
+                                   date_col = "dt_dia") {
+  src <- totalbr_sources(raw_dir)
+  if (length(src$parquet) == 0 || length(src$csv) == 0) {
+    message("Need both a parquet archive and at least one downloaded CSV.")
+    return(tibble::tibble())
+  }
+
+  keys <- function(path) {
+    d <- if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!all(c("pk", date_col) %in% names(ds))) return(NULL)
+      q <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
+      dplyr::collect(dplyr::select(q, dplyr::all_of(c("pk", "YEAR"))))
+    } else {
+      x <- data.table::fread(file = path, sep = ";",
+                             select = unique(c("pk", date_col)),
+                             colClasses = "character", na.strings = "",
+                             showProgress = FALSE)
+      tibble::tibble(pk = x$pk, YEAR = substr(x[[date_col]], 1, 4))
+    }
+    if (is.null(d)) return(NULL)
+    d$pk <- toupper(trimws(as.character(d$pk)))
+    d$KIND <- if (grepl("\\.parquet$", path)) "parquet" else "csv"
+    d
+  }
+
+  all <- dplyr::bind_rows(Filter(Negate(is.null),
+                                 lapply(c(src$parquet, src$csv), keys)))
+  if (nrow(all) == 0) return(tibble::tibble())
+
+  all |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(
+      PARQUET = sum(KIND == "parquet"),
+      CSV     = sum(KIND == "csv"),
+      IN_BOTH = length(intersect(pk[KIND == "parquet"], pk[KIND == "csv"])),
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(YEAR)
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------
