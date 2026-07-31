@@ -442,20 +442,68 @@ grouping key. In the API payload those two fields hold **the same value on every
 with `dh_inicio` and these groups would not exist — which is exactly what happens in the
 API year, where `movement` is 0.02%.
 
-The likely explanation is that the archive's `dt_dia` is **truncated** (to the hour), which
-fits the arithmetic: `movement` at 3.59% would be the subset of `daily` at 5.77% that falls
-in the same hour. Two flight plans for one flight, minutes apart, collide under a truncated
-stamp; two genuine rotations hours apart do not. Confirm with:
+### Resolved: the 3.6% is a precision artefact
 
-```r
-ds <- arrow::open_dataset(here::here("data-raw", "totalbr", "<archive>.parquet"))
-ds |> dplyr::count(MIN = lubridate::minute(dt_dia)) |> dplyr::collect()
+Pulling the rows settled it. A sample group, in the archive:
+
+```
+pk        id      dt_dia               dh_inicio             dh_fim
+6104BE1E… PPMFM…  2025-02-16 00:00:00  2025-02-16 20:56:03   2025-02-16 21:07:58
+E2F1E8D2… PPMFM…  2025-02-16 00:00:00  2025-02-16 18:12:15   2025-02-16 18:12:19
+82B9BD65… PPMFM…  2025-02-16 00:00:00  2025-02-16 18:46:24   2025-02-16 18:47:40
+…ten rows, dh_inicio spanning 13:55 to 21:53
 ```
 
-Everything landing on `MIN = 0` means the 3.6% is largely an **artefact of precision**, not
-duplication: the flights are distinct, the timestamp just cannot tell them apart. Until
-that is settled, the duplication confirmed to be real is the `record` level only — 13 to
-285 rows a year, at most 0.016%.
+Ten **different** flights by one aircraft (`ZZZZ` → `ZZZZ`, local flying) on one day, each
+with its own start and end, all carrying the same `dt_dia` because that field fell back to
+midnight. Under a key of `id` + `dt_dia` they collide. They are not duplicates.
+
+The minute histogram shows this is not simple truncation: `dt_dia` is **not uniformly
+populated**. Around 11% of rows sit at exactly midnight, while the rest carry real times
+clustered on five-minute marks, as filed. `totalbr_midnight_share()` measures that share
+per year, and a `movement` percentage is only meaningful read next to it.
+
+```{r}
+#| label: tbl-bra-totalbr-midnight
+#| eval: false
+
+totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)
+```
+
+So the duplication confirmed to be real is the `record` level only — 13 to 285 rows a year,
+at most 0.016%. That is what is worth reporting back to ICEA; the 3.6% is a stamp that
+cannot tell two flights apart, and the fix for it is not de-duplication but using
+`dh_inicio` where a movement time is needed.
+
+### `dh_eet` is not a timestamp, and is encoded differently in each source
+
+In the API payload, `dh_eet` minus `dh_eobt` equals **the time of day of `dh_eobt`**, on
+every sampled row:
+
+| `dh_eobt` | `dh_eet` | difference | time of day |
+| --- | --- | --- | --- |
+| 2019-03-12 16:00 | 2019-03-13 08:00 | 16h00 | 16:00 |
+| 2019-03-12 18:50 | 2019-03-13 13:40 | 18h50 | 18:50 |
+| 2019-05-19 13:01 | 2019-05-20 02:02 | 13h01 | 13:01 |
+
+That is not an elapsed time — a light single from Porto Alegre to Santa Maria does not fly
+for sixteen hours. It reads as the EOBT having been added to itself as though it were a
+duration. In the parquet archive the field behaves differently again: `dh_eet` equals
+`dh_eobt` exactly, a difference of zero.
+
+Either way the real EET is not recoverable from this column, and it must never be read as a
+timestamp. Confirm at scale, then report:
+
+```r
+d <- data.table::fread(file = file.path(bra_totalbr_raw_dir, "totalbr_2026.csv"),
+                       sep = ";", select = c("dh_eobt", "dh_eet"),
+                       colClasses = "character")
+d    <- d[nzchar(dh_eet) & !is.na(dh_eet)]
+eobt <- as.POSIXct(d$dh_eobt, tz = "UTC")
+tod  <- as.numeric(difftime(eobt, trunc(eobt, "days"), units = "mins"))
+gap  <- as.numeric(difftime(as.POSIXct(d$dh_eet, tz = "UTC"), eobt, units = "mins"))
+summary(gap - tod)     # all zero confirms the pattern
+```
 
 Nothing here repairs anything, deliberately. De-duplicating a national movement table
 changes every count computed from it, and which copy to keep is DECEA's call, not a choice
@@ -585,12 +633,14 @@ airport-level use of this table has to decide what to do with them.
    `co_addes` as its two ends, so an airport count has to decide whether to count the
    flight once or once per end. The table above counts per end; confirm that this matches
    how DECEA reports movements before comparing the numbers to a published figure.
-2. **`dh_eet` is stored as a timestamp, not a duration** (e.g. `2019-03-13T08:00:00` for a
-   flight on 2019-03-12). It looks like an elapsed time encoded onto an arbitrary date;
-   confirm the convention with ICEA before using it.
-3. **`dt_dia` versus `dh_inicio`.** They are identical in every sampled row. Confirm they
-   are meant to be, or which one is authoritative if they can differ — the month windows
-   filter on `dt_dia`, and a divergence would put rows in the wrong month file.
+2. ~~`dh_eet` is stored as a timestamp, not a duration~~ — **measured.** The difference
+   from `dh_eobt` is the EOBT's own time of day in the API, and zero in the archive. The
+   EET is not recoverable from this column in either source; ICEA need to confirm what it
+   is meant to hold.
+3. **`dt_dia` versus `dh_inicio`.** They are equal on rows that carry a real time, but
+   around 11% of rows have `dt_dia` at midnight while `dh_inicio` holds the actual movement
+   time. Use `dh_inicio` for anything time-of-day; `dt_dia` is still safe for the month
+   windows, because a midnight stamp still lands on the right day.
 4. **`co_matricula` and `ds_rota` are largely null** in the sample. Confirm whether they
    are populated for later years before any analysis depends on them.
 5. **Harmonisation to APDF is not defined yet.** Unlike taxi-time and ASMA, this table has

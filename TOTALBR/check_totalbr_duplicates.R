@@ -355,6 +355,66 @@ totalbr_duplicate_anatomy <- function(level      = "movement",
   dplyr::arrange(out, SOURCE, dplyr::desc(`GROUPS WHERE IT VARIES (%)`))
 }
 
+# =============================================================================
+# totalbr_midnight_share(raw_dir, date_col)
+#
+# Per year: how many rows carry a dt_dia of exactly 00:00:00.
+#
+# This matters because dt_dia is NOT uniformly populated. Most rows carry a real
+# time (clustered on five-minute marks, as filed), but a large minority fall back
+# to midnight — the day with no time at all. Under a key of id + dt_dia every
+# midnight row of the same callsign and route on the same day collides, which is
+# where essentially all of the `movement` "duplication" comes from. Ten flights by
+# one aircraft in a day are ten flights; a stamp that cannot tell them apart is a
+# precision problem, not duplication.
+#
+# Read this next to check_totalbr_duplicates(): a `movement` percentage is only
+# meaningful once the midnight share is known.
+# =============================================================================
+totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
+                                   date_col = "dt_dia") {
+  src <- totalbr_sources(raw_dir)
+
+  from_parquet <- function(path) {
+    ds <- arrow::open_dataset(path)
+    if (!date_col %in% names(ds)) return(NULL)
+    s <- rlang::sym(date_col)
+    tryCatch({
+      q <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
+      q |>
+        dplyr::mutate(MIDNIGHT = lubridate::hour(!!s) == 0 &
+                                 lubridate::minute(!!s) == 0 &
+                                 lubridate::second(!!s) == 0) |>
+        dplyr::group_by(YEAR, MIDNIGHT) |>
+        dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
+        dplyr::collect()
+    }, error = function(e) NULL)
+  }
+
+  from_csv <- function(path) {
+    v <- data.table::fread(file = path, sep = ";", select = date_col,
+                           colClasses = "character", na.strings = "",
+                           showProgress = FALSE)[[1]]
+    tibble::tibble(YEAR = substr(v, 1, 4),
+                   MIDNIGHT = substr(v, 12, 19) %in% c("00:00:00", "")) |>
+      dplyr::count(YEAR, MIDNIGHT, name = "N")
+  }
+
+  parts <- Filter(Negate(is.null),
+                  c(lapply(src$parquet, from_parquet),
+                    lapply(src$csv, from_csv)))
+  if (length(parts) == 0) return(tibble::tibble())
+
+  dplyr::bind_rows(parts) |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(
+      ROWS       = sum(N),
+      MIDNIGHT   = sum(N[MIDNIGHT]),
+      `MIDNIGHT_PCT` = round(100 * sum(N[MIDNIGHT]) / sum(N), 2),
+      .groups = "drop"
+    )
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
