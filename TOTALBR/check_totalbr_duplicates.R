@@ -161,16 +161,25 @@ totalbr_flag_near <- function(d, tol_min) {
 # covers rather than assumed to cover everything.
 # =============================================================================
 check_totalbr_duplicates <- function(years    = NULL,
+                                     source   = c("all", "csv", "parquet"),
                                      tol_min  = TOTALBR_NEAR_MIN,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
-
-  src   <- totalbr_sources(raw_dir, include_parts = TRUE)
-  # The pk test reads the per-month PARTS as well: the merge de-duplicates on pk,
-  # so by the time a year file exists it can no longer show whether the API
-  # repeated a row. The near test reads the merged files, which is the data
-  # anything downstream would actually use.
-  paths <- unique(c(src$parquet, src$csv))
+  source <- match.arg(source)
+  src    <- totalbr_sources(raw_dir, include_parts = TRUE)
+  # The archive and the API are different producers with different faults, so a
+  # figure pooling them describes neither. "csv" is the API's own answer.
+  paths <- switch(source,
+                  all     = unique(c(src$parquet, src$csv)),
+                  csv     = src$csv,
+                  parquet = src$parquet)
+  if (length(paths) == 0) {
+    message("No ", source, " source in ", raw_dir); return(tibble::tibble())
+  }
+  # The pk test also reads the per-month PARTS, which are the API's: the merge
+  # de-duplicates on pk, so by the time a year file exists it can no longer show
+  # whether the API repeated a row.
+  use_parts <- source %in% c("all", "csv")
 
   res <- purrr::map(paths, function(path) {
     message("Reading ", basename(path), " ...")
@@ -202,7 +211,7 @@ check_totalbr_duplicates <- function(years    = NULL,
 
   if (is.null(res) || nrow(res) == 0) return(tibble::tibble())
 
-  pk_parts <- if (length(src$parts) > 0) {
+  pk_parts <- if (use_parts && length(src$parts) > 0) {
     message("Reading the month parts for the pk test ...")
     purrr::map(src$parts, function(f) {
       x <- data.table::fread(file = f, sep = ";", select = c("pk", date_col),

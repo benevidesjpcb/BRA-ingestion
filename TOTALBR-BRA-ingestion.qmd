@@ -344,7 +344,9 @@ source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
 if (length(files) == 0) {
   knitr::kable(tibble::tibble(note = "No source files yet — nothing to check."))
 } else {
-  dups <- check_totalbr_duplicates(raw_dir = bra_totalbr_raw_dir,
+  # "all" here for the overview; read it per source before concluding anything
+  dups <- check_totalbr_duplicates(source   = "all",
+                                   raw_dir  = bra_totalbr_raw_dir,
                                    date_col = totalbr_date_col)
   if (nrow(dups) == 0) {
     knitr::kable(tibble::tibble(result = "No duplication found."))
@@ -392,9 +394,12 @@ dup26 <- totalbr_duplicate_rows(2026, "csv", raw_dir = bra_totalbr_raw_dir)
 totalbr_duplicate_rows(2026, "csv", raw_dir = bra_totalbr_raw_dir,
                        out_file = here::here("outputs", "totalbr-2026-duplicates.csv"))
 
+# the API's own answer, with nothing from the archive mixed in
+check_totalbr_duplicates(2026, "csv", raw_dir = bra_totalbr_raw_dir)
+
 # widen or tighten what counts as "almost the same time"
-check_totalbr_duplicates(2026, tol_min = 5,  raw_dir = bra_totalbr_raw_dir)
-check_totalbr_duplicates(2026, tol_min = 30, raw_dir = bra_totalbr_raw_dir)
+check_totalbr_duplicates(2026, "csv", tol_min = 5,  raw_dir = bra_totalbr_raw_dir)
+check_totalbr_duplicates(2026, "csv", tol_min = 30, raw_dir = bra_totalbr_raw_dir)
 ```
 
 Run the examples before reporting anything. The gap in minutes is what turns a count into
@@ -417,6 +422,21 @@ Each row comes back with `REASON` (`same pk` or `near`), a `PAIR` number shared 
 that belong together, `ROLE` (`repeat` or `original`) and `GAP_MIN`. So a repeat is always
 next to the row it repeats, which is what makes the output usable as evidence rather than
 as a list of record ids.
+
+### Result for the 2026 API download: none
+
+`totalbr_duplicate_rows(2026, "csv")` returns nothing. The year downloaded from the API
+contains no duplicated rows under either rule — no repeated `pk`, and no aircraft repeating
+itself at one aerodrome pair within the tolerance. Filtering the file by hand for the
+callsigns flagged earlier confirms it: those records are not in it.
+
+Read that number next to `TESTED_PCT` from `check_totalbr_duplicates(2026, "csv")` before
+concluding anything. If most of 2026 has no `co_matricula`, or no time of day on either
+stamp, then "no duplicates" means "the rule could not be applied", not "there are none".
+The two statements look identical in a summary table and are not the same finding.
+
+So the duplication ICEA reported is in the handed-over archive, not in what the API serves
+today — which is a different message to send back, and a better one.
 
 ### The two sources overlap at the year boundary
 
