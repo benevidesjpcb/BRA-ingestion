@@ -72,20 +72,26 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
   }
 
   if (is.null(d) || nrow(d) == 0) return(NULL)
+  d <- totalbr_normalise(d)
+  d$SOURCE <- basename(path)
+  d
+}
+
+# ---- the shape every entry point needs before it can compare rows -----------
+totalbr_normalise <- function(d) {
   # The row hash arrives UPPERCASE from the parquet archive and lowercase from the
   # API. Compared as they come, the same row from both sources looks like two
   # different rows and no de-duplication on pk can ever match across them.
-  d$pk <- toupper(trimws(as.character(d$pk)))
+  if ("pk" %in% names(d)) d$pk <- toupper(trimws(as.character(d$pk)))
   # times as POSIXct whichever way they were stored, and the epoch sentinel
   # (1970-01-01, which ODIN uses in place of an empty value) treated as missing
   # so it cannot masquerade as a movement at the start of time
-  for (nm in c("dh_inicio", "dh_fim")) {
+  for (nm in intersect(c("dh_inicio", "dh_fim"), names(d))) {
     v <- d[[nm]]
     if (!inherits(v, "POSIXct")) v <- as.POSIXct(as.character(v), tz = "UTC")
     v[!is.na(v) & v < as.POSIXct("1980-01-01", tz = "UTC")] <- NA
     d[[nm]] <- v
   }
-  d$SOURCE <- basename(path)
   d
 }
 
@@ -102,7 +108,9 @@ totalbr_is_midnight <- function(x) {
 # gap to the previous row of the same group is within the tolerance is a repeat
 # of it. Run once per time column, because two rows can be close on dh_fim while
 # their dh_inicio are further apart.
-totalbr_flag_near <- function(d, tol_min) {
+# Which row each flagged row repeats, and by how many minutes. The count only
+# needs the flagged row; showing the evidence needs both, so the pair is kept.
+totalbr_near_pairs <- function(d, tol_min) {
   dt <- data.table::as.data.table(d)
   dt[, ROW_ID := .I]
   # Exact pk repeats are already counted by the first test, and they trivially
@@ -113,7 +121,7 @@ totalbr_flag_near <- function(d, tol_min) {
   dt <- dt[!duplicated(pk)]
   dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
 
-  flagged <- integer(0)
+  flagged <- list()
   for (tcol in c("dh_inicio", "dh_fim")) {
     # Rows whose time is exactly midnight carry no time of day: like dt_dia, these
     # columns fall back to the bare date on part of the data. Left in, every such
@@ -126,11 +134,23 @@ totalbr_flag_near <- function(d, tol_min) {
               !is.na(co_matricula) & nzchar(co_matricula)]
     if (nrow(sub) == 0) next
     data.table::setorderv(sub, c("GRP", tcol))
+    sub[, PARTNER_ID := data.table::shift(ROW_ID), by = GRP]
     sub[, GAP := as.numeric(difftime(get(tcol), data.table::shift(get(tcol)),
                                      units = "mins")), by = GRP]
-    flagged <- union(flagged, sub[!is.na(GAP) & abs(GAP) <= tol_min, ROW_ID])
+    hit <- sub[!is.na(GAP) & abs(GAP) <= tol_min,
+               list(ROW_ID, PARTNER_ID, GAP_MIN = round(GAP, 1), TIME_COL = tcol)]
+    if (nrow(hit) > 0) flagged[[length(flagged) + 1L]] <- hit
   }
-  flagged
+  if (length(flagged) == 0)
+    return(data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
+                                  GAP_MIN = numeric(), TIME_COL = character()))
+  # a pair can be caught on both time columns; keep it once
+  unique(data.table::rbindlist(flagged), by = c("ROW_ID", "PARTNER_ID"))
+}
+
+# just the flagged row ids, for the counts
+totalbr_flag_near <- function(d, tol_min) {
+  unique(totalbr_near_pairs(d, tol_min)$ROW_ID)
 }
 
 # =============================================================================
@@ -547,6 +567,121 @@ totalbr_eet_check <- function(raw_dir  = here::here("data-raw", "totalbr"),
       .groups = "drop"
     ) |>
     dplyr::arrange(SOURCE, YEAR)
+}
+
+# =============================================================================
+# totalbr_duplicate_rows(years, source, tol_min, raw_dir, date_col, out_file)
+#
+# THE ROWS THEMSELVES — every record flagged as duplicated, with all its columns,
+# restricted to the source you name. Not a sample and not a count: this is the
+# list to inspect, or to send to ICEA.
+#
+#   totalbr_duplicate_rows(2026, "csv")                       # what we downloaded
+#   totalbr_duplicate_rows(2026, "csv", out_file = "dup.csv")  # and write it out
+#
+# `source` matters. The archive and the API are different producers with
+# different faults, and mixing them is how a clean download came to look duplicated:
+#   "csv"     only the years downloaded from the API   <- the usual choice
+#   "parquet" only the handed-over archive
+#   "all"     both
+#
+# Each returned row carries:
+#   REASON   "same pk" — the identical row hash twice
+#            "near"    — same registration, same aerodrome pair, times within tol_min
+#   PAIR     rows that belong together share a number, so a repeat sits next to
+#            the row it repeats
+#   GAP_MIN  minutes between them (0 for a pk repeat)
+#   ROLE     "repeat" for the flagged row, "original" for the one it repeats
+# =============================================================================
+totalbr_duplicate_rows <- function(years    = NULL,
+                                   source   = c("csv", "parquet", "all"),
+                                   tol_min  = TOTALBR_NEAR_MIN,
+                                   raw_dir  = here::here("data-raw", "totalbr"),
+                                   date_col = "dt_dia",
+                                   out_file = NULL) {
+  source <- match.arg(source)
+  src    <- totalbr_sources(raw_dir)
+  paths  <- switch(source,
+                   csv     = src$csv,
+                   parquet = src$parquet,
+                   all     = c(src$csv, src$parquet))
+  if (length(paths) == 0) {
+    message("No ", source, " source in ", raw_dir); return(tibble::tibble())
+  }
+
+  out <- purrr::map(paths, function(path) {
+    # every column, because the point is to look at the records, not to count them
+    d <- if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      q  <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
+      if (!is.null(years)) q <- dplyr::filter(q, YEAR %in% as.character(years))
+      dplyr::collect(q)
+    } else {
+      x <- data.table::fread(file = path, sep = ";", colClasses = "character",
+                             na.strings = "", showProgress = FALSE)
+      x <- tibble::as_tibble(x)
+      x$YEAR <- substr(x[[date_col]], 1, 4)
+      if (!is.null(years)) x <- x[x$YEAR %in% as.character(years), ]
+      x
+    }
+    if (nrow(d) == 0) return(NULL)
+    d <- totalbr_normalise(d)
+    d$SOURCE <- basename(path)
+
+    dt <- data.table::as.data.table(d)
+    dt[, ROW_ID := .I]
+
+    # ---- 1. the same pk twice ----------------------------------------------
+    rep_pk <- dt$pk[duplicated(dt$pk)]
+    pk_rows <- if (length(rep_pk) > 0) {
+      x <- dt[pk %in% unique(rep_pk)]
+      data.table::setorderv(x, c("pk", "dh_inicio"))
+      x[, PAIR := paste0("PK", .GRP), by = pk]
+      # the first copy is the original, every later one a repeat
+      x[, ROLE := ifelse(seq_len(.N) == 1L, "original", "repeat"), by = pk]
+      x[, `:=`(REASON = "same pk", GAP_MIN = 0)]
+      x
+    } else NULL
+
+    # ---- 2. same aircraft, same place, almost the same time ----------------
+    pairs <- totalbr_near_pairs(d, tol_min)
+    near_rows <- if (nrow(pairs) > 0) {
+      pairs[, PAIR := paste0("NEAR", .I)]
+      both <- data.table::rbindlist(list(
+        merge(dt, pairs[, list(ROW_ID, PAIR, GAP_MIN)], by = "ROW_ID")[
+          , ROLE := "repeat"],
+        merge(dt, pairs[, list(ROW_ID = PARTNER_ID, PAIR, GAP_MIN)],
+              by = "ROW_ID")[, ROLE := "original"]
+      ))
+      both[, REASON := "near"]
+      both
+    } else NULL
+
+    res <- data.table::rbindlist(Filter(Negate(is.null), list(pk_rows, near_rows)),
+                                 fill = TRUE)
+    if (nrow(res) == 0) return(NULL)
+    data.table::setorderv(res, c("PAIR", "ROLE"))
+    tibble::as_tibble(res)
+  }) |> purrr::list_rbind()
+
+  if (is.null(out) || nrow(out) == 0) {
+    message("No duplicated rows found in the ", source, " source",
+            if (!is.null(years)) paste0(" for ", paste(years, collapse = ", ")) else "",
+            ".")
+    return(tibble::tibble())
+  }
+
+  out <- dplyr::relocate(out, dplyr::any_of(c("SOURCE", "REASON", "PAIR", "ROLE",
+                                              "GAP_MIN")))
+  message(nrow(out), " row(s) in ", dplyr::n_distinct(out$PAIR), " pair(s).")
+
+  if (!is.null(out_file)) {
+    # semicolon-delimited, like the raw files, so it opens the same way
+    utils::write.table(out, out_file, sep = ";", row.names = FALSE,
+                       quote = TRUE, na = "", fileEncoding = "UTF-8")
+    message("Written to ", out_file)
+  }
+  out
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

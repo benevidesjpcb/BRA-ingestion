@@ -385,6 +385,13 @@ totalbr_duplicate_examples(2026, "near", raw_dir = bra_totalbr_raw_dir)
 # the exact repeats: the same pk twice
 totalbr_duplicate_examples(2026, "pk", raw_dir = bra_totalbr_raw_dir)
 
+# EVERY flagged row, all columns, from ONE source — the list to inspect or send
+dup26 <- totalbr_duplicate_rows(2026, "csv", raw_dir = bra_totalbr_raw_dir)
+
+# ... and written out, semicolon-delimited like the raw files
+totalbr_duplicate_rows(2026, "csv", raw_dir = bra_totalbr_raw_dir,
+                       out_file = here::here("outputs", "totalbr-2026-duplicates.csv"))
+
 # widen or tighten what counts as "almost the same time"
 check_totalbr_duplicates(2026, tol_min = 5,  raw_dir = bra_totalbr_raw_dir)
 check_totalbr_duplicates(2026, tol_min = 30, raw_dir = bra_totalbr_raw_dir)
@@ -392,6 +399,24 @@ check_totalbr_duplicates(2026, tol_min = 30, raw_dir = bra_totalbr_raw_dir)
 
 Run the examples before reporting anything. The gap in minutes is what turns a count into
 evidence, and it is what ICEA need in order to find the records on their side.
+
+`totalbr_duplicate_examples()` is a sample; `totalbr_duplicate_rows()` is the complete list
+with every column, and it takes a **source** so the answer is about one producer only:
+
+| `source` | Reads |
+| --- | --- |
+| `"csv"` | only the years downloaded from the API — the usual choice |
+| `"parquet"` | only the handed-over archive |
+| `"all"` | both |
+
+That argument exists because mixing the two is how a clean 2026 download came to look
+duplicated. The rows flagged then were the archive's, spilled into 2026-01-01, and no
+amount of searching the downloaded file would have found them.
+
+Each row comes back with `REASON` (`same pk` or `near`), a `PAIR` number shared by the rows
+that belong together, `ROLE` (`repeat` or `original`) and `GAP_MIN`. So a repeat is always
+next to the row it repeats, which is what makes the output usable as evidence rather than
+as a list of record ids.
 
 ### The two sources overlap at the year boundary
 
