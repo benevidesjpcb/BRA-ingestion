@@ -310,23 +310,31 @@ download_totalbr(<the offending years>, out_dir = bra_totalbr_raw_dir, force = T
 
 ## Duplication Check
 
-ICEA/DECEA have reported that the ODIN data contains duplication. "Duplicate" means four
-different things here, with different causes and different consequences, so they are
-measured separately — a single number would hide which problem is present.
+ICEA/DECEA have reported duplication in the ODIN data. The check applies the operational
+definition, which is deliberately strict — two rows are the same movement only when they
+could not be two different flights:
 
-| Level | Key | What it means |
+| Test | Rule | Why it is conclusive |
 | --- | --- | --- |
-| `key` | `pk` | the same row returned twice. `pk` is the row hash, so this is a delivery fault |
-| `record` | `id` + the three timestamps | the same movement stored twice under **different** `pk` — the source does not recognise them as the same row |
-| `movement` | `id` + `dt_dia` | the same flight at the same timestamp, other fields free to differ |
-| `daily` | callsign + route + calendar day | **candidates only** — an aircraft can genuinely fly a route twice a day |
+| **same `pk`** | the same row hash twice | `pk` identifies the row; no judgement needed |
+| **near-duplicate** | same `co_matricula`, same aerodrome pair, and `dh_inicio` **or** `dh_fim` within a few minutes | one airframe cannot be in one place twice at once |
 
-The `key` level is read from the per-month parts in `data-raw/totalbr/parts/`, not from the
-year file. The merge de-duplicates on `pk`, so by the time a year file exists the evidence
-of a repeated `pk` has already been removed; asking the year file could only ever answer
-"none". All the CSVs are also grouped together rather than one at a time, because a key
-repeated *across* two month files is exactly what an overlapping request window would
-produce and a per-file check would never see it.
+Anything else with a different `pk` is **not** counted. Two rows sharing a callsign, a route
+and a day are two flights until the registration and the clock say otherwise: an aircraft
+can fly the same route several times a day, and a callsign can be reused by a different
+airframe on the same day.
+
+The tolerance is 10 minutes by default (`tol_min`). Both `dh_inicio` and `dh_fim` are tested
+because two records of one movement can agree on when it ended while differing on when it
+started.
+
+Two details that decide whether the numbers mean anything. The `pk` test reads the
+per-month parts in `data-raw/totalbr/parts/` as well, pooled together: the merge
+de-duplicates on `pk`, so the year file can no longer show whether the API repeated a row,
+and a `pk` repeated *across* two months — what an overlapping request window produces — is
+invisible to a per-file check. And `dh_inicio`/`dh_fim` values at the epoch (1970-01-01,
+which ODIN uses in place of an empty value) are read as missing, so they cannot pile up at
+the start of time and look like a thousand simultaneous movements.
 
 ```{r}
 #| label: tbl-bra-totalbr-duplicates
@@ -339,112 +347,49 @@ if (length(files) == 0) {
   dups <- check_totalbr_duplicates(raw_dir = bra_totalbr_raw_dir,
                                    date_col = totalbr_date_col)
   if (nrow(dups) == 0) {
-    knitr::kable(tibble::tibble(
-      result = "No duplication found at any level."
-    ))
+    knitr::kable(tibble::tibble(result = "No duplication found."))
   } else {
     dups |>
-      dplyr::select(Level = LEVEL, Source = SOURCE, Year = YEAR,
-                    `Repeated keys` = GROUPS, `Surplus rows` = EXTRA_ROWS,
-                    `Year rows` = TOTAL_ROWS, `% of year` = PCT) |>
+      dplyr::select(dplyr::any_of(c(
+        Year = "YEAR", Rows = "ROWS",
+        `Same pk (merged)` = "SAME_PK", `Same pk (parts)` = "SAME_PK_PARTS",
+        `Near-duplicates` = "NEAR_DUP", `Near %` = "NEAR_PCT",
+        `No registration` = "NO_REG", `No reg. %` = "NO_REG_PCT"))) |>
       knitr::kable(format.args = list(big.mark = ","))
   }
 }
 ```
 
-This is the heaviest table in the document — it groups the whole archive once per level —
-so expect it to take a while on the full parquet.
-
-How to read the result:
-
-- **`key` above zero** is a delivery fault: the API returned the same row twice. Our year
-  files are unaffected because the merge de-duplicates on `pk`, but any consumer reading
-  the raw parts would double-count. This is the one worth reporting back to ICEA with the
-  example rows.
-- **`record` or `movement` above zero** is duplication in the source itself: the same
-  movement is present twice and `pk` does not identify it as such, so no de-duplication key
-  can remove it without a rule about which copy to keep.
-- **`daily` on its own means nothing.** Two rows for the same callsign and route on one day
-  are usually two genuine rotations. The minute gap is what separates them from a repeat,
-  which is what the examples below report.
+`No registration` is there so the near-duplicate figure is read for what it covers: rows
+with an empty `co_matricula` cannot be tested by this rule at all, and in the early samples
+that field was mostly null. A near-duplicate count of zero over a year that is 90% without
+registration says nothing.
 
 ```{r}
 #| label: examples-bra-totalbr-duplicates
 #| eval: false
 
-# the actual rows behind the most-repeated keys, with GAP_MIN between copies:
-# a gap near zero is the same movement stored twice, hours apart is real traffic
-totalbr_duplicate_examples("movement", n = 5, raw_dir = bra_totalbr_raw_dir)
-totalbr_duplicate_examples("key",      n = 5, raw_dir = bra_totalbr_raw_dir)
+# the flagged rows next to the ones they repeat, with the gap in minutes
+totalbr_duplicate_examples(2026, raw_dir = bra_totalbr_raw_dir)
 
-# WHAT differs between the copies — the question the counts cannot answer
-totalbr_duplicate_anatomy("movement", raw_dir = bra_totalbr_raw_dir)
+# widen or tighten what counts as "almost the same time"
+check_totalbr_duplicates(2026, tol_min = 5,  raw_dir = bra_totalbr_raw_dir)
+check_totalbr_duplicates(2026, tol_min = 30, raw_dir = bra_totalbr_raw_dir)
 ```
 
-The anatomy table is the one that decides whether the `movement` level is duplication at
-all. If `li_orgaos` varies in most groups, the source is emitting **one row per ATS unit
-crossed** and the flight is a single flight — the rows must be collapsed before anything
-counts movements, but nothing is duplicated. If only `dh_inicio`/`dh_fim` vary, the same
-movement really is stored twice.
+Run the examples before reporting anything. The gap in minutes is what turns a count into
+evidence, and it is what ICEA need in order to find the records on their side.
 
-### What the first run showed
+### Why the earlier, looser tests were dropped
 
-Measured over 2023–2026 (the archive for 2023–2025, the API for 2026):
+An earlier version of this check also counted rows sharing `id` + `dt_dia`, and rows sharing
+callsign + route + day. Those are not duplication and the numbers were misleading — nearly
+4% of the archive at one point. Two findings came out of chasing them, and both are about
+field quality rather than duplication:
 
-| Level | 2023–2025 | 2026 |
-| --- | --- | --- |
-| `key` | 13–285 rows (≤0.016%) | 194 rows in the parts |
-| `record` | same rows as `key` | 134 rows (0.012%) |
-| `movement` | **~3.6% of every year** | 0.024% |
-| `daily` | 5.8–6.6% | 13.8% |
+#### `dt_dia` falls back to midnight
 
-Three readings, in order of how much they matter:
-
-1. **`movement` is ~3.6% in the archive and ~0.02% in the API year.** A 150-fold difference
-   between two producers of the same table is not an operational change, it is a difference
-   in how the rows are built. Until the anatomy table says what varies between the copies,
-   **do not compare a movement count from the archive with one from the API** — that is the
-   same trap that produced a negative additional time in the ASMA work, in a new place.
-2. **`key` and `record` agree exactly for 2023–2025**, which confirms those copies are
-   identical in every field: a plain repeated row, and rare enough to be ignorable.
-3. **`daily` doubles in 2026** while `movement` collapses, so the 2026 repeats are at
-   *different* times of day. That is what genuine repeated rotations look like — but it can
-   equally be circuit training (`co_addep == co_addes`) that the archive excluded. Worth
-   splitting those out before drawing any conclusion.
-
-Re-downloading 2026 after the ordering fix settled the second point on its own: the `key`
-level fell from 194 to 134 and the year gained exactly 60 rows. Sixty rows had been served
-twice, each in place of one that was never served at all — the signature of offset
-pagination over a non-total order. `key` and `record` now agree at 134 for every year, so
-every remaining repeated `pk` comes from the source.
-
-### What the anatomy showed, and the open question
-
-Over 2000 `movement` groups from the archive, the columns that disagree between the copies:
-
-| Column | Groups where it varies |
-| --- | --- |
-| `dh_fim` / `dh_inicio` | 100% / 99.8% |
-| `dh_eet` / `dh_eobt` | 95.7% / 89.9% |
-| `ds_rota` | 35.4% |
-| `li_orgaos` | 26.4% |
-| `co_matricula` | 17.3% |
-
-This **rules out the ATS-unit explanation**: `li_orgaos` is identical in 74% of the groups,
-so the rows are not one-per-unit. What the pattern does look like is **re-filed flight
-plans** — same flight, new EOBT (90%), sometimes a new route (35%) or a different aircraft
-(17%).
-
-But there is a contradiction in that table, and it points at the root cause. `dh_inicio`
-varies in 99.8% of the groups while `dt_dia` is, by construction, identical — it is the
-grouping key. In the API payload those two fields hold **the same value on every row**. So
-`dt_dia` in the archive is not the field it is in the API. If it were, it would vary along
-with `dh_inicio` and these groups would not exist — which is exactly what happens in the
-API year, where `movement` is 0.02%.
-
-### Resolved: the 3.6% is a precision artefact
-
-Pulling the rows settled it. A sample group, in the archive:
+Pulling the rows settled it. A group flagged by the old, looser test:
 
 ```
 pk        id      dt_dia               dh_inicio             dh_fim
@@ -456,12 +401,13 @@ E2F1E8D2… PPMFM…  2025-02-16 00:00:00  2025-02-16 18:12:15   2025-02-16 18:1
 
 Ten **different** flights by one aircraft (`ZZZZ` → `ZZZZ`, local flying) on one day, each
 with its own start and end, all carrying the same `dt_dia` because that field fell back to
-midnight. Under a key of `id` + `dt_dia` they collide. They are not duplicates.
+midnight. Any key built on `dt_dia` collapses them into one. They are not duplicates — and
+the strict rule agrees, because their `dh_inicio` are hours apart.
 
 The minute histogram shows this is not simple truncation: `dt_dia` is **not uniformly
 populated**. Around 11% of rows sit at exactly midnight, while the rest carry real times
 clustered on five-minute marks, as filed. `totalbr_midnight_share()` measures that share
-per year, and a `movement` percentage is only meaningful read next to it.
+per year.
 
 ```{r}
 #| label: tbl-bra-totalbr-midnight
@@ -470,12 +416,11 @@ per year, and a `movement` percentage is only meaningful read next to it.
 totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)
 ```
 
-So the duplication confirmed to be real is the `record` level only — 13 to 285 rows a year,
-at most 0.016%. That is what is worth reporting back to ICEA; the 3.6% is a stamp that
-cannot tell two flights apart, and the fix for it is not de-duplication but using
-`dh_inicio` where a movement time is needed.
+The consequence for the pipeline: **use `dh_inicio` wherever a movement time is needed.**
+`dt_dia` stays fine for the monthly download windows, because a midnight stamp still lands
+on the right day.
 
-### `dh_eet` is not a timestamp, and is encoded differently in each source
+#### `dh_eet` is not a timestamp, and is encoded differently in each source
 
 In the API payload, `dh_eet` minus `dh_eobt` equals **the time of day of `dh_eobt`**, on
 every sampled row:
@@ -520,7 +465,9 @@ of an empty value, and the mean says they are about 0.31% of the file.
 That is the most dangerous shape a null can take. An `NA` propagates and shows itself; a
 1970 date enters an average silently and drags it — which is exactly what happened here,
 where 0.3% of the rows pulled the mean from 0 to −92,576. Anything reading `dh_eet` must
-reject epoch dates explicitly, not rely on `na.rm`.
+reject epoch dates explicitly, not rely on `na.rm`. The duplicate check does this for
+`dh_inicio`/`dh_fim` already: without it, every epoch-stamped row would sit at the same
+instant and be flagged as a duplicate of every other.
 
 Nothing here repairs anything, deliberately. De-duplicating a national movement table
 changes every count computed from it, and which copy to keep is DECEA's call, not a choice
@@ -534,8 +481,11 @@ order between pages is whatever the database happens to produce per request, so 
 come back on two consecutive pages (or on neither). The ordering now includes the unique
 id, which makes the sort total and the pages a genuine partition of the window.
 
-If your parts were downloaded before that fix, re-fetch one month with `force = TRUE` and
-compare the `key` level: any difference was ours, not the source's.
+Re-downloading 2026 after the fix confirmed it: the same-`pk` count in the parts fell from
+194 to 134 and the year gained exactly 60 rows. Sixty rows had been served twice, each in
+place of one never served at all. What remains is the source's.
+
+If your parts predate that fix, re-fetch a month with `force = TRUE` and compare.
 
 ## Traffic Profile
 

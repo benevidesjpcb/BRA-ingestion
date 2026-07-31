@@ -230,12 +230,13 @@ one dataset, so `totalbr_missing_years()` asks the API only for what the archive
 > coverage by the day counts in the qmd, never by the fact that a download ran.
 
 ICEA/DECEA have reported duplication in the ODIN data. `check_totalbr_duplicates()`
-measures it at four levels — repeated `pk`, the same record under a different `pk`, the
-same flight at the same timestamp, and same-callsign-same-day candidates — because those
-have different causes and only the first three are faults. It reads the per-month parts for
-the `pk` level, since the merge has already de-duplicated the year file, and it groups all
-the CSVs together so a key repeated across two months is not missed. It reports; it never
-repairs, because which copy to keep is DECEA's decision.
+measures it under a strict, operational definition: a repeated `pk` (the row hash — the
+same row twice), or the **same registration at the same aerodrome pair with `dh_inicio` or
+`dh_fim` within a few minutes**, since one airframe cannot be in one place twice at once.
+Rows merely sharing a callsign, a route and a day are two flights, not a duplicate. It reads
+the per-month parts for the `pk` test, because the merge has already de-duplicated the year
+file, and pools them so a `pk` repeated across two months is not missed. It reports; it
+never repairs, because which copy to keep is DECEA's decision.
 
 > Pagination fix that came out of this: the downloader ordered by the date column alone, and
 > thousands of rows share a timestamp. Offset pagination over a non-total order can return a

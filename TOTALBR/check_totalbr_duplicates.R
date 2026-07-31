@@ -2,357 +2,230 @@
 # =============================================================================
 # check_totalbr_duplicates.R
 #
-# ICEA/DECEA have reported that the ODIN data contains duplication. This script
-# measures it, at four levels, because "duplicate" means four different things
-# and they have different causes and different fixes:
+# ICEA/DECEA have reported duplication in the ODIN data. This measures it under
+# the operational definition, which is deliberately strict — two rows are the
+# same movement only when they could not be two different flights:
 #
-#   L1  key       same `pk` twice. The pk is the row hash, so this is the source
-#                 handing back the SAME ROW more than once. Read from the
-#                 per-month parts, NOT the year file: the merge de-duplicates on
-#                 pk, so by then the evidence is gone.
-#   L2  record    same id + the same three timestamps, under DIFFERENT pk. The
-#                 same movement stored twice with different hashes — the source
-#                 does not recognise them as the same row, so nothing downstream
-#                 will either.
-#   L3  movement  same id at the same dt_dia, other fields free to differ. A
-#                 movement recorded twice with a detail edited between them.
-#   L4  daily     same callsign + route on the same calendar day. NOT duplication
-#                 on its own: an aircraft can genuinely fly a route twice a day.
-#                 This is the candidate pool, and the minute gap is what tells a
-#                 second rotation from a repeat — see totalbr_duplicate_examples().
+#   1. SAME PK. The pk is the row hash; the same pk twice is the same row twice.
+#      No judgement needed.
 #
-# Reading all four together is what makes the answer usable: L1 > 0 is a delivery
-# problem, L2/L3 > 0 is a data problem upstream, and L4 alone is normal traffic.
+#   2. SAME AIRCRAFT, SAME PLACE, ALMOST THE SAME TIME. The same registration
+#      (co_matricula), the same aerodrome pair, and dh_inicio OR dh_fim within a
+#      few minutes of each other. One airframe cannot be in one place twice at
+#      once, so this is a repeat.
+#
+# Anything else with a different pk is NOT duplication and is not counted here.
+# Two rows sharing a callsign, a route and a day are two flights until the
+# registration and the clock say otherwise — an aircraft can fly a route several
+# times a day, and a callsign can be reused by a different airframe.
 #
 #   source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
-#   check_totalbr_duplicates()
-#   totalbr_duplicate_examples("movement", n = 5)
+#   check_totalbr_duplicates(2026)              # the summary
+#   totalbr_duplicate_examples(2026)            # the rows themselves
 #
-# One thing this deliberately does NOT do: repair anything. De-duplicating a
-# national movement table changes every count computed from it, so the decision
-# is DECEA's to make, not this script's to take silently.
+# Nothing here repairs anything. Which copy to keep is DECEA's call.
 # =============================================================================
 
 source(here::here("TOTALBR", "totalbr_sources.R"))
 
-# The unit separator: a byte that cannot occur inside these fields, so pasting
-# the key parts together cannot accidentally make two different keys collide.
-TOTALBR_KEY_SEP <- "\u001f"
+# How close two times must be to count as the same movement. Minutes.
+TOTALBR_NEAR_MIN <- 10
 
-# The four levels. `day = TRUE` means the level needs a derived calendar day.
-totalbr_dup_levels <- list(
-  key      = list(keys = c("pk"),
-                  label = "identical pk (the same row returned twice)",
-                  day = FALSE, parts = TRUE),
-  record   = list(keys = c("id", "dt_dia", "dh_inicio", "dh_fim"),
-                  label = "identical record under a different pk",
-                  day = FALSE, parts = FALSE),
-  movement = list(keys = c("id", "dt_dia"),
-                  label = "same flight id at the same timestamp",
-                  day = FALSE, parts = FALSE),
-  daily    = list(keys = c("co_indicativo", "co_addep", "co_addes", "DAY"),
-                  label = "same callsign and route on the same day (candidates)",
-                  day = TRUE, parts = FALSE)
-)
+# The columns the check needs. A source missing any of them is skipped, with a
+# message, rather than producing a silently partial answer.
+TOTALBR_DUP_COLS <- c("pk", "co_matricula", "co_addep", "co_addes",
+                      "dh_inicio", "dh_fim", "co_indicativo")
 
-# ---- duplicate groups in one source -----------------------------------------
-# Returns one row per YEAR: how many key values repeat, and how many rows are
-# the surplus copies. Counting is pushed into arrow for the parquet, so a 1 GB
-# archive is grouped without being read into memory.
-totalbr_dup_in_source <- function(path, kind, keys, need_day, date_col) {
+# ---- read the columns the check needs, from either source kind --------------
+totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
+  want <- unique(c(TOTALBR_DUP_COLS, date_col))
 
-  # every key part as text, joined into one column: grouping on a single symbol
-  # is the form both arrow and data.table support without surprises
-  key_expr <- rlang::expr(paste(!!!lapply(keys, function(k)
-                                  rlang::expr(as.character(!!rlang::sym(k)))),
-                                sep = !!TOTALBR_KEY_SEP))
-
-  if (kind == "parquet") {
-    ds   <- arrow::open_dataset(path)
-    cols <- setdiff(unique(c(keys, date_col)), "DAY")
-    if (!all(cols %in% names(ds))) return(NULL)
-    out <- tryCatch({
-      q <- dplyr::select(ds, dplyr::all_of(cols))
-      q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col),
-                                day = need_day)
-      q |>
-        dplyr::mutate(KEY = !!key_expr) |>
-        dplyr::group_by(YEAR, KEY) |>
-        dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
-        dplyr::filter(N > 1) |>
-        dplyr::collect()
-    }, error = function(e) {
-      message("  (cannot group ", paste(keys, collapse = "+"), " in ",
-              basename(path), ": ", conditionMessage(e), ")")
-      NULL
-    })
-    if (is.null(out)) return(NULL)
-  } else {
-    # `path` may be SEVERAL csv files, and they are read together on purpose: a
-    # key repeated ACROSS two month files — which is what an overlapping request
-    # window would produce — is invisible to a per-file check.
-    cols <- setdiff(unique(c(keys, date_col)), "DAY")
-    read_one <- function(f) {
-      head1 <- data.table::fread(file = f, sep = ";", nrows = 0,
-                                 showProgress = FALSE)
-      if (!all(cols %in% names(head1))) return(NULL)
-      d <- data.table::fread(file = f, sep = ";", select = cols,
-                             colClasses = "character", na.strings = "",
-                             showProgress = FALSE)
-      if (nrow(d) == 0) NULL else tibble::as_tibble(d)
+  d <- if (grepl("\\.parquet$", path)) {
+    ds <- arrow::open_dataset(path)
+    miss <- setdiff(want, names(ds))
+    if (length(miss) > 0) {
+      message("  skipping ", basename(path), ": no column(s) ",
+              paste(miss, collapse = ", "))
+      return(NULL)
     }
-    d <- dplyr::bind_rows(Filter(Negate(is.null), lapply(path, read_one)))
-    if (nrow(d) == 0) return(NULL)
-    d$YEAR <- substr(d[[date_col]], 1, 4)
-    if (need_day) d$DAY <- substr(d[[date_col]], 1, 10)
-    out <- d |>
-      dplyr::mutate(KEY = !!key_expr) |>
-      dplyr::count(YEAR, KEY, name = "N") |>
-      dplyr::filter(N > 1)
+    q <- dplyr::select(ds, dplyr::all_of(want))
+    q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
+    if (!is.null(years))
+      q <- dplyr::filter(q, YEAR %in% as.character(years))
+    dplyr::collect(q)
+  } else {
+    head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
+                               showProgress = FALSE)
+    miss <- setdiff(want, names(head1))
+    if (length(miss) > 0) {
+      message("  skipping ", basename(path), ": no column(s) ",
+              paste(miss, collapse = ", "))
+      return(NULL)
+    }
+    x <- data.table::fread(file = path, sep = ";", select = want,
+                           colClasses = "character", na.strings = "",
+                           showProgress = FALSE)
+    x <- tibble::as_tibble(x)
+    x$YEAR <- substr(x[[date_col]], 1, 4)
+    if (!is.null(years)) x <- x[x$YEAR %in% as.character(years), ]
+    x
   }
 
-  if (nrow(out) == 0)
-    return(tibble::tibble(YEAR = character(0), GROUPS = integer(0),
-                          EXTRA_ROWS = integer(0)))
+  if (is.null(d) || nrow(d) == 0) return(NULL)
+  # times as POSIXct whichever way they were stored, and the epoch sentinel
+  # (1970-01-01, which ODIN uses in place of an empty value) treated as missing
+  # so it cannot masquerade as a movement at the start of time
+  for (nm in c("dh_inicio", "dh_fim")) {
+    v <- d[[nm]]
+    if (!inherits(v, "POSIXct")) v <- as.POSIXct(as.character(v), tz = "UTC")
+    v[!is.na(v) & v < as.POSIXct("1980-01-01", tz = "UTC")] <- NA
+    d[[nm]] <- v
+  }
+  d$SOURCE <- basename(path)
+  d
+}
 
-  out |>
-    dplyr::group_by(YEAR) |>
-    dplyr::summarise(
-      GROUPS = dplyr::n(),
-      # the surplus: a key seen 3 times contributes 2 extra rows, not 3
-      EXTRA_ROWS = sum(N - 1L),
-      .groups = "drop"
-    )
+# ---- rows that repeat an aircraft in one place within the tolerance ---------
+# Sorted by the time column within (registration, aerodrome pair): a row whose
+# gap to the previous row of the same group is within the tolerance is a repeat
+# of it. Run once per time column, because two rows can be close on dh_fim while
+# their dh_inicio are further apart.
+totalbr_flag_near <- function(d, tol_min) {
+  dt <- data.table::as.data.table(d)
+  dt[, ROW_ID := .I]
+  dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
+
+  flagged <- integer(0)
+  for (tcol in c("dh_inicio", "dh_fim")) {
+    sub <- dt[!is.na(get(tcol)) & !is.na(co_matricula) & nzchar(co_matricula)]
+    if (nrow(sub) == 0) next
+    data.table::setorderv(sub, c("GRP", tcol))
+    sub[, GAP := as.numeric(difftime(get(tcol), data.table::shift(get(tcol)),
+                                     units = "mins")), by = GRP]
+    flagged <- union(flagged, sub[!is.na(GAP) & abs(GAP) <= tol_min, ROW_ID])
+  }
+  flagged
 }
 
 # =============================================================================
-# check_totalbr_duplicates(levels, raw_dir, date_col)
+# check_totalbr_duplicates(years, tol_min, raw_dir, date_col)
 #
-# The summary table: per level and year, the repeated key values, the surplus
-# rows, and what share of the year that surplus is.
+# Per year: duplication under both definitions, plus the rows the second test
+# COULD NOT be applied to (no registration), so the number is read for what it
+# covers rather than assumed to cover everything.
 # =============================================================================
-check_totalbr_duplicates <- function(levels   = names(totalbr_dup_levels),
+check_totalbr_duplicates <- function(years    = NULL,
+                                     tol_min  = TOTALBR_NEAR_MIN,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
 
   src   <- totalbr_sources(raw_dir, include_parts = TRUE)
-  # the denominator, so a surplus can be read as a percentage rather than a
-  # bare number nobody can size
-  totals <- totalbr_day_counts(raw_dir, date_col) |>
-    dplyr::group_by(YEAR) |>
-    dplyr::summarise(TOTAL_ROWS = sum(MOVEMENTS), .groups = "drop")
+  # The pk test reads the per-month PARTS as well: the merge de-duplicates on pk,
+  # so by the time a year file exists it can no longer show whether the API
+  # repeated a row. The near test reads the merged files, which is the data
+  # anything downstream would actually use.
+  paths <- unique(c(src$parquet, src$csv))
 
-  res <- purrr::map(levels, function(lv) {
-    spec <- totalbr_dup_levels[[lv]]
-    if (is.null(spec)) stop("Unknown level '", lv, "'. Known: ",
-                            paste(names(totalbr_dup_levels), collapse = ", "))
+  res <- purrr::map(paths, function(path) {
+    message("Reading ", basename(path), " ...")
+    d <- totalbr_read_dup_cols(path, date_col, years)
+    if (is.null(d)) return(NULL)
 
-    # The pk level must read the per-month parts: the year file was already
-    # de-duplicated on pk when the months were merged, so asking it whether the
-    # API repeated a pk can only ever answer "no".
-    paths <- if (isTRUE(spec$parts) && length(src$parts) > 0)
-      list(parquet = src$parquet, csv = src$parts)
-    else
-      list(parquet = src$parquet, csv = src$csv)
+    near <- totalbr_flag_near(d, tol_min)
+    d$IS_NEAR <- seq_len(nrow(d)) %in% near
 
-    message("Level '", lv, "': ", spec$label)
-    parts <- c(
-      lapply(paths$parquet, function(p)
-        totalbr_dup_in_source(p, "parquet", spec$keys, spec$day, date_col)),
-      # all the CSVs in ONE call, so a key repeated across files is caught
-      if (length(paths$csv) > 0)
-        list(totalbr_dup_in_source(paths$csv, "csv", spec$keys, spec$day, date_col))
-      else NULL
-    )
-    parts <- Filter(Negate(is.null), parts)
-    if (length(parts) == 0) return(NULL)
-
-    dplyr::bind_rows(parts) |>
+    tibble::as_tibble(d) |>
       dplyr::group_by(YEAR) |>
-      dplyr::summarise(GROUPS = sum(GROUPS), EXTRA_ROWS = sum(EXTRA_ROWS),
-                       .groups = "drop") |>
-      dplyr::mutate(LEVEL = lv, WHAT = spec$label,
-                    SOURCE = if (isTRUE(spec$parts)) "month parts" else "merged files")
+      dplyr::summarise(
+        ROWS          = dplyr::n(),
+        # same pk: the surplus is every copy after the first
+        SAME_PK       = sum(duplicated(pk)),
+        # same aircraft, same aerodrome pair, times within the tolerance
+        NEAR_DUP      = sum(IS_NEAR),
+        # rows the near test cannot judge, so the figure above is not mistaken
+        # for a statement about the whole year
+        NO_REG        = sum(is.na(co_matricula) | !nzchar(co_matricula)),
+        .groups = "drop"
+      )
   }) |> purrr::list_rbind()
 
-  if (is.null(res) || nrow(res) == 0)
-    return(tibble::tibble(LEVEL = character(0), YEAR = character(0),
-                          GROUPS = integer(0), EXTRA_ROWS = integer(0),
-                          PCT = numeric(0), WHAT = character(0)))
+  if (is.null(res) || nrow(res) == 0) return(tibble::tibble())
 
-  res |>
-    dplyr::left_join(totals, by = "YEAR") |>
-    dplyr::mutate(PCT = round(100 * EXTRA_ROWS / TOTAL_ROWS, 3)) |>
-    dplyr::select(LEVEL, WHAT, SOURCE, YEAR, GROUPS, EXTRA_ROWS, TOTAL_ROWS, PCT) |>
-    dplyr::arrange(match(LEVEL, names(totalbr_dup_levels)), YEAR)
+  pk_parts <- if (length(src$parts) > 0) {
+    message("Reading the month parts for the pk test ...")
+    purrr::map(src$parts, function(f) {
+      x <- data.table::fread(file = f, sep = ";", select = c("pk", date_col),
+                             colClasses = "character", na.strings = "",
+                             showProgress = FALSE)
+      tibble::tibble(YEAR = substr(x[[date_col]], 1, 4), pk = x$pk)
+    }) |> purrr::list_rbind()
+  } else NULL
+
+  # a pk repeated ACROSS two month files is what an overlapping request window
+  # produces, so the parts are pooled before the test rather than checked one by one
+  parts_pk <- if (!is.null(pk_parts) && nrow(pk_parts) > 0) {
+    p <- pk_parts
+    if (!is.null(years)) p <- p[p$YEAR %in% as.character(years), ]
+    dplyr::group_by(p, YEAR) |>
+      dplyr::summarise(SAME_PK_PARTS = sum(duplicated(pk)), .groups = "drop")
+  } else NULL
+
+  out <- res |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG), sum),
+                     .groups = "drop")
+  if (!is.null(parts_pk)) out <- dplyr::left_join(out, parts_pk, by = "YEAR")
+
+  out |>
+    dplyr::mutate(
+      NEAR_PCT   = round(100 * NEAR_DUP / ROWS, 3),
+      NO_REG_PCT = round(100 * NO_REG   / ROWS, 1)
+    ) |>
+    dplyr::arrange(YEAR)
 }
 
 # =============================================================================
-# totalbr_duplicate_examples(level, n, ...)
+# totalbr_duplicate_examples(years, tol_min, n, ...)
 #
-# The actual rows behind the most-repeated keys of a level, side by side, so the
-# duplication can be READ rather than counted. For the `daily` level it also
-# reports the minute gap between the repeats, which is the thing that separates
-# a genuine second rotation from the same flight stored twice.
-#
-# Reads only the rows belonging to the sampled keys, so it stays cheap.
+# The near-duplicate rows themselves, side by side with the row each one repeats,
+# and the gap in minutes. This is what to look at before calling anything a
+# duplicate — and what to send to ICEA.
 # =============================================================================
-totalbr_duplicate_examples <- function(level    = "movement",
-                                       n        = 5L,
+totalbr_duplicate_examples <- function(years    = NULL,
+                                       tol_min  = TOTALBR_NEAR_MIN,
+                                       n        = 10L,
                                        raw_dir  = here::here("data-raw", "totalbr"),
                                        date_col = "dt_dia") {
-  spec <- totalbr_dup_levels[[level]]
-  if (is.null(spec)) stop("Unknown level '", level, "'.")
+  src   <- totalbr_sources(raw_dir)
+  paths <- unique(c(src$csv, src$parquet))   # the downloaded years first
 
-  src   <- totalbr_sources(raw_dir, include_parts = TRUE)
-  paths <- if (isTRUE(spec$parts) && length(src$parts) > 0)
-    c(src$parquet, src$parts) else c(src$parquet, src$csv)
-  if (length(paths) == 0) return(tibble::tibble())
-
-  key_expr <- rlang::expr(paste(!!!lapply(spec$keys, function(k)
-                                  rlang::expr(as.character(!!rlang::sym(k)))),
-                                sep = !!TOTALBR_KEY_SEP))
-
-  # a single source is enough for examples; the first one that has the columns
   for (path in paths) {
-    is_parq <- grepl("\\.parquet$", path)
-    d <- tryCatch({
-      if (is_parq) {
-        ds <- arrow::open_dataset(path)
-        if (!all(setdiff(spec$keys, "DAY") %in% names(ds))) next
-        q  <- totalbr_add_year_day(ds, date_col,
-                                   totalbr_is_text_date(ds, date_col),
-                                   day = spec$day)
-        # the repeated keys first, then only their rows
-        dup <- q |> dplyr::mutate(KEY = !!key_expr) |>
-          dplyr::group_by(KEY) |> dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
-          dplyr::filter(N > 1) |> dplyr::arrange(dplyr::desc(N)) |>
-          head(n) |> dplyr::collect()
-        if (nrow(dup) == 0) next
-        q |> dplyr::mutate(KEY = !!key_expr) |>
-          dplyr::filter(KEY %in% dup$KEY) |> dplyr::collect()
-      } else {
-        raw <- data.table::fread(file = path, sep = ";", colClasses = "character",
-                                 na.strings = "", showProgress = FALSE)
-        if (!all(setdiff(spec$keys, "DAY") %in% names(raw))) next
-        raw <- tibble::as_tibble(raw)
-        if (spec$day) raw$DAY <- substr(raw[[date_col]], 1, 10)
-        raw <- dplyr::mutate(raw, KEY = !!key_expr)
-        dup <- raw |> dplyr::count(KEY, name = "N") |> dplyr::filter(N > 1) |>
-          dplyr::arrange(dplyr::desc(N)) |> head(n)
-        if (nrow(dup) == 0) next
-        dplyr::filter(raw, KEY %in% dup$KEY)
-      }
-    }, error = function(e) NULL)
+    d <- totalbr_read_dup_cols(path, date_col, years)
+    if (is.null(d)) next
+    near <- totalbr_flag_near(d, tol_min)
+    if (length(near) == 0) next
 
-    if (is.null(d) || nrow(d) == 0) next
+    dt <- data.table::as.data.table(d)
+    dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
+    # every row of the groups that contain a flagged row, so the repeat is shown
+    # next to what it repeats rather than on its own
+    grps <- unique(dt$GRP[near])
+    grps <- head(grps, n)
+    out  <- dt[GRP %in% grps]
+    data.table::setorderv(out, c("GRP", "dh_inicio"))
+    out[, GAP_MIN := round(as.numeric(difftime(dh_inicio,
+                                               data.table::shift(dh_inicio),
+                                               units = "mins")), 1), by = GRP]
 
-    d <- d |>
-      dplyr::arrange(KEY, .data[[date_col]]) |>
-      dplyr::group_by(KEY) |>
-      dplyr::mutate(
-        COPY = dplyr::row_number(),
-        # minutes since the previous copy of the same key: near zero means the
-        # same movement stored twice, hours mean a genuine second rotation
-        GAP_MIN = round(as.numeric(difftime(
-          as.POSIXct(.data[[date_col]], tz = "UTC"),
-          dplyr::lag(as.POSIXct(.data[[date_col]], tz = "UTC")),
-          units = "mins")), 1)
-      ) |>
-      dplyr::ungroup() |>
-      dplyr::select(-KEY)
-
-    message("Examples from ", basename(path), " (level '", level, "')")
-    return(d)
+    message("Examples from ", basename(path),
+            " (same registration, same aerodrome pair, within ", tol_min, " min)")
+    return(tibble::as_tibble(out)[, c("co_matricula", "co_indicativo",
+                                      "co_addep", "co_addes", "dh_inicio",
+                                      "dh_fim", "GAP_MIN", "pk")])
   }
 
-  message("No duplicates found at level '", level, "'.")
+  message("No near-duplicates found.")
   tibble::tibble()
-}
-
-# =============================================================================
-# totalbr_duplicate_anatomy(level, max_groups, ...)
-#
-# Counting duplicates says HOW MANY; this says WHAT MAKES THEM DIFFERENT, which
-# is what decides whether they are duplication at all.
-#
-# For a sample of duplicate groups it reports, per column, the share of groups
-# in which that column varies between the copies. The reading:
-#
-#   li_orgaos varies in most groups   -> NOT duplication. The source emits one
-#                                        row per ATS unit crossed; the flight is
-#                                        one flight and the rows must be
-#                                        collapsed before counting movements.
-#   only dh_inicio/dh_fim vary        -> the same movement stored twice with a
-#                                        different window: duplication.
-#   nothing varies                    -> a plain repeated row.
-#
-# The sample is capped because this reads the actual rows; the shares are stable
-# well before the cap.
-# =============================================================================
-totalbr_duplicate_anatomy <- function(level      = "movement",
-                                      max_groups = 2000L,
-                                      raw_dir    = here::here("data-raw", "totalbr"),
-                                      date_col   = "dt_dia") {
-  spec <- totalbr_dup_levels[[level]]
-  if (is.null(spec)) stop("Unknown level '", level, "'.")
-
-  src   <- totalbr_sources(raw_dir, include_parts = TRUE)
-  paths <- if (isTRUE(spec$parts) && length(src$parts) > 0)
-    c(src$parquet, src$parts) else c(src$parquet, src$csv)
-
-  key_expr <- rlang::expr(paste(!!!lapply(spec$keys, function(k)
-                                  rlang::expr(as.character(!!rlang::sym(k)))),
-                                sep = !!TOTALBR_KEY_SEP))
-
-  out <- purrr::map(paths, function(path) {
-    d <- tryCatch({
-      if (grepl("\\.parquet$", path)) {
-        ds <- arrow::open_dataset(path)
-        if (!all(setdiff(spec$keys, "DAY") %in% names(ds))) return(NULL)
-        q  <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col),
-                                   day = spec$day) |>
-          dplyr::mutate(KEY = !!key_expr)
-        dup <- q |> dplyr::group_by(KEY) |>
-          dplyr::summarise(N = dplyr::n(), .groups = "drop") |>
-          dplyr::filter(N > 1) |> head(max_groups) |> dplyr::collect()
-        if (nrow(dup) == 0) return(NULL)
-        dplyr::collect(dplyr::filter(q, KEY %in% dup$KEY))
-      } else {
-        raw <- data.table::fread(file = path, sep = ";", colClasses = "character",
-                                 na.strings = "", showProgress = FALSE)
-        if (!all(setdiff(spec$keys, "DAY") %in% names(raw))) return(NULL)
-        raw <- tibble::as_tibble(raw)
-        if (spec$day) raw$DAY <- substr(raw[[date_col]], 1, 10)
-        raw <- dplyr::mutate(raw, KEY = !!key_expr)
-        dup <- raw |> dplyr::count(KEY, name = "N") |> dplyr::filter(N > 1) |>
-          head(max_groups)
-        if (nrow(dup) == 0) return(NULL)
-        dplyr::filter(raw, KEY %in% dup$KEY)
-      }
-    }, error = function(e) NULL)
-    if (is.null(d) || nrow(d) == 0) return(NULL)
-
-    cols <- setdiff(names(d), c("KEY", "YEAR", "DAY"))
-    varies <- d |>
-      dplyr::group_by(KEY) |>
-      dplyr::summarise(dplyr::across(dplyr::all_of(cols),
-                                     ~ dplyr::n_distinct(.x, na.rm = FALSE) > 1),
-                       .groups = "drop")
-    tibble::tibble(
-      SOURCE = basename(path),
-      COLUMN = cols,
-      `GROUPS WHERE IT VARIES (%)` =
-        round(100 * vapply(cols, function(c) mean(varies[[c]]), numeric(1)), 1),
-      GROUPS = nrow(varies)
-    )
-  }) |> purrr::list_rbind()
-
-  if (is.null(out) || nrow(out) == 0) {
-    message("No duplicate groups found at level '", level, "'.")
-    return(tibble::tibble())
-  }
-  dplyr::arrange(out, SOURCE, dplyr::desc(`GROUPS WHERE IT VARIES (%)`))
 }
 
 # =============================================================================
@@ -360,16 +233,11 @@ totalbr_duplicate_anatomy <- function(level      = "movement",
 #
 # Per year: how many rows carry a dt_dia of exactly 00:00:00.
 #
-# This matters because dt_dia is NOT uniformly populated. Most rows carry a real
-# time (clustered on five-minute marks, as filed), but a large minority fall back
-# to midnight — the day with no time at all. Under a key of id + dt_dia every
-# midnight row of the same callsign and route on the same day collides, which is
-# where essentially all of the `movement` "duplication" comes from. Ten flights by
-# one aircraft in a day are ten flights; a stamp that cannot tell them apart is a
-# precision problem, not duplication.
-#
-# Read this next to check_totalbr_duplicates(): a `movement` percentage is only
-# meaningful once the midnight share is known.
+# Not a duplication measure — the reason one is not needed on dt_dia. That field
+# falls back to midnight on a large minority of rows, so any key built on it
+# collapses every flight of an aircraft on that day into one. Ten flights are ten
+# flights; a stamp that cannot separate them is a precision problem. Use
+# dh_inicio wherever a movement time is needed.
 # =============================================================================
 totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
                                    date_col = "dt_dia") {
@@ -380,8 +248,7 @@ totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
     if (!date_col %in% names(ds)) return(NULL)
     s <- rlang::sym(date_col)
     tryCatch({
-      q <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
-      q |>
+      totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col)) |>
         dplyr::mutate(MIDNIGHT = lubridate::hour(!!s) == 0 &
                                  lubridate::minute(!!s) == 0 &
                                  lubridate::second(!!s) == 0) |>
@@ -408,9 +275,9 @@ totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
   dplyr::bind_rows(parts) |>
     dplyr::group_by(YEAR) |>
     dplyr::summarise(
-      ROWS       = sum(N),
-      MIDNIGHT   = sum(N[MIDNIGHT]),
-      `MIDNIGHT_PCT` = round(100 * sum(N[MIDNIGHT]) / sum(N), 2),
+      ROWS         = sum(N),
+      MIDNIGHT     = sum(N[MIDNIGHT]),
+      MIDNIGHT_PCT = round(100 * sum(N[MIDNIGHT]) / sum(N), 2),
       .groups = "drop"
     )
 }
@@ -420,5 +287,7 @@ if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
     library(dplyr); library(arrow); library(data.table); library(here)
   })
-  print(as.data.frame(check_totalbr_duplicates()))
+  args  <- commandArgs(trailingOnly = TRUE)
+  years <- if (length(args) == 0) NULL else args
+  print(as.data.frame(check_totalbr_duplicates(years)))
 }
