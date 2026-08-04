@@ -125,10 +125,16 @@ totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE) {
   src <- totalbr_sources(raw_dir)
   if (length(src$parquet) == 0 || length(src$csv) == 0)
     stop("Need both the parquet archive and the downloaded CSVs in ", raw_dir)
+  # both sides are hundreds of MB; announce each and report what came back, so a
+  # long read is visibly progress rather than a possible hang
   message("Reading the archive ...")
+  t0 <- Sys.time()
   a <- totalbr_cmp_read(src$parquet, years, date_col, all_cols)
+  totalbr_report_read("archive", if (is.null(a)) 0L else nrow(a), t0)
   message("Reading the API download ...")
+  t1 <- Sys.time()
   b <- totalbr_cmp_read(src$csv, years, date_col, all_cols)
+  totalbr_report_read("download", if (is.null(b)) 0L else nrow(b), t1)
   if (is.null(a) || nrow(a) == 0) stop("The archive holds no rows for those years.")
   if (is.null(b) || nrow(b) == 0)
     stop("The download holds no rows for those years — fetch them first with ",

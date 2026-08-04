@@ -81,6 +81,14 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
   d
 }
 
+# Reading a 1 GB archive into memory takes minutes, and a long silence is
+# indistinguishable from a hang. Every heavy read reports what it got and how long
+# it took, so the wait is visibly progress.
+totalbr_report_read <- function(what, n, started) {
+  message(sprintf("  %s: %s row(s) in %.0fs", what, format(n, big.mark = ","),
+                  as.numeric(difftime(Sys.time(), started, units = "secs"))))
+}
+
 # ---- the shape every entry point needs before it can compare rows -----------
 totalbr_normalise <- function(d) {
   # The row hash arrives UPPERCASE from the parquet archive and lowercase from the
@@ -200,8 +208,11 @@ check_totalbr_duplicates <- function(years    = NULL,
 
   res <- purrr::map(paths, function(path) {
     message("Reading ", basename(path), " ...")
+    t0 <- Sys.time()
     d <- totalbr_read_dup_cols(path, date_col, years)
     if (is.null(d)) return(NULL)
+    totalbr_report_read(basename(path), nrow(d), t0)
+    message("  checking ", basename(path), " ...")
 
     # the near test runs on the pk-unique rows, so NEAR_DUP is duplication BEYOND
     # what SAME_PK already reports, never the same rows counted a second time
