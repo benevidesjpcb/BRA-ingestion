@@ -86,13 +86,26 @@ totalbr_normalise <- function(d) {
   # times as POSIXct whichever way they were stored, and the epoch sentinel
   # (1970-01-01, which ODIN uses in place of an empty value) treated as missing
   # so it cannot masquerade as a movement at the start of time
-  for (nm in intersect(c("dh_inicio", "dh_fim"), names(d))) {
-    v <- d[[nm]]
-    if (!inherits(v, "POSIXct")) v <- as.POSIXct(as.character(v), tz = "UTC")
-    v[!is.na(v) & v < as.POSIXct("1980-01-01", tz = "UTC")] <- NA
-    d[[nm]] <- v
+  for (nm in intersect(c("dh_inicio", "dh_fim", "dh_eobt", "dh_eet"), names(d))) {
+    d[[nm]] <- totalbr_parse_time(d[[nm]])
   }
   d
+}
+
+# The CSVs hold ISO 8601 stamps with a T separator (2025-01-01T00:03:00), and
+# as.POSIXct's default formats do NOT include that form: it falls through to the
+# date-only format and returns MIDNIGHT for every row, silently. That turned every
+# downloaded row into "no time known" and made the near-duplicate test pass over
+# the whole file without comparing anything. The separator is normalised first.
+totalbr_parse_time <- function(v) {
+  if (inherits(v, "POSIXct")) return(v)
+  v <- as.character(v)
+  v[!is.na(v) & !nzchar(trimws(v))] <- NA_character_
+  out <- as.POSIXct(sub("T", " ", v, fixed = TRUE), tz = "UTC")
+  # the epoch (1970-01-01) is ODIN's stand-in for an empty value; left as a time
+  # it would put thousands of rows at one instant and read as duplication
+  out[!is.na(out) & out < as.POSIXct("1980-01-01", tz = "UTC")] <- NA
+  out
 }
 
 # A timestamp of exactly 00:00:00 is a date with no time, not a movement at
@@ -205,6 +218,11 @@ check_totalbr_duplicates <- function(years    = NULL,
         # ... and rows with no time of day on EITHER column to compare
         NO_TIME       = sum((is.na(dh_inicio) | totalbr_is_midnight(dh_inicio)) &
                             (is.na(dh_fim)    | totalbr_is_midnight(dh_fim))),
+        # the two exclusions OVERLAP — a row can lack both — so the untestable
+        # total is the union, not the sum. Adding them drove TESTED_PCT negative.
+        UNTESTABLE    = sum((is.na(co_matricula) | !nzchar(co_matricula)) |
+                            ((is.na(dh_inicio) | totalbr_is_midnight(dh_inicio)) &
+                             (is.na(dh_fim)    | totalbr_is_midnight(dh_fim)))),
         .groups = "drop"
       )
   }) |> purrr::list_rbind()
@@ -232,9 +250,16 @@ check_totalbr_duplicates <- function(years    = NULL,
 
   out <- res |>
     dplyr::group_by(YEAR) |>
-    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG, NO_TIME),
-                                   sum), .groups = "drop")
+    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG, NO_TIME,
+                                     UNTESTABLE), sum), .groups = "drop")
   if (!is.null(parts_pk)) out <- dplyr::left_join(out, parts_pk, by = "YEAR")
+
+  # A file where almost nothing is testable is usually a reading problem, not a
+  # property of the data — that is exactly how the T-separator parse bug showed
+  # itself (NO_TIME_PCT of 100). Say so rather than let a zero look like a result.
+  if (any(out$NO_TIME / out$ROWS > 0.9))
+    message("WARNING: over 90% of rows have no usable time. Check that the ",
+            "timestamps are being parsed, not that the data lacks them.")
 
   out |>
     dplyr::mutate(
@@ -242,7 +267,7 @@ check_totalbr_duplicates <- function(years    = NULL,
       NO_REG_PCT  = round(100 * NO_REG   / ROWS, 1),
       NO_TIME_PCT = round(100 * NO_TIME  / ROWS, 1),
       # the share the near test could actually look at
-      TESTED_PCT  = round(100 * (1 - (NO_REG + NO_TIME) / ROWS), 1)
+      TESTED_PCT  = round(100 * (1 - UNTESTABLE / ROWS), 1)
     ) |>
     dplyr::arrange(YEAR)
 }

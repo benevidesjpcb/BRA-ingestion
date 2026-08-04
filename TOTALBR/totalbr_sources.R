@@ -34,6 +34,16 @@ totalbr_sources <- function(raw_dir = here::here("data-raw", "totalbr"),
     list.files(raw_dir, pattern = "\\.parquet$", full.names = TRUE)
   } else character(0)
 
+  # The archive is often dropped straight into data-raw/ rather than into the
+  # dataset folder beside the downloads. Look one level up as well, but only for
+  # files named after this dataset, so an unrelated parquet is not picked up.
+  if (length(parquet) == 0 && !nzchar(env_parq)) {
+    up <- dirname(raw_dir)
+    if (dir.exists(up))
+      parquet <- list.files(up, pattern = "^totalbr.*\\.parquet$",
+                            full.names = TRUE)
+  }
+
   csv <- if (dir.exists(raw_dir))
     list.files(raw_dir, pattern = "^totalbr_[0-9]{4}\\.csv$", full.names = TRUE)
   else character(0)
