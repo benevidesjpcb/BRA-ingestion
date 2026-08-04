@@ -898,6 +898,55 @@ Look at what the one-sided rows have in common before concluding the API lost da
 missing set concentrated in one month, one aerodrome, or one flight type is a filter
 difference; scattered singles are ordinary late-arriving records.
 
+#### What the gaps turned out to be
+
+The two one-sided sets are different kinds of traffic, and that is the finding.
+
+**In the archive, absent from the API — 195,422 rows, 10%:**
+
+```
+co_addep      GAP_ROWS      co_indicativo   GAP_ROWS
+SBYS            13,907      PRMSI                945
+SBJD             9,278      PRSKT                902
+SBBH             8,081      PRFGM                897
+SBBI             6,496      PRSKV                870
+SBMT             5,793      PSLOM                823
+```
+
+Campo Fontenelle, Jundiaí, Pampulha, Bacacheri, Campo de Marte — general-aviation and
+training aerodromes. And the callsigns are **registrations** (`PR…`, `PS…`), which is what
+general aviation flies under. Spread evenly across the year at 8.5–11.7% per month, so it
+is not a truncated extraction: **the API does not serve this class of traffic.**
+
+**In the API, absent from the archive — 20,115 rows, 1%:**
+
+```
+co_addep      GAP_ROWS      co_indicativo   GAP_ROWS
+SBGR             2,234      TAM3756              127
+SBSP             2,071      GLO1766              105
+SBBR             2,044      ARG1141              103
+```
+
+The big hubs and scheduled airlines, also flat across the year.
+
+That second set has a candidate explanation that must be ruled out before it counts as a
+finding: **the 10-minute shift**. A flight at 00:05 in the archive is 23:55 of the previous
+day in the download, so `flight_day` cannot match it — and it appears one-sided on *both*
+sides. The profile now reports the **hour of day** and the **traffic class** so the artefact
+is visible rather than inferred:
+
+- a spike in hours `00` and `23` is the midnight artefact, not a gap;
+- flat across the hours means the difference is real.
+
+The traffic-class split (registration-style callsign versus airline-style) turns "look at
+the top ten" into a number: for the archive side it should be overwhelmingly general
+aviation, and for the API side overwhelmingly airline.
+
+If it holds, the conclusion for the study is concrete: **the API is not a substitute for the
+archive for national totals.** It is missing a tenth of the movements, and precisely the
+general-aviation tenth. For the twelve study airports the difference is likely far smaller —
+worth measuring separately before deciding which source feeds which figure.
+
 ### Where they disagree on the same flight
 
 ```{r}

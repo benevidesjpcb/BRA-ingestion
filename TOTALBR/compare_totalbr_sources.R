@@ -582,6 +582,30 @@ compare_totalbr_gap_profile <- function(years    = 2024,
   message("\nBy month (PCT_OF_MONTH is what matters — an even spread is ordinary):")
   print(as.data.frame(by_month))
 
+  # Hour of day. The two sources stamp dh_inicio ~10 minutes apart, so a flight
+  # near midnight falls on different calendar days on each side and flight_day
+  # cannot match it — on EITHER side. That artefact would show as a spike in the
+  # first and last hours; anything flat is a real difference.
+  by_hour <- tibble::tibble(
+    HOUR = format(gap$dh_inicio, "%H", tz = "UTC")) |>
+    dplyr::count(HOUR, name = "GAP_ROWS") |>
+    dplyr::mutate(PCT_OF_GAP = round(100 * GAP_ROWS / sum(GAP_ROWS), 1))
+  message("\nBy hour of day (a spike at 00 and 23 is the midnight artefact of the ",
+          "10-minute shift, not a real gap):")
+  print(as.data.frame(by_hour))
+
+  # Callsign shape. A Brazilian registration used as a callsign (PP/PR/PS/PT/PU
+  # plus three letters) is general aviation; three letters plus digits is an
+  # airline. Which class is missing says whether this is a filter or a gap.
+  is_reg <- grepl("^P[PRSTU][A-Z]{3}$", gap$co_indicativo)
+  is_air <- grepl("^[A-Z]{3}[0-9]", gap$co_indicativo)
+  message("\nWhat kind of traffic is one-sided:")
+  print(as.data.frame(tibble::tibble(
+    CLASS = c("registration (general aviation)", "airline callsign", "other"),
+    ROWS  = c(sum(is_reg), sum(is_air), sum(!is_reg & !is_air)),
+    PCT   = round(100 * c(sum(is_reg), sum(is_air),
+                          sum(!is_reg & !is_air)) / nrow(gap), 1))))
+
   top <- function(col, label) {
     tibble::tibble(VALUE = as.character(gap[[col]])) |>
       dplyr::count(VALUE, name = "GAP_ROWS") |>
@@ -594,7 +618,7 @@ compare_totalbr_gap_profile <- function(years    = 2024,
                                        top("co_addes", "co_addes"),
                                        top("co_indicativo", "co_indicativo"))))
 
-  invisible(list(rows = gap, by_month = by_month))
+  invisible(list(rows = gap, by_month = by_month, by_hour = by_hour))
 }
 
 # =============================================================================
