@@ -945,7 +945,8 @@ worth measuring separately before deciding which source feeds which figure.
 | Key | 2024 match | `ONLY_CSV` | What it is good for |
 | --- | --- | --- | --- |
 | `pk` | 0% | — | nothing across sources: the hash is computed per source |
-| `flight_day` | **93.2%** | 18,384 | **the matching key** |
+| `flight_day` | 93.2% | 18,384 | matches, but cannot see the first 50 minutes of any day |
+| `eobt_day` | — | — | **the matching key**: built on a field both sources define identically |
 | `eobt` | 84.2% | 469,837 | measuring how far the filed times agree |
 
 `eobt` is the stricter key and matches nine points *worse*, which is the interesting part.
@@ -1005,8 +1006,42 @@ than taken on trust. Take a `MATCH_KEY` from the output, search for it in the ot
 and one of two things is true: the flight really is absent, or the key is wrong. Both are
 worth finding out, and the second would be a fault in this code.
 
-`SOURCE` is `parquet` for the archive and `csv` for the API download. Times are written in
+`SOURCE` is `parquet` for the archive and `csv` for the API download — a row marked `csv`
+came from the download and its key was **not found** in the archive. Times are written in
 UTC, the same zone the comparison works in, so what is in the file is what was compared.
+
+#### The first run found a flaw in the key, not in the data
+
+Opening the output showed every early row landing between `00:00` and `00:16`:
+
+```
+SOURCE co_indicativo co_addep co_addes  dh_inicio
+csv    PRTSG         SJSG     SBRF      2025-01-01 00:00:00
+csv    TAM3164       SBSP     SBPA      2025-01-01 00:05:00
+csv    PSBVI         SBGO     SBMQ      2025-01-01 00:08:00
+```
+
+That is the 50-minute shift striking the key. A flight the download stamps at `00:05` sits
+at `23:15` of the **previous day** in the archive, so a key built on the calendar day of
+`dh_inicio` can never match the first 50 minutes of any day. Those rows appear one-sided on
+*both* sides while nothing at all is missing — and at a year boundary the counterpart is not
+even in the year being compared.
+
+The fix is to key on a field the two sources define identically. `dh_eobt` is that field, so
+`eobt_day` — callsign, aerodrome pair, and the **day of the filed time** — does not drift:
+
+```{r}
+#| label: compare-bra-totalbr-eobt-day
+#| eval: false
+
+compare_totalbr_sources(2024, "eobt_day", raw_dir = bra_totalbr_raw_dir)
+totalbr_unmatched(2024, "eobt_day", raw_dir = bra_totalbr_raw_dir,
+                  out_file = here::here("outputs", "totalbr-2024-unmatched.csv"))
+```
+
+`eobt_day` is now the default. Compare its unmatched count with `flight_day`'s: the
+difference is the size of the midnight artefact, and everything that survives both keys is a
+genuine one-sided flight.
 
 ### Where they disagree on the same flight
 

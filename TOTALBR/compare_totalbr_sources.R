@@ -60,6 +60,15 @@ totalbr_build_key <- function(d, key) {
     eobt = paste(d$co_indicativo, d$co_addep, d$co_addes,
                  format(d$dh_eobt, "%Y-%m-%dT%H:%M", tz = "UTC"),
                  sep = ""),
+    # The day of the FILED time. flight_day has a systematic blind spot: the two
+    # sources stamp dh_inicio 50 minutes apart, so a flight the download puts at
+    # 00:05 sits at 23:15 of the previous day in the archive, and a key built on
+    # the calendar day of dh_inicio can never match the first 50 minutes of any
+    # day — the rows show as one-sided on BOTH sides while nothing is missing.
+    # dh_eobt is the same value in both sources, so its day does not drift.
+    eobt_day = paste(d$co_indicativo, d$co_addep, d$co_addes,
+                     format(d$dh_eobt, "%Y-%m-%d", tz = "UTC"),
+                     sep = ""),
     stop("Unknown key '", key, "'.")
   )
 }
@@ -172,7 +181,7 @@ totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE,
 # identifier, not a difference in the data.
 # =============================================================================
 compare_totalbr_sources <- function(years    = 2023:2025,
-                                    key      = c("flight_day", "eobt", "pk"),
+                                    key      = c("eobt_day", "flight_day", "eobt", "pk"),
                                     raw_dir  = here::here("data-raw", "totalbr"),
                                     date_col = "dt_dia") {
   key   <- match.arg(key)
@@ -212,7 +221,7 @@ compare_totalbr_sources <- function(years    = 2023:2025,
 # =============================================================================
 compare_totalbr_examples <- function(years    = 2023:2025,
                                      side     = c("only_parquet", "only_csv", "both"),
-                                     key      = c("flight_day", "eobt", "pk"),
+                                     key      = c("eobt_day", "flight_day", "eobt", "pk"),
                                      n        = 20L,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
@@ -255,7 +264,7 @@ compare_totalbr_examples <- function(years    = 2023:2025,
 # agree on. Comparing on pk would only compare rows that agree by construction.
 # =============================================================================
 compare_totalbr_fields <- function(years    = 2023:2025,
-                                   key      = c("flight_day", "eobt", "pk"),
+                                   key      = c("eobt_day", "flight_day", "eobt", "pk"),
                                    max_rows = 200000L,
                                    all_cols = FALSE,
                                    raw_dir  = here::here("data-raw", "totalbr"),
@@ -699,7 +708,7 @@ compare_totalbr_time_shift <- function(years    = 2024,
 #   totalbr_unmatched(2024, out_file = "unmatched-2024.csv")  # written out
 # =============================================================================
 totalbr_unmatched <- function(years    = 2024,
-                              key      = c("flight_day", "eobt", "pk"),
+                              key      = c("eobt_day", "flight_day", "eobt", "pk"),
                               out_file = NULL,
                               raw_dir  = here::here("data-raw", "totalbr"),
                               date_col = "dt_dia") {
