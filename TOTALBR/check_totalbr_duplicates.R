@@ -50,8 +50,12 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
     }
     q <- dplyr::select(ds, dplyr::all_of(want))
     q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
-    if (!is.null(years))
-      q <- dplyr::filter(q, YEAR %in% as.character(years))
+    # the year set is built in R and injected: left as a call inside filter(),
+    # arrow turns a multi-year vector into a list<int32> scalar and fails to cast
+    if (!is.null(years)) {
+      yrs <- as.character(years)
+      q <- dplyr::filter(q, YEAR %in% !!yrs)
+    }
     dplyr::collect(q)
   } else {
     head1 <- data.table::fread(file = path, sep = ";", nrows = 0,

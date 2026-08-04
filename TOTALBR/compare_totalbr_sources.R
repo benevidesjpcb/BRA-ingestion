@@ -80,7 +80,14 @@ totalbr_cmp_read <- function(paths, years, date_col, all_cols = FALSE) {
       } else {
         q <- dplyr::select(ds, dplyr::all_of(want))
         q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
-        if (!is.null(years)) q <- dplyr::filter(q, YEAR %in% as.character(years))
+        # !!yrs, never as.character(years) inline: arrow translates the call
+        # itself, and an R vector of length > 1 becomes a list<int32> scalar it
+        # then cannot cast to utf8. With a single year it happens to work, which
+        # is why this only broke on 2024:2025.
+        if (!is.null(years)) {
+          yrs <- as.character(years)
+          q <- dplyr::filter(q, YEAR %in% !!yrs)
+        }
         dplyr::collect(q)
       }
     } else {
