@@ -940,6 +940,46 @@ archive for national totals.** It is missing a tenth of the movements, and preci
 general-aviation tenth. For the twelve study airports the difference is likely far smaller —
 worth measuring separately before deciding which source feeds which figure.
 
+#### Which key, and what each one measures
+
+| Key | 2024 match | `ONLY_CSV` | What it is good for |
+| --- | --- | --- | --- |
+| `pk` | 0% | — | nothing across sources: the hash is computed per source |
+| `flight_day` | **93.2%** | 18,384 | **the matching key** |
+| `eobt` | 84.2% | 469,837 | measuring how far the filed times agree |
+
+`eobt` is the stricter key and matches nine points *worse*, which is the interesting part.
+The jump in `ONLY_CSV` — from 18 thousand to 470 thousand — is not missing data: those are
+flights both sources hold, under a **different filed off-block time**. Plans get re-filed,
+and the two extractions caught different versions. So `eobt` is a good corroborating field
+and a poor key; `flight_day` stays the key.
+
+### What the comparison establishes
+
+| Finding | Measured |
+| --- | --- |
+| The same flights, both sources | 93.2% match on `flight_day` (2024), 93.4% (2025) |
+| `pk` is source-specific | 0 matches; both sides well-formed 32-char hex |
+| The observed window differs by definition | `dh_inicio` +50 min, `dh_fim` −50 min, on ~90%+ of matched flights |
+| The filed time agrees | `dh_eobt` identical on 75.5% of matched flights |
+| The API omits general aviation | 10% of the archive absent, at GA and training aerodromes, registration-style callsigns, flat across the year |
+| The API adds airline flights the archive lacks | 1%, at the hubs, flat across the year |
+
+For the study, the operative one is the fifth. **The API is not a substitute for the archive
+in a national total** — it is short by a tenth, and specifically the general-aviation tenth,
+so a series that took some years from one source and some from the other would show a step
+that is not traffic. For the twelve study airports the shortfall is likely far smaller,
+because general aviation is a small share there; measure it before deciding, with the rows
+the profile returns:
+
+```{r}
+#| label: compare-bra-totalbr-study-apts-gap
+#| eval: false
+
+g <- compare_totalbr_gap_profile(2024, "only_parquet", raw_dir = bra_totalbr_raw_dir)
+sum(g$rows$co_addep %in% bra_apts | g$rows$co_addes %in% bra_apts)
+```
+
 ### Where they disagree on the same flight
 
 ```{r}
