@@ -66,10 +66,23 @@ totalbr_cmp_read <- function(paths, years, date_col, all_cols = FALSE) {
                 paste(setdiff(want, names(ds)), collapse = ", "))
         return(NULL)
       }
-      q <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
-      if (!is.null(years)) q <- dplyr::filter(q, YEAR %in% as.character(years))
-      if (!all_cols) q <- dplyr::select(q, dplyr::all_of(c(want, "YEAR")))
-      dplyr::collect(q)
+      # SELECT BEFORE FILTERING. li_prnav and li_rvsm are list<int32>, and a
+      # filter placed over the whole dataset makes arrow carry them through the
+      # query, where they fail with "Unsupported cast from list<item: int32>".
+      # Narrowing to the wanted columns first keeps the list columns out of it.
+      if (all_cols) {
+        # every column is wanted, so the list columns cannot be dropped: pull the
+        # data into R first and filter the year there
+        d0 <- dplyr::collect(ds)
+        d0$YEAR <- format(totalbr_parse_time(d0[[date_col]]), "%Y", tz = "UTC")
+        if (!is.null(years)) d0 <- d0[d0$YEAR %in% as.character(years), ]
+        d0
+      } else {
+        q <- dplyr::select(ds, dplyr::all_of(want))
+        q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
+        if (!is.null(years)) q <- dplyr::filter(q, YEAR %in% as.character(years))
+        dplyr::collect(q)
+      }
     } else {
       head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
                                  showProgress = FALSE)

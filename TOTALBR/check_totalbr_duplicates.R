@@ -364,7 +364,9 @@ totalbr_midnight_share <- function(raw_dir  = here::here("data-raw", "totalbr"),
       if (!all(c(col, date_col) %in% names(ds))) return(NULL)
       cs <- rlang::sym(col)
       tryCatch({
-        totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col)) |>
+        # narrowed first: a query spanning the list-typed columns fails in arrow
+        dplyr::select(ds, dplyr::all_of(unique(c(col, date_col)))) |>
+          totalbr_add_year_day(date_col, totalbr_is_text_date(ds, date_col)) |>
           dplyr::mutate(
             # a date with no time at all
             IS_MIDNIGHT = lubridate::hour(!!cs) == 0 &
@@ -506,7 +508,9 @@ totalbr_source_overlap <- function(raw_dir  = here::here("data-raw", "totalbr"),
     d <- if (grepl("\\.parquet$", path)) {
       ds <- arrow::open_dataset(path)
       if (!all(c("pk", date_col) %in% names(ds))) return(NULL)
-      q <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
+      # narrowed before the mutate, so the list columns never enter the query
+      q <- dplyr::select(ds, dplyr::all_of(unique(c("pk", date_col))))
+      q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
       dplyr::collect(dplyr::select(q, dplyr::all_of(c("pk", "YEAR"))))
     } else {
       x <- data.table::fread(file = path, sep = ";",
@@ -646,10 +650,14 @@ totalbr_duplicate_rows <- function(years    = NULL,
   out <- purrr::map(paths, function(path) {
     # every column, because the point is to look at the records, not to count them
     d <- if (grepl("\\.parquet$", path)) {
+      # every column is wanted here, so the list-typed columns (li_prnav,
+      # li_rvsm) cannot be selected away; a year filter pushed down over them
+      # fails in arrow, so the data is pulled first and filtered in R
       ds <- arrow::open_dataset(path)
-      q  <- totalbr_add_year_day(ds, date_col, totalbr_is_text_date(ds, date_col))
-      if (!is.null(years)) q <- dplyr::filter(q, YEAR %in% as.character(years))
-      dplyr::collect(q)
+      d0 <- dplyr::collect(ds)
+      d0$YEAR <- format(totalbr_parse_time(d0[[date_col]]), "%Y", tz = "UTC")
+      if (!is.null(years)) d0 <- d0[d0$YEAR %in% as.character(years), ]
+      d0
     } else {
       x <- data.table::fread(file = path, sep = ";", colClasses = "character",
                              na.strings = "", showProgress = FALSE)
