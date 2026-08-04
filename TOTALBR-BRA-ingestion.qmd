@@ -605,6 +605,94 @@ place of one never served at all. What remains is the source's.
 
 If your parts predate that fix, re-fetch a month with `force = TRUE` and compare.
 
+## Archive vs API: What Differs
+
+The parquet archive is the file used in the report — the golden — and the same years can now
+be pulled from the ODIN API. `TOTALBR/compare_totalbr_sources.R` puts them side by side:
+what matches, what exists on one side only, and where they disagree on rows they both hold.
+
+### Match on what, exactly
+
+The comparison is only as good as the key, and the obvious key is the wrong one to trust
+blindly. If the two sources compute the row hash differently, **every row looks unique to
+its own side** and a comparison on `pk` reports "nothing in common" about data that is in
+fact identical. That is a fact about the identifier, not a difference in the traffic — and
+it would be read as a catastrophic mismatch.
+
+So there are three keys, and the first step is running all three:
+
+| `key` | Matches on | Use it to |
+| --- | --- | --- |
+| `"pk"` | the row hash, case-folded | see whether the hash is comparable across sources at all |
+| `"flight"` | callsign + aerodrome pair + `dh_inicio` to the minute | the real comparison |
+| `"flight_day"` | the same, but only to the day | catch a systematic timezone shift: if this matches far better than `"flight"`, the stamps are offset |
+
+```{r}
+#| label: compare-bra-totalbr-sources
+#| eval: false
+
+source(here::here("TOTALBR", "compare_totalbr_sources.R"))
+
+# run all three before believing any of them
+for (k in c("pk", "flight", "flight_day"))
+  print(compare_totalbr_sources(2023:2025, k, raw_dir = bra_totalbr_raw_dir))
+```
+
+`MATCH_PCT` is the share of the archive's rows found in the download. Reading the result:
+
+- **`pk` low, `flight` high** — the hashes are source-specific. Drop `pk` as a cross-source
+  key and compare on `flight`; nothing is wrong with the data.
+- **`flight` low, `flight_day` high** — the two disagree on the *time*, not on the flights.
+  Almost certainly a timezone: the archive cut at Brazilian local time, as its spill into
+  2026-01-01 already suggested.
+- **both low** — then the sources genuinely hold different traffic, and the examples below
+  say which.
+
+### The rows on each side
+
+```{r}
+#| label: compare-bra-totalbr-examples
+#| eval: false
+
+# in the archive, absent from the API
+compare_totalbr_examples(2024, "only_parquet", key = "flight",
+                         raw_dir = bra_totalbr_raw_dir)
+
+# in the API, absent from the archive
+compare_totalbr_examples(2024, "only_csv", key = "flight",
+                         raw_dir = bra_totalbr_raw_dir)
+
+# matched rows, one from each source, side by side
+compare_totalbr_examples(2024, "both", key = "flight",
+                         raw_dir = bra_totalbr_raw_dir)
+```
+
+Look at what the one-sided rows have in common before concluding the API lost data. A
+missing set concentrated in one month, one aerodrome, or one flight type is a filter
+difference; scattered singles are ordinary late-arriving records.
+
+### Where they disagree on the same flight
+
+```{r}
+#| label: compare-bra-totalbr-fields
+#| eval: false
+
+compare_totalbr_fields(2024, raw_dir = bra_totalbr_raw_dir)
+
+# to include ds_rota and the li_* arrays as well (holds every column of both
+# sources in memory — several GB over three years)
+compare_totalbr_fields(2024, all_cols = TRUE, raw_dir = bra_totalbr_raw_dir)
+```
+
+For rows both sources carry, this reports per column the share where they differ. It
+separates a genuine disagreement (`DIFFERENT_PCT`) from a field one side simply does not
+populate (`ONLY_PARQUET_PCT` / `ONLY_CSV_PCT`) — the second is a coverage difference and
+needs a different answer from the first.
+
+A row count that matches proves nothing about content: the same flight can be present on
+both sides with a different registration, a different aircraft type, or a stamp minutes
+apart. This is the table that finds that.
+
 ## Traffic Profile
 
 A first look at what the table actually contains, once a year is complete: the mix of
