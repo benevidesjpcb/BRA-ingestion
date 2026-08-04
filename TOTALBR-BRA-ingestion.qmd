@@ -849,7 +849,19 @@ cannot be used across sources and the zero match is expected, not a defect.
 
 #### The shift, measured on matched flights
 
-Over the 1,715,760 flights both sources hold, matched on `flight_day`:
+```{r}
+#| label: compare-bra-totalbr-shift
+#| eval: false
+
+compare_totalbr_time_shift(2024, raw_dir = bra_totalbr_raw_dir)
+```
+
+It pairs the flights first — on `flight_day`, the key that actually matches — and differences
+second, over the three time columns at once. The earlier rolling-join estimate looked for the
+*nearest* record instead, which silently pairs a different flight whenever one is missing;
+both routes happen to agree here, but only the matched-pair figure is safe to quote.
+
+Over the 1,715,760 flights both sources hold:
 
 | Column | mode (download − archive) | share | identical |
 | --- | --- | --- | --- |
