@@ -51,6 +51,13 @@ totalbr_build_key <- function(d, key) {
     flight_day = paste(d$co_indicativo, d$co_addep, d$co_addes,
                        format(d$dh_inicio, "%Y-%m-%d", tz = "UTC"),
                        sep = ""),
+    # dh_eobt is the filed off-block time — a planned value both sources copy from
+    # the same flight plan, where dh_inicio is an observed moment each may define
+    # differently. When the two disagree on dh_inicio by a constant, this is the
+    # key that still lines the rows up.
+    eobt = paste(d$co_indicativo, d$co_addep, d$co_addes,
+                 format(d$dh_eobt, "%Y-%m-%dT%H:%M", tz = "UTC"),
+                 sep = ""),
     stop("Unknown key '", key, "'.")
   )
 }
@@ -141,7 +148,7 @@ totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE) {
 # identifier, not a difference in the data.
 # =============================================================================
 compare_totalbr_sources <- function(years    = 2023:2025,
-                                    key      = c("pk", "flight", "flight_day"),
+                                    key      = c("pk", "flight", "flight_day", "eobt"),
                                     raw_dir  = here::here("data-raw", "totalbr"),
                                     date_col = "dt_dia") {
   key   <- match.arg(key)
@@ -181,7 +188,7 @@ compare_totalbr_sources <- function(years    = 2023:2025,
 # =============================================================================
 compare_totalbr_examples <- function(years    = 2023:2025,
                                      side     = c("only_parquet", "only_csv", "both"),
-                                     key      = c("pk", "flight", "flight_day"),
+                                     key      = c("pk", "flight", "flight_day", "eobt"),
                                      n        = 20L,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
@@ -225,7 +232,7 @@ compare_totalbr_examples <- function(years    = 2023:2025,
 # already agree by construction.
 # =============================================================================
 compare_totalbr_fields <- function(years    = 2023:2025,
-                                   key      = c("flight", "pk", "flight_day"),
+                                   key      = c("flight", "eobt", "pk", "flight_day"),
                                    max_rows = 200000L,
                                    all_cols = FALSE,
                                    raw_dir  = here::here("data-raw", "totalbr"),
@@ -352,13 +359,44 @@ compare_totalbr_diagnose <- function(years    = 2024,
 
   offsets <- joined[, .N, by = list(OFFSET_MIN = round(DIFF_MIN))][order(-N)]
   message("\nMinutes between a downloaded flight and the nearest archive record ",
-          "of the same callsign and route (top 10):")
+          "of the same callsign and route, on dh_inicio (top 10):")
   print(as.data.frame(head(offsets, 10)))
   message("Exactly 0: ", offsets[OFFSET_MIN == 0, sum(N)], " of ", nrow(joined),
           " (", round(100 * offsets[OFFSET_MIN == 0, sum(N)] / nrow(joined), 1),
           "%)")
 
-  invisible(list(parts = parts, offsets = offsets))
+  # The same measurement on the FILED time. dh_inicio is observed and each source
+  # may define it differently; dh_eobt is copied from the flight plan, so if the
+  # two agree there the rows can still be lined up and compared.
+  offsets_eobt <- NULL
+  if (all(c("dh_eobt") %in% names(a)) && all(c("dh_eobt") %in% names(b))) {
+    A2 <- data.table::as.data.table(a)[
+      !is.na(dh_eobt), list(K = paste(co_indicativo, co_addep, co_addes),
+                            TA = dh_eobt)]
+    B2 <- data.table::as.data.table(b)[
+      !is.na(dh_eobt), list(K = paste(co_indicativo, co_addep, co_addes),
+                            TB = dh_eobt)]
+    if (nrow(A2) > 0 && nrow(B2) > 0) {
+      A2[, TJ := TA]; B2[, TJ := TB]
+      data.table::setkey(A2, K, TJ); data.table::setkey(B2, K, TJ)
+      j2 <- A2[B2, roll = "nearest", nomatch = 0L]
+      if (nrow(j2) > 0) {
+        j2[, DIFF_MIN := as.numeric(difftime(TB, TA, units = "mins"))]
+        offsets_eobt <- j2[, .N, by = list(OFFSET_MIN = round(DIFF_MIN))][order(-N)]
+        message("\nThe same, on dh_eobt (top 10):")
+        print(as.data.frame(head(offsets_eobt, 10)))
+        message("Exactly 0: ", offsets_eobt[OFFSET_MIN == 0, sum(N)], " of ",
+                nrow(j2), " (",
+                round(100 * offsets_eobt[OFFSET_MIN == 0, sum(N)] / nrow(j2), 1),
+                "%)")
+        if (offsets_eobt[OFFSET_MIN == 0, sum(N)] / nrow(j2) > 0.5)
+          message("\n=> dh_eobt agrees. Compare with key = \"eobt\": the sources ",
+                  "differ on what dh_inicio means, not on which flights they hold.")
+      }
+    }
+  }
+
+  invisible(list(parts = parts, offsets = offsets, offsets_eobt = offsets_eobt))
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

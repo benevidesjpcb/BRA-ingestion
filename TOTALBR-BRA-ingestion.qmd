@@ -706,12 +706,53 @@ downloaded flight it finds the **nearest** archive record of the same callsign a
 and reports how far apart they are. A rolling join, because a key built on time cannot
 discover its own offset.
 
+#### What it found
+
+```
+PIECE                       OVERLAP_PCT
+co_indicativo                      89.5
+co_addep                           99.7
+co_addes                           99.7
+callsign + route                   95.5
+calendar day of dh_inicio          99.7
+callsign + route + day             93.2
+
+OFFSET_MIN        N
+        50  1779079     <- 91% of all matched rows
+        80     2271
+        51     2070
+```
+
+The flights are the same: 93.2% share callsign, route and day. What differs is the clock,
+by **exactly 50 minutes on 91% of rows**.
+
+Fifty minutes is not a timezone — timezones are whole hours. A constant that clean, on
+nearly every row, is a **definition difference**: the two sources stamp different moments of
+the same flight in `dh_inicio`. In the API payload `dh_inicio` equals `dh_eobt` (the filed
+off-block time); in the archive it is evidently something else.
+
+That points at the way out. `dh_eobt` is copied from the flight plan rather than observed,
+so if the two sources agree there, it can carry the comparison:
+
+```{r}
+#| label: compare-bra-totalbr-eobt
+#| eval: false
+
+compare_totalbr_sources(2024, "eobt", raw_dir = bra_totalbr_raw_dir)
+compare_totalbr_fields(2024, key = "eobt", raw_dir = bra_totalbr_raw_dir)
+```
+
+`compare_totalbr_diagnose()` now measures the offset on `dh_eobt` as well as on
+`dh_inicio`, so one run says whether that key will work before you spend anything on it.
+
 Reading the offsets:
 
-- **one dominant value, e.g. −180** — a timezone. The archive is in Brazilian local time
-  and the download in UTC. Nothing is missing; one side needs shifting before any
-  comparison, and the archive's spill into 2026-01-01 was the same fact seen from a
-  different angle.
+- **one dominant value on the hour, e.g. −180** — a timezone. Nothing is missing; one side
+  needs shifting before any comparison.
+- **one dominant value NOT on the hour, as here (50)** — the two sources mean different
+  things by the field. Shifting would be a fudge; use a field they define the same way
+  (`key = "eobt"`) and treat `dh_inicio` as a column that *differs*, which is a finding in
+  its own right.
 - **zero dominant, but a spread of a few minutes** — the two sources record slightly
   different moments for the same event. Match on `flight_day` and compare fields instead.
 - **no callsign+route in common at all** — then the identifiers differ, not the clock, and
