@@ -284,6 +284,83 @@ compare_totalbr_fields <- function(years    = 2023:2025,
     dplyr::arrange(dplyr::desc(DIFFERENT_PCT))
 }
 
+# =============================================================================
+# compare_totalbr_diagnose(years, ...)
+#
+# When the keys match almost nothing but the row counts agree, the data is the
+# same traffic and the KEY is wrong. This says which part of it.
+#
+# It takes the key apart and reports the overlap of each piece on its own, then
+# measures the clock difference directly: for every downloaded flight it finds the
+# nearest archive record of the same callsign and route, and reports how far apart
+# they are. A single dominant offset — 180 minutes, say — is a timezone, not
+# missing data, and the fix is to shift one side rather than to re-download.
+# =============================================================================
+compare_totalbr_diagnose <- function(years    = 2024,
+                                     raw_dir  = here::here("data-raw", "totalbr"),
+                                     date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+
+  pct <- function(x, y) round(100 * length(intersect(x, y)) /
+                              max(length(unique(x)), 1), 1)
+
+  parts <- tibble::tibble(
+    PIECE = c("co_indicativo", "co_addep", "co_addes",
+              "callsign + route", "calendar day of dh_inicio",
+              "callsign + route + day"),
+    OVERLAP_PCT = c(
+      pct(a$co_indicativo, b$co_indicativo),
+      pct(a$co_addep, b$co_addep),
+      pct(a$co_addes, b$co_addes),
+      pct(paste(a$co_indicativo, a$co_addep, a$co_addes),
+          paste(b$co_indicativo, b$co_addep, b$co_addes)),
+      pct(format(a$dh_inicio, "%Y-%m-%d", tz = "UTC"),
+          format(b$dh_inicio, "%Y-%m-%d", tz = "UTC")),
+      pct(paste(a$co_indicativo, a$co_addep, a$co_addes,
+                format(a$dh_inicio, "%Y-%m-%d", tz = "UTC")),
+          paste(b$co_indicativo, b$co_addep, b$co_addes,
+                format(b$dh_inicio, "%Y-%m-%d", tz = "UTC")))
+    )
+  )
+  message("Overlap of each part of the key (share of the archive's values ",
+          "found in the download):")
+  print(as.data.frame(parts))
+
+  # ---- how far apart are the clocks? --------------------------------------
+  # A rolling join to the NEAREST record of the same callsign and route: no
+  # assumption about the size or the sign of the difference, which is the point —
+  # a key built on the time cannot find its own offset.
+  A <- data.table::as.data.table(a)[
+    !is.na(dh_inicio), list(K = paste(co_indicativo, co_addep, co_addes),
+                            TA = dh_inicio)]
+  B <- data.table::as.data.table(b)[
+    !is.na(dh_inicio), list(K = paste(co_indicativo, co_addep, co_addes),
+                            TB = dh_inicio)]
+  if (nrow(A) == 0 || nrow(B) == 0) {
+    message("No usable dh_inicio on one side."); return(invisible(parts))
+  }
+  A[, TJ := TA]; B[, TJ := TB]
+  data.table::setkey(A, K, TJ)
+  data.table::setkey(B, K, TJ)
+  joined <- A[B, roll = "nearest", nomatch = 0L]
+  if (nrow(joined) == 0) {
+    message("No callsign+route in common — the difference is not the clock.")
+    return(invisible(parts))
+  }
+  joined[, DIFF_MIN := as.numeric(difftime(TB, TA, units = "mins"))]
+
+  offsets <- joined[, .N, by = list(OFFSET_MIN = round(DIFF_MIN))][order(-N)]
+  message("\nMinutes between a downloaded flight and the nearest archive record ",
+          "of the same callsign and route (top 10):")
+  print(as.data.frame(head(offsets, 10)))
+  message("Exactly 0: ", offsets[OFFSET_MIN == 0, sum(N)], " of ", nrow(joined),
+          " (", round(100 * offsets[OFFSET_MIN == 0, sum(N)] / nrow(joined), 1),
+          "%)")
+
+  invisible(list(parts = parts, offsets = offsets))
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({

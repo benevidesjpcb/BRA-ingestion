@@ -678,6 +678,45 @@ for (k in c("pk", "flight", "flight_day"))
 - **both low** — then the sources genuinely hold different traffic, and the examples below
   say which.
 
+### When nothing matches, suspect the key
+
+The first run said it plainly:
+
+| Year | key | archive | download | matched |
+| --- | --- | --- | --- | --- |
+| 2024 | `pk` | 1,959,619 | 1,948,449 | **0** |
+| 2024 | `flight` | 1,959,619 | 1,948,449 | **8** |
+| 2025 | `flight` | 2,109,623 | 2,108,473 | 16 |
+
+Row counts within 0.6% of each other and essentially nothing in common. Two files of the
+same traffic cannot disagree on every record, so the key is wrong, not the data. `pk` at
+zero was expected — the hash is computed per source. `flight` at eight is a different
+problem, and guessing which part of it fails is a waste of a run:
+
+```{r}
+#| label: compare-bra-totalbr-diagnose
+#| eval: false
+
+compare_totalbr_diagnose(2024, raw_dir = bra_totalbr_raw_dir)
+```
+
+It reports the overlap of each piece of the key on its own — callsign, departure,
+destination, calendar day — and then measures the clock difference directly: for every
+downloaded flight it finds the **nearest** archive record of the same callsign and route
+and reports how far apart they are. A rolling join, because a key built on time cannot
+discover its own offset.
+
+Reading the offsets:
+
+- **one dominant value, e.g. −180** — a timezone. The archive is in Brazilian local time
+  and the download in UTC. Nothing is missing; one side needs shifting before any
+  comparison, and the archive's spill into 2026-01-01 was the same fact seen from a
+  different angle.
+- **zero dominant, but a spread of a few minutes** — the two sources record slightly
+  different moments for the same event. Match on `flight_day` and compare fields instead.
+- **no callsign+route in common at all** — then the identifiers differ, not the clock, and
+  the first table says which one.
+
 ### The rows on each side
 
 ```{r}
