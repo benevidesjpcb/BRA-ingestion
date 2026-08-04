@@ -665,8 +665,8 @@ So there are three keys, and the first step is running all three:
 | `key` | Matches on | Use it to |
 | --- | --- | --- |
 | `"pk"` | the row hash, case-folded | see whether the hash is comparable across sources at all |
-| `"flight"` | callsign + aerodrome pair + `dh_inicio` to the minute | the real comparison |
-| `"flight_day"` | the same, but only to the day | catch a systematic timezone shift: if this matches far better than `"flight"`, the stamps are offset |
+| `"flight_day"` | callsign + aerodrome pair + the **calendar day** of `dh_inicio` | the working key |
+| `"eobt"` | callsign + aerodrome pair + the filed off-block time | an alternative when `dh_inicio` cannot be trusted |
 
 ```{r}
 #| label: compare-bra-totalbr-sources
@@ -675,7 +675,7 @@ So there are three keys, and the first step is running all three:
 source(here::here("TOTALBR", "compare_totalbr_sources.R"))
 
 # run all three before believing any of them
-for (k in c("pk", "flight", "flight_day"))
+for (k in c("flight_day", "eobt", "pk"))
   print(compare_totalbr_sources(2023:2025, k, raw_dir = bra_totalbr_raw_dir))
 ```
 
@@ -841,16 +841,15 @@ single example. Then it prints the two `pk` values for the same flight, matched 
 #| eval: false
 
 # in the archive, absent from the API
-compare_totalbr_examples(2024, "only_parquet", key = "flight",
-                         raw_dir = bra_totalbr_raw_dir)
+compare_totalbr_examples(2024, "only_parquet", raw_dir = bra_totalbr_raw_dir)
 
 # in the API, absent from the archive
-compare_totalbr_examples(2024, "only_csv", key = "flight",
-                         raw_dir = bra_totalbr_raw_dir)
+compare_totalbr_examples(2024, "only_csv", raw_dir = bra_totalbr_raw_dir)
 
-# matched rows, one from each source, side by side
-compare_totalbr_examples(2024, "both", key = "flight",
-                         raw_dir = bra_totalbr_raw_dir)
+# and the same rows summarised rather than listed — 124,898 rows are not read
+# one by one, and the question is whether they form a pattern
+compare_totalbr_gap_profile(2024, "only_parquet", raw_dir = bra_totalbr_raw_dir)
+compare_totalbr_gap_profile(2024, "only_csv",     raw_dir = bra_totalbr_raw_dir)
 ```
 
 Look at what the one-sided rows have in common before concluding the API lost data. A
