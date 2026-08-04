@@ -338,6 +338,7 @@ the start of time and look like a thousand simultaneous movements.
 
 ```{r}
 #| label: tbl-bra-totalbr-duplicates
+#| eval: false
 
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
 
@@ -361,6 +362,16 @@ if (length(files) == 0) {
   }
 }
 ```
+
+This chunk is `eval: false`, unlike the coverage tables above. Those aggregate inside arrow
+and never bring the archive into memory; this one has to compare rows, so it pulls the
+whole 1 GB archive plus the ~500 MB year files into R — minutes, not seconds. A document
+that takes ten minutes to render stops being run, so this is a deliberate manual step.
+
+Run it per source rather than with `"all"` unless you want the pooled figure: `"csv"` skips
+the archive entirely and is the fast path. The reads now announce themselves and report
+rows and elapsed seconds on finishing, so a long silence after `Reading totalbr.parquet ...`
+is a read in progress, not a hang.
 
 The two tests do not overlap. An exact `pk` repeat trivially satisfies the second rule as
 well — same aircraft, same place, zero minutes apart — so the near test runs only on
