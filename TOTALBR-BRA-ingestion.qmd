@@ -758,6 +758,32 @@ Reading the offsets:
 - **no callsign+route in common at all** — then the identifiers differ, not the clock, and
   the first table says which one.
 
+#### Seeing which values are missing
+
+An overlap of 89.5% on `co_indicativo` looks alarming and usually is not, because that is a
+share of **distinct values**, not of traffic. Most distinct callsigns in TOTALBR are
+general-aviation registrations flown a few times a year, so a tenth of the values can be a
+three-hundredth of the flights.
+
+```{r}
+#| label: compare-bra-totalbr-missing-values
+#| eval: false
+
+compare_totalbr_missing_values("co_indicativo", 2024, raw_dir = bra_totalbr_raw_dir)
+compare_totalbr_missing_values("co_addes", 2024, raw_dir = bra_totalbr_raw_dir)
+```
+
+It reports both shares — `VALUES_PCT` and `ROWS_PCT` — and then lists the one-sided values
+**sorted by rows**, so anything that carries real traffic is at the top. What to look for:
+
+- **`ROWS_PCT` near zero** — a long tail of rare callsigns. Ordinary, and no reason to
+  distrust either source.
+- **A scheduled airline callsign high in the list** — that is a real gap, and worth
+  isolating: check whether it is one month, one aerodrome, or the whole year.
+- **Values differing only in form** — trailing spaces, a zero-padded number, a different
+  case. That is a formatting difference masquerading as missing data, and it would also be
+  depressing every key built on the column.
+
 ### The rows on each side
 
 ```{r}

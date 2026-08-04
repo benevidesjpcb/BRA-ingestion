@@ -399,6 +399,66 @@ compare_totalbr_diagnose <- function(years    = 2024,
   invisible(list(parts = parts, offsets = offsets, offsets_eobt = offsets_eobt))
 }
 
+# =============================================================================
+# compare_totalbr_missing_values(column, years, n, ...)
+#
+# The values of one column that exist in one source and not the other — with how
+# many ROWS each accounts for.
+#
+# Both numbers are needed and they say different things. A column can have 10% of
+# its distinct values missing while those values carry 0.3% of the traffic: in
+# TOTALBR most distinct callsigns are general-aviation registrations flown a
+# handful of times a year, so a share of distinct values is not a share of
+# flights. The summary reports both; the list is sorted by rows, so whatever
+# actually matters is at the top.
+#
+#   compare_totalbr_missing_values("co_indicativo", 2024)
+#   compare_totalbr_missing_values("co_addes", 2024, n = 100)
+# =============================================================================
+compare_totalbr_missing_values <- function(column   = "co_indicativo",
+                                           years    = 2024,
+                                           n        = 50L,
+                                           raw_dir  = here::here("data-raw", "totalbr"),
+                                           date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+  if (!column %in% names(a) || !column %in% names(b))
+    stop("Column '", column, "' is not in both sources.")
+
+  va <- as.character(a[[column]]); vb <- as.character(b[[column]])
+  ca <- table(va[!is.na(va) & nzchar(va)])
+  cb <- table(vb[!is.na(vb) & nzchar(vb)])
+
+  only_a <- setdiff(names(ca), names(cb))
+  only_b <- setdiff(names(cb), names(ca))
+
+  summary <- tibble::tibble(
+    SIDE          = c("only in archive", "only in download"),
+    VALUES        = c(length(only_a), length(only_b)),
+    VALUES_PCT    = c(round(100 * length(only_a) / length(ca), 1),
+                      round(100 * length(only_b) / length(cb), 1)),
+    ROWS          = c(sum(ca[only_a]), sum(cb[only_b])),
+    # the number that says whether this matters: a tenth of the values can be a
+    # three-hundredth of the traffic
+    ROWS_PCT      = c(round(100 * sum(ca[only_a]) / sum(ca), 2),
+                      round(100 * sum(cb[only_b]) / sum(cb), 2))
+  )
+  message("Values of ", column, " present in one source only:")
+  print(as.data.frame(summary))
+
+  lst <- dplyr::bind_rows(
+    tibble::tibble(SIDE = "only in archive",  VALUE = only_a,
+                   N_ROWS = as.integer(ca[only_a])),
+    tibble::tibble(SIDE = "only in download", VALUE = only_b,
+                   N_ROWS = as.integer(cb[only_b]))
+  ) |>
+    dplyr::arrange(dplyr::desc(N_ROWS))
+
+  message("\nTop ", min(n, nrow(lst)), " by rows:")
+  print(as.data.frame(head(lst, n)))
+  invisible(list(summary = summary, values = lst))
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
