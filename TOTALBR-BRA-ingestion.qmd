@@ -847,56 +847,37 @@ KAL274        SBKP     SCEL      2024-01-01 01:01:59  2024-01-01 00:51:59
 Well-formed on both sides, so the hash is source-specific, not mangled in reading. `pk`
 cannot be used across sources and the zero match is expected, not a defect.
 
-#### And the shift is 10 minutes, not 50
+#### The shift, measured on matched flights
 
-Those same example rows show something the earlier measurement got wrong. Every pair is
-**exactly 10 minutes apart**, with the archive later — not the 50 minutes the rolling-join
-estimate reported for 91% of rows.
+Over the 1,715,760 flights both sources hold, matched on `flight_day`:
 
-The rolling join was the flaw. It pairs each downloaded flight with the *nearest* archive
-record of the same callsign and route, so whenever a flight is missing from one side it
-silently pairs a different flight, and the modal "offset" ends up describing those
-mismatches. Once `flight_day` gave a real 93% match, the difference could be measured on
-flights both sources actually hold:
+| Column | mode (download − archive) | share | identical |
+| --- | --- | --- | --- |
+| `dh_inicio` | **+50 min** | 98.7% | 0% |
+| `dh_fim` | **−50 min** | 90.1% | 0% |
+| `dh_eobt` | 0 | 75.5% | **75.5%** |
 
-```{r}
-#| label: compare-bra-totalbr-shift
-#| eval: false
+Read together these say something precise. The archive's window is **wider by 50 minutes at
+each end**: it starts 50 minutes before the download's `dh_inicio` and ends 50 minutes after
+its `dh_fim`. And the filed off-block time is **identical** on three quarters of flights.
 
-compare_totalbr_time_shift(2024, raw_dir = bra_totalbr_raw_dir)
-```
+So the sources do not disagree about the clock — they agree exactly on the filed time and
+differ on what the observed window covers. `dh_inicio`/`dh_fim` mean different things in the
+two files, and shifting one side by 50 minutes would paper over a definition difference
+rather than fix a fault. What to ask ICEA is what the archive's window is measured between;
+`dh_eobt` is the field to build on meanwhile.
 
-It reports `dh_inicio`, `dh_fim` and `dh_eobt` together, which is the discriminating part:
+::: {.callout-warning}
+## A printout that lied, and the fix
+An earlier reading of the example rows put this difference at **−10 minutes**, the opposite
+sign and a fifth of the size. The rows were right and the reading was wrong: the archive's
+timestamps arrive from arrow with no timezone attribute and print in the session's local
+zone, while the CSV's are parsed as UTC. A table showing `01:00:00` next to `00:50:00` was
+showing **two different clocks** with nothing to say so — CET against UTC.
 
-- **all three shifted by the same amount** — the sources disagree about the clock.
-- **only `dh_inicio` shifted** — they disagree about what `dh_inicio` *means*, and shifting
-  one side would paper over a definition difference instead of fixing it.
-
-The reads are cached for the session now, so this and the tables below reuse the fourteen
-minutes already spent rather than paying them again. Pass `refresh = TRUE` after
-re-downloading.
-
-### The rows on each side
-
-```{r}
-#| label: compare-bra-totalbr-examples
-#| eval: false
-
-# in the archive, absent from the API
-compare_totalbr_examples(2024, "only_parquet", raw_dir = bra_totalbr_raw_dir)
-
-# in the API, absent from the archive
-compare_totalbr_examples(2024, "only_csv", raw_dir = bra_totalbr_raw_dir)
-
-# and the same rows summarised rather than listed — 124,898 rows are not read
-# one by one, and the question is whether they form a pattern
-compare_totalbr_gap_profile(2024, "only_parquet", raw_dir = bra_totalbr_raw_dir)
-compare_totalbr_gap_profile(2024, "only_csv",     raw_dir = bra_totalbr_raw_dir)
-```
-
-Look at what the one-sided rows have in common before concluding the API lost data. A
-missing set concentrated in one month, one aerodrome, or one flight type is a filter
-difference; scattered singles are ordinary late-arriving records.
+Every timestamp is now forced to display in UTC as it is read, so no output can compare two
+zones silently again. The rolling-join estimate of 50 minutes had been right all along.
+:::
 
 #### What the gaps turned out to be
 

@@ -110,7 +110,16 @@ totalbr_normalise <- function(d) {
 # downloaded row into "no time known" and made the near-duplicate test pass over
 # the whole file without comparing anything. The separator is normalised first.
 totalbr_parse_time <- function(v) {
-  if (inherits(v, "POSIXct")) return(v)
+  # Force the display timezone to UTC even when the value is already a timestamp.
+  # arrow hands back POSIXct with no tzone set, which prints in the session's
+  # local zone, while a value parsed from the CSV prints in UTC. Two such columns
+  # side by side in one table show two different clocks with nothing to say so —
+  # that is how a +50 minute difference was read off a printout as -10. Setting
+  # tzone changes the display only; the instant is untouched.
+  if (inherits(v, "POSIXct")) {
+    attr(v, "tzone") <- "UTC"
+    return(v)
+  }
   v <- as.character(v)
   v[!is.na(v) & !nzchar(trimws(v))] <- NA_character_
   out <- as.POSIXct(sub("T", " ", v, fixed = TRUE), tz = "UTC")
