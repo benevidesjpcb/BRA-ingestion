@@ -834,6 +834,48 @@ single example. Then it prints the two `pk` values for the same flight, matched 
   cross-source identifier. Worth asking ICEA what it is computed over.
 - **One truncated, padded, quoted, or empty** — that is a reading fault, and ours.
 
+The run settled it. Both sides are 32-character uppercase hex with no exceptions, and the
+same flight carries two different values:
+
+```
+co_indicativo co_addep co_addes  archive              download
+TAM3458       SBGR     SBLO      2024-01-01 01:00:00  2024-01-01 00:50:00
+AZU4061       SBCF     SBCT      2024-01-01 01:00:00  2024-01-01 00:50:00
+KAL274        SBKP     SCEL      2024-01-01 01:01:59  2024-01-01 00:51:59
+```
+
+Well-formed on both sides, so the hash is source-specific, not mangled in reading. `pk`
+cannot be used across sources and the zero match is expected, not a defect.
+
+#### And the shift is 10 minutes, not 50
+
+Those same example rows show something the earlier measurement got wrong. Every pair is
+**exactly 10 minutes apart**, with the archive later — not the 50 minutes the rolling-join
+estimate reported for 91% of rows.
+
+The rolling join was the flaw. It pairs each downloaded flight with the *nearest* archive
+record of the same callsign and route, so whenever a flight is missing from one side it
+silently pairs a different flight, and the modal "offset" ends up describing those
+mismatches. Once `flight_day` gave a real 93% match, the difference could be measured on
+flights both sources actually hold:
+
+```{r}
+#| label: compare-bra-totalbr-shift
+#| eval: false
+
+compare_totalbr_time_shift(2024, raw_dir = bra_totalbr_raw_dir)
+```
+
+It reports `dh_inicio`, `dh_fim` and `dh_eobt` together, which is the discriminating part:
+
+- **all three shifted by the same amount** — the sources disagree about the clock.
+- **only `dh_inicio` shifted** — they disagree about what `dh_inicio` *means*, and shifting
+  one side would paper over a definition difference instead of fixing it.
+
+The reads are cached for the session now, so this and the tables below reuse the fourteen
+minutes already spent rather than paying them again. Pass `refresh = TRUE` after
+re-downloading.
+
 ### The rows on each side
 
 ```{r}

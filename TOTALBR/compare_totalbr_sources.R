@@ -123,7 +123,18 @@ totalbr_cmp_read <- function(paths, years, date_col, all_cols = FALSE) {
   }) |> purrr::list_rbind()
 }
 
-totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE) {
+# Reading the archive takes ~14 minutes. Every comparison function needs the same
+# two sides, so they are kept for the session instead of being re-read per call.
+# refresh = TRUE forces a re-read after the files change.
+.totalbr_cmp_cache <- new.env(parent = emptyenv())
+
+totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE,
+                              refresh = FALSE) {
+  ck <- paste(paste(years, collapse = ","), raw_dir, date_col, all_cols)
+  if (!refresh && !is.null(.totalbr_cmp_cache[[ck]])) {
+    message("(reusing the sides read earlier this session; refresh = TRUE to re-read)")
+    return(.totalbr_cmp_cache[[ck]])
+  }
   src <- totalbr_sources(raw_dir)
   if (length(src$parquet) == 0 || length(src$csv) == 0)
     stop("Need both the parquet archive and the downloaded CSVs in ", raw_dir)
@@ -141,7 +152,9 @@ totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE) {
   if (is.null(b) || nrow(b) == 0)
     stop("The download holds no rows for those years — fetch them first with ",
          "download_totalbr(", paste(range(years), collapse = ":"), ").")
-  list(parquet = a, csv = b)
+  res <- list(parquet = a, csv = b)
+  .totalbr_cmp_cache[[ck]] <- res
+  res
 }
 
 # =============================================================================
@@ -582,6 +595,60 @@ compare_totalbr_gap_profile <- function(years    = 2024,
                                        top("co_indicativo", "co_indicativo"))))
 
   invisible(list(rows = gap, by_month = by_month))
+}
+
+# =============================================================================
+# compare_totalbr_time_shift(years, ...)
+#
+# How far apart the two sources put the same flight — measured on flights they
+# BOTH hold, matched on flight_day, one column at a time.
+#
+# This supersedes the rolling-join estimate in compare_totalbr_diagnose(). That
+# one looks for the nearest record of the same callsign and route, so when a
+# flight is missing from one side it silently pairs a different flight and the
+# modal "offset" describes those mismatches rather than the shift. Matching first
+# and differencing second cannot do that.
+#
+# Reading the three time columns together is the point: if dh_inicio, dh_fim and
+# dh_eobt are ALL shifted by the same amount, the sources disagree about the
+# clock. If only dh_inicio moves, they disagree about what dh_inicio means, and
+# that is a definition difference no shift should paper over.
+# =============================================================================
+compare_totalbr_time_shift <- function(years    = 2024,
+                                       raw_dir  = here::here("data-raw", "totalbr"),
+                                       date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+  a$KEY <- totalbr_build_key(a, "flight_day")
+  b$KEY <- totalbr_build_key(b, "flight_day")
+
+  # one row per key per side: a key that repeats within a source has no single
+  # counterpart, and pairing it arbitrarily would invent a difference
+  a <- a[!duplicated(a$KEY), ]; b <- b[!duplicated(b$KEY), ]
+  shared <- intersect(a$KEY, b$KEY)
+  if (length(shared) == 0) {
+    message("No flight matched on flight_day."); return(tibble::tibble())
+  }
+  ia <- match(shared, a$KEY); ib <- match(shared, b$KEY)
+  message(length(shared), " matched flight(s).")
+
+  purrr::map(c("dh_inicio", "dh_fim", "dh_eobt"), function(cl) {
+    if (!cl %in% names(a) || !cl %in% names(b)) return(NULL)
+    # download minus archive, in minutes: negative means the download stamps the
+    # flight EARLIER than the archive does
+    d <- as.numeric(difftime(b[[cl]][ib], a[[cl]][ia], units = "mins"))
+    d <- d[!is.na(d)]
+    if (length(d) == 0) return(NULL)
+    tab <- sort(table(round(d)), decreasing = TRUE)
+    tibble::tibble(
+      COLUMN       = cl,
+      N            = length(d),
+      MODE_MIN     = as.numeric(names(tab)[1]),
+      MODE_PCT     = round(100 * tab[[1]] / length(d), 1),
+      MEDIAN_MIN   = round(stats::median(d), 1),
+      IDENTICAL_PCT = round(100 * mean(d == 0), 1)
+    )
+  }) |> purrr::list_rbind()
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------
