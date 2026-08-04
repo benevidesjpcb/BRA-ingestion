@@ -795,6 +795,45 @@ It reports both shares — `VALUES_PCT` and `ROWS_PCT` — and then lists the on
   case. That is a formatting difference masquerading as missing data, and it would also be
   depressing every key built on the column.
 
+#### The result, and why there is no minute-level key
+
+| Year | key | archive | download | matched | only archive | only download |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2024 | `pk` | 1,959,619 | 1,948,449 | **0** | — | — |
+| 2024 | `flight_day` | 1,959,619 | 1,948,449 | **1,715,760** | 124,898 | 18,384 |
+| 2025 | `flight_day` | 2,109,623 | 2,108,473 | 1,839,992 | 130,054 | 21,019 |
+
+`flight_day` matches 93%. The minute-level key matched **eight rows in a year** and has been
+removed: with `dh_inicio` stamped ~50 minutes apart by the two sources, a key finer than a
+day cannot match, so it measured the offset rather than the traffic. The offset itself is
+still reported, by `compare_totalbr_diagnose()`, which is where it belongs.
+
+(2023 shows zero on the download side simply because that year has not been fetched from
+the API yet.)
+
+#### Zero pk matches: fact or bug?
+
+Two sources holding 93% of the same flights and **no** identical hash is either a property
+of the hash or a fault in this code, and no count can tell those apart. Look at the same
+flight from both sides:
+
+```{r}
+#| label: compare-bra-totalbr-pk
+#| eval: false
+
+compare_totalbr_pk_examples(2024, raw_dir = bra_totalbr_raw_dir)
+```
+
+It first reports the **shape** of `pk` on each side — length range and whether every
+character is hex — which catches a truncation or an encoding difference without reading a
+single example. Then it prints the two `pk` values for the same flight, matched via
+`flight_day`.
+
+- **Two different 32-character hex strings** — the hash is computed per source, over
+  different fields or with a different salt. Nothing to fix, and `pk` is simply not a
+  cross-source identifier. Worth asking ICEA what it is computed over.
+- **One truncated, padded, quoted, or empty** — that is a reading fault, and ours.
+
 ### The rows on each side
 
 ```{r}

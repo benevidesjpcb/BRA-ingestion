@@ -13,9 +13,10 @@
 #
 #        "pk"         the row hash, case-folded (the archive writes it uppercase,
 #                     the API lowercase)
-#        "flight"     callsign + aerodrome pair + dh_inicio to the minute
-#        "flight_day" the same, but only to the day — matches across a timezone
-#                     shift, which is how a systematic offset is detected
+#        "flight_day" callsign + aerodrome pair + the calendar day of dh_inicio
+#                     — the working key: the sources stamp dh_inicio about 50
+#                     minutes apart, so anything finer than a day cannot match
+#        "eobt"       callsign + aerodrome pair + the filed off-block time
 #
 #   2. WHAT IS IN ONE AND NOT THE OTHER, with the rows themselves.
 #
@@ -45,9 +46,10 @@ totalbr_build_key <- function(d, key) {
     # the API and the archive are read into UTC by totalbr_normalise(), so the
     # stamp is formatted in UTC on both sides or the key would encode the
     # session's timezone rather than the flight
-    flight = paste(d$co_indicativo, d$co_addep, d$co_addes,
-                   format(d$dh_inicio, "%Y-%m-%dT%H:%M", tz = "UTC"),
-                   sep = ""),
+    # There is deliberately no minute-level flight key. It matched 8 rows in a
+    # year: the sources stamp dh_inicio ~50 minutes apart, so a key built on the
+    # minute can only ever fail. The offset itself is measured by
+    # compare_totalbr_diagnose(); as a key it was noise.
     flight_day = paste(d$co_indicativo, d$co_addep, d$co_addes,
                        format(d$dh_inicio, "%Y-%m-%d", tz = "UTC"),
                        sep = ""),
@@ -149,12 +151,12 @@ totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE) {
 # on one side only.
 #
 # Run it with each key before believing any of them. If "pk" matches almost
-# nothing while "flight" matches almost everything, the hashes are computed per
-# source and pk cannot be used to compare them — that is a fact about the
+# nothing while "flight_day" matches almost everything, the hashes are computed
+# per source and pk cannot be used to compare them — that is a fact about the
 # identifier, not a difference in the data.
 # =============================================================================
 compare_totalbr_sources <- function(years    = 2023:2025,
-                                    key      = c("pk", "flight", "flight_day", "eobt"),
+                                    key      = c("flight_day", "eobt", "pk"),
                                     raw_dir  = here::here("data-raw", "totalbr"),
                                     date_col = "dt_dia") {
   key   <- match.arg(key)
@@ -194,7 +196,7 @@ compare_totalbr_sources <- function(years    = 2023:2025,
 # =============================================================================
 compare_totalbr_examples <- function(years    = 2023:2025,
                                      side     = c("only_parquet", "only_csv", "both"),
-                                     key      = c("pk", "flight", "flight_day", "eobt"),
+                                     key      = c("flight_day", "eobt", "pk"),
                                      n        = 20L,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
@@ -233,12 +235,11 @@ compare_totalbr_examples <- function(years    = 2023:2025,
 # same flight carried by both, with a different registration, a different type or
 # a stamp minutes apart.
 #
-# Matching on "flight" by default, because that key is built from fields the two
-# sources are expected to agree on; comparing on pk would only compare rows that
-# already agree by construction.
+# Matching on "flight_day" by default: it is the key the two sources actually
+# agree on. Comparing on pk would only compare rows that agree by construction.
 # =============================================================================
 compare_totalbr_fields <- function(years    = 2023:2025,
-                                   key      = c("flight", "eobt", "pk", "flight_day"),
+                                   key      = c("flight_day", "eobt", "pk"),
                                    max_rows = 200000L,
                                    all_cols = FALSE,
                                    raw_dir  = here::here("data-raw", "totalbr"),
@@ -465,6 +466,124 @@ compare_totalbr_missing_values <- function(column   = "co_indicativo",
   invisible(list(summary = summary, values = lst))
 }
 
+# =============================================================================
+# compare_totalbr_pk_examples(years, n, ...)
+#
+# Zero pk matches between two sources holding 93% of the same flights is either a
+# fact about the hash or a bug in this code, and a count cannot tell them apart.
+# This lines up the SAME flight from both sides and prints the two pk values.
+#
+#   two different 32-character hex strings  -> the hash is computed per source
+#                                              (different salt, or over different
+#                                              fields). Nothing to fix; pk is not
+#                                              a cross-source identifier.
+#   one truncated, padded, quoted, or empty -> a reading fault, and ours to fix.
+#
+# It also reports the length and alphabet of pk on each side, which catches a
+# truncation or an encoding difference without reading a single example.
+# =============================================================================
+compare_totalbr_pk_examples <- function(years    = 2024,
+                                        n        = 10L,
+                                        raw_dir  = here::here("data-raw", "totalbr"),
+                                        date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+
+  shape <- function(v, label) {
+    v <- v[!is.na(v) & nzchar(v)]
+    tibble::tibble(
+      SIDE      = label,
+      N         = length(v),
+      NCHAR_MIN = min(nchar(v)), NCHAR_MAX = max(nchar(v)),
+      # a hash should be hex and nothing else; anything else is a formatting fault
+      ALL_HEX   = all(grepl("^[0-9A-F]+$", head(v, 100000))),
+      EXAMPLE   = v[1]
+    )
+  }
+  message("Shape of pk on each side:")
+  print(as.data.frame(dplyr::bind_rows(shape(a$pk, "archive"),
+                                       shape(b$pk, "download"))))
+
+  # the same flight on both sides, via the key they do agree on
+  a$KEY <- totalbr_build_key(a, "flight_day")
+  b$KEY <- totalbr_build_key(b, "flight_day")
+  a2 <- a[!duplicated(a$KEY), ]; b2 <- b[!duplicated(b$KEY), ]
+  shared <- intersect(a2$KEY, b2$KEY)
+  if (length(shared) == 0) {
+    message("No flight matched on flight_day, so no pair can be shown.")
+    return(invisible(NULL))
+  }
+  shared <- head(shared, n)
+  ia <- match(shared, a2$KEY); ib <- match(shared, b2$KEY)
+
+  out <- tibble::tibble(
+    co_indicativo = a2$co_indicativo[ia],
+    co_addep      = a2$co_addep[ia],
+    co_addes      = a2$co_addes[ia],
+    dh_inicio_archive  = a2$dh_inicio[ia],
+    dh_inicio_download = b2$dh_inicio[ib],
+    pk_archive    = a2$pk[ia],
+    pk_download   = b2$pk[ib]
+  )
+  message("\nThe same flight, both pk values side by side:")
+  out
+}
+
+# =============================================================================
+# compare_totalbr_gap_profile(years, side, ...)
+#
+# The rows that exist on one side only, summarised instead of listed — because
+# 124,898 rows are not read one by one, and the question is whether they form a
+# pattern.
+#
+#   concentrated in a month      -> the extraction stopped, or the download did
+#   concentrated at an aerodrome -> a filter difference between the sources
+#   spread evenly, tiny per day  -> late-arriving records, ordinary
+# =============================================================================
+compare_totalbr_gap_profile <- function(years    = 2024,
+                                        side     = c("only_parquet", "only_csv"),
+                                        raw_dir  = here::here("data-raw", "totalbr"),
+                                        date_col = "dt_dia") {
+  side  <- match.arg(side)
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+  a$KEY <- totalbr_build_key(a, "flight_day")
+  b$KEY <- totalbr_build_key(b, "flight_day")
+
+  gap <- if (side == "only_parquet") a[!a$KEY %in% b$KEY, ] else b[!b$KEY %in% a$KEY, ]
+  ref <- if (side == "only_parquet") a else b
+  if (nrow(gap) == 0) {
+    message("Nothing on the '", side, "' side."); return(invisible(NULL))
+  }
+  message(nrow(gap), " row(s) on the '", side, "' side (",
+          round(100 * nrow(gap) / nrow(ref), 1), "% of that source).")
+
+  by_month <- tibble::tibble(
+    MONTH = format(gap$dh_inicio, "%Y-%m", tz = "UTC")) |>
+    dplyr::count(MONTH, name = "GAP_ROWS") |>
+    dplyr::left_join(
+      tibble::tibble(MONTH = format(ref$dh_inicio, "%Y-%m", tz = "UTC")) |>
+        dplyr::count(MONTH, name = "SOURCE_ROWS"),
+      by = "MONTH") |>
+    dplyr::mutate(PCT_OF_MONTH = round(100 * GAP_ROWS / SOURCE_ROWS, 1))
+  message("\nBy month (PCT_OF_MONTH is what matters — an even spread is ordinary):")
+  print(as.data.frame(by_month))
+
+  top <- function(col, label) {
+    tibble::tibble(VALUE = as.character(gap[[col]])) |>
+      dplyr::count(VALUE, name = "GAP_ROWS") |>
+      dplyr::arrange(dplyr::desc(GAP_ROWS)) |>
+      head(10) |>
+      dplyr::mutate(FIELD = label)
+  }
+  message("\nMost frequent values among the one-sided rows:")
+  print(as.data.frame(dplyr::bind_rows(top("co_addep", "co_addep"),
+                                       top("co_addes", "co_addes"),
+                                       top("co_indicativo", "co_indicativo"))))
+
+  invisible(list(rows = gap, by_month = by_month))
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
@@ -472,6 +591,6 @@ if (sys.nframe() == 0L) {
   })
   args  <- commandArgs(trailingOnly = TRUE)
   years <- if (length(args) == 0) 2023:2025 else as.integer(args)
-  for (k in c("pk", "flight", "flight_day"))
+  for (k in c("flight_day", "eobt", "pk"))
     print(as.data.frame(compare_totalbr_sources(years, k)))
 }
