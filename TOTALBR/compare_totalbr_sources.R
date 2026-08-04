@@ -35,7 +35,7 @@
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
 
 # Columns the comparison needs from each source, whichever key is used.
-TOTALBR_CMP_COLS <- c("pk", "co_indicativo", "co_addep", "co_addes",
+TOTALBR_CMP_COLS <- c("pk", "id", "co_indicativo", "co_addep", "co_addes",
                       "co_matricula", "co_modelo", "dh_inicio", "dh_fim",
                       "dh_eobt")
 
@@ -130,7 +130,10 @@ totalbr_cmp_read <- function(paths, years, date_col, all_cols = FALSE) {
 
 totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE,
                               refresh = FALSE) {
-  ck <- paste(paste(years, collapse = ","), raw_dir, date_col, all_cols)
+  # the column set is part of the cache key: adding a column to TOTALBR_CMP_COLS
+  # must not be served from a cache read before it existed
+  ck <- paste(paste(years, collapse = ","), raw_dir, date_col, all_cols,
+              paste(TOTALBR_CMP_COLS, collapse = ","))
   if (!refresh && !is.null(.totalbr_cmp_cache[[ck]])) {
     message("(reusing the sides read earlier this session; refresh = TRUE to re-read)")
     return(.totalbr_cmp_cache[[ck]])
@@ -673,6 +676,83 @@ compare_totalbr_time_shift <- function(years    = 2024,
       IDENTICAL_PCT = round(100 * mean(d == 0), 1)
     )
   }) |> purrr::list_rbind()
+}
+
+# =============================================================================
+# totalbr_unmatched(years, key, out_file, ...)
+#
+# Every row that exists in ONE source and not the other, as a dataset to open and
+# search — not a summary. One row per record, carrying the fields needed to go
+# and look the flight up in the other file by hand:
+#
+#   YEAR, SOURCE, co_indicativo, co_addep, co_addes, dt_dia, dh_inicio,
+#   co_matricula, pk, id, MATCH_KEY
+#
+# SOURCE says which file the row came from ("parquet" = the archive, "csv" = the
+# API download). MATCH_KEY is the exact string the comparison used, and it is in
+# the output on purpose: it is what decides whether two rows are "the same
+# flight", so it should be checkable rather than taken on trust. Copy a
+# MATCH_KEY, look for it in the other source, and either it is genuinely absent
+# or the key is wrong — both are worth knowing.
+#
+#   totalbr_unmatched(2024)                                  # in memory
+#   totalbr_unmatched(2024, out_file = "unmatched-2024.csv")  # written out
+# =============================================================================
+totalbr_unmatched <- function(years    = 2024,
+                              key      = c("flight_day", "eobt", "pk"),
+                              out_file = NULL,
+                              raw_dir  = here::here("data-raw", "totalbr"),
+                              date_col = "dt_dia") {
+  key   <- match.arg(key)
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+  a$MATCH_KEY <- totalbr_build_key(a, key)
+  b$MATCH_KEY <- totalbr_build_key(b, key)
+
+  # every row whose key is absent from the other source. Rows, not keys: a key
+  # held twice on one side contributes both of its rows, because both are things
+  # you would go looking for.
+  only_a <- a[!a$MATCH_KEY %in% b$MATCH_KEY, ]
+  only_b <- b[!b$MATCH_KEY %in% a$MATCH_KEY, ]
+
+  take <- function(d, src) {
+    if (nrow(d) == 0) return(NULL)
+    tibble::tibble(
+      YEAR          = d$YEAR,
+      SOURCE        = src,
+      co_indicativo = d$co_indicativo,
+      co_addep      = d$co_addep,
+      co_addes      = d$co_addes,
+      # the date column as text, in UTC, so it reads the same in the file as it
+      # does in the comparison
+      dt_dia        = format(totalbr_parse_time(d[[date_col]]),
+                             "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_inicio     = format(d$dh_inicio, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      co_matricula  = d$co_matricula,
+      pk            = d$pk,
+      id            = if ("id" %in% names(d)) d$id else NA_character_,
+      MATCH_KEY     = d$MATCH_KEY
+    )
+  }
+
+  out <- dplyr::bind_rows(take(only_a, "parquet"), take(only_b, "csv"))
+  if (is.null(out) || nrow(out) == 0) {
+    message("Every row matched on key '", key, "'.")
+    return(tibble::tibble())
+  }
+  out <- dplyr::arrange(out, YEAR, SOURCE, dt_dia)
+
+  message(nrow(out), " unmatched row(s) on key '", key, "': ",
+          sum(out$SOURCE == "parquet"), " only in the archive, ",
+          sum(out$SOURCE == "csv"), " only in the download.")
+
+  if (!is.null(out_file)) {
+    # semicolon-delimited UTF-8, like the raw files, so it opens the same way
+    utils::write.table(out, out_file, sep = ";", row.names = FALSE,
+                       quote = TRUE, na = "", fileEncoding = "UTF-8")
+    message("Written to ", out_file)
+  }
+  out
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

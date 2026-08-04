@@ -980,6 +980,34 @@ g <- compare_totalbr_gap_profile(2024, "only_parquet", raw_dir = bra_totalbr_raw
 sum(g$rows$co_addep %in% bra_apts | g$rows$co_addes %in% bra_apts)
 ```
 
+### The unmatched rows, as a dataset
+
+The tables above summarise. This writes the records themselves, so a flight can be looked up
+by hand in the other file:
+
+```{r}
+#| label: compare-bra-totalbr-unmatched
+#| eval: false
+
+unm <- totalbr_unmatched(2024, raw_dir = bra_totalbr_raw_dir)
+
+# ... or straight to a file, semicolon-delimited like the raw data
+totalbr_unmatched(2024, raw_dir = bra_totalbr_raw_dir,
+                  out_file = here::here("outputs", "totalbr-2024-unmatched.csv"))
+```
+
+One row per record, with `YEAR`, `SOURCE`, `co_indicativo`, `co_addep`, `co_addes`,
+`dt_dia`, `dh_inicio`, `co_matricula`, `pk`, `id` — and **`MATCH_KEY`**.
+
+`MATCH_KEY` is in the file deliberately. It is the exact string the comparison used, and it
+is what decides whether two rows count as the same flight, so it should be checkable rather
+than taken on trust. Take a `MATCH_KEY` from the output, search for it in the other source,
+and one of two things is true: the flight really is absent, or the key is wrong. Both are
+worth finding out, and the second would be a fault in this code.
+
+`SOURCE` is `parquet` for the archive and `csv` for the API download. Times are written in
+UTC, the same zone the comparison works in, so what is in the file is what was compared.
+
 ### Where they disagree on the same flight
 
 ```{r}
