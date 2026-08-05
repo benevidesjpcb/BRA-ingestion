@@ -489,10 +489,44 @@ its own, much wider window (`plan_tol_min`, 180 minutes by default) while outrig
 keep the narrow one — there the two rows *are* meant to agree, and a real gap means two
 flights rather than one recorded twice.
 
-This also bears on the archive-versus-API comparison. If the API carries plan rows and the
-archive does not, those rows can never find a counterpart — which is a candidate explanation
-for the 98,578 airline movements that appeared to be download-only, and it should be checked
-before that figure is repeated anywhere.
+#### The measured result, 2025 API download
+
+| | Rows | % of file |
+| --- | --- | --- |
+| Plan rows (`dh_fim` = `dh_inicio`) | 170,808 | 8.1 |
+| **Plan paired with its movement** | **47,357** | **2.2** |
+| Outright repeats | 6,439 | 0.3 |
+| Repeated `pk` | 0 | — |
+
+Duplication in the API is **2.55%**, and most of it is a plan sitting beside its own movement.
+Note that of the 170,808 plan rows only 47,357 found a movement: the other 123,000 are flights
+filed with no separate movement row at all, which is a different thing and not duplication.
+
+#### And this is very likely the 98,578 too
+
+The archive-versus-API comparison left 188,482 rows that looked download-only, 98,578 of them
+airline movements at the hubs — the one figure with no benign explanation. Set it against the
+170,808 plan rows: that is **91%** of the residual. A plan row can never find a counterpart in
+a file that holds only movements, so it is reported as a missing flight when it is really a
+difference in what the two files contain.
+
+So the comparison functions now drop plan rows by default (`drop_plans = TRUE`), putting both
+sides on movements only:
+
+```{r}
+#| label: compare-bra-totalbr-noplans
+#| eval: false
+
+# both sides on movements only — the honest comparison
+totalbr_match_flights(2025, raw_dir = bra_totalbr_raw_dir)
+
+# and with the plans left in, to see how much of the difference they were
+totalbr_match_flights(2025, drop_plans = FALSE, raw_dir = bra_totalbr_raw_dir)
+```
+
+Run `check_totalbr_duplicates(2025, "parquet")` alongside: if the archive's `PLAN_ROWS` is
+near zero while the API's is 8.1%, the two files simply carry different things and the
+"missing airline movements" dissolve.
 
 ### The T that hid every timestamp
 

@@ -834,10 +834,20 @@ totalbr_pair_nearest <- function(ka, ta, kb, tb, tol_min) {
 totalbr_leftovers_explained <- function(years     = 2025,
                                         tol_min   = 120,
                                         shift_min = 50,
+                                        drop_plans = TRUE,
                                         raw_dir   = here::here("data-raw", "totalbr"),
                                         date_col  = "dt_dia") {
   sides <- totalbr_cmp_sides(years, raw_dir, date_col)
   a <- sides$parquet; b <- sides$csv
+  # same reason as in totalbr_match_flights(): a plan row has no counterpart to
+  # find, so leaving it in reports a content difference as a missing flight
+  if (drop_plans) {
+    is_plan <- function(d) !is.na(d$dh_inicio) & !is.na(d$dh_fim) &
+                           d$dh_inicio == d$dh_fim
+    message("Dropped plan rows: archive ", sum(is_plan(a)),
+            ", download ", sum(is_plan(b)))
+    a <- a[!is_plan(a), ]; b <- b[!is_plan(b), ]
+  }
   ta <- a$dh_inicio + shift_min * 60
   tb <- b$dh_inicio
 
@@ -970,10 +980,24 @@ totalbr_leftovers_explained <- function(years     = 2025,
 totalbr_match_flights <- function(years     = 2025,
                                   tol_min   = 120,
                                   shift_min = 50,
+                                  drop_plans = TRUE,
                                   raw_dir   = here::here("data-raw", "totalbr"),
                                   date_col  = "dt_dia") {
   sides <- totalbr_cmp_sides(years, raw_dir, date_col)
   a <- sides$parquet; b <- sides$csv
+  # A FILED PLAN — dh_fim equal to dh_inicio — is not a movement. The API serves
+  # both the plan and the movement for a flight; if the archive serves only the
+  # movement, every plan row is one-sided by construction and the comparison
+  # measures the difference in what the two files CONTAIN rather than in the
+  # traffic. Dropping them puts both sides on movements only.
+  if (drop_plans) {
+    is_plan <- function(d) !is.na(d$dh_inicio) & !is.na(d$dh_fim) &
+                           d$dh_inicio == d$dh_fim
+    na_ <- sum(is_plan(a)); nb <- sum(is_plan(b))
+    a <- a[!is_plan(a), ]; b <- b[!is_plan(b), ]
+    message("Dropped plan rows (dh_fim == dh_inicio): archive ", na_,
+            ", download ", nb)
+  }
 
   A <- data.table::data.table(
     A_ID = seq_len(nrow(a)),
@@ -1036,14 +1060,22 @@ totalbr_match_flights <- function(years     = 2025,
 totalbr_unmatched_nearest <- function(years     = 2025,
                                       tol_min   = 120,
                                       shift_min = 50,
+                                      drop_plans = TRUE,
                                       out_file  = NULL,
                                       raw_dir   = here::here("data-raw", "totalbr"),
                                       date_col  = "dt_dia") {
-  res <- totalbr_match_flights(years, tol_min, shift_min, raw_dir, date_col)
+  res <- totalbr_match_flights(years, tol_min, shift_min, drop_plans,
+                               raw_dir, date_col)
   if (is.null(res)) return(tibble::tibble())
   print(as.data.frame(res))
 
   sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  if (drop_plans) {
+    is_plan <- function(d) !is.na(d$dh_inicio) & !is.na(d$dh_fim) &
+                           d$dh_inicio == d$dh_fim
+    sides$parquet <- sides$parquet[!is_plan(sides$parquet), ]
+    sides$csv     <- sides$csv[!is_plan(sides$csv), ]
+  }
   take <- function(d, idx, src) {
     if (length(idx) == 0) return(NULL)
     d <- d[idx, ]
