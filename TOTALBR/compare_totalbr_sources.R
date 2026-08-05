@@ -906,6 +906,36 @@ totalbr_leftovers_explained <- function(years     = 2025,
                    REGISTRATION = sum(reg), AIRLINE = sum(air),
                    OTHER = sum(!reg & !air))
   }
+  # Scope test. Brazilian aerodromes are SB/SD/SI/SJ/SN/SS/SW; anything else is
+  # foreign, and AFIL/ZZZZ is no aerodrome at all. If one source's residual is
+  # mostly international while the other's is domestic, the two are not the same
+  # dataset with gaps — they are different definitions of "a Brazilian movement".
+  br <- function(x) grepl("^S[BDIJNSW]", x)
+  scope <- function(d, label) {
+    if (nrow(d) == 0) return(NULL)
+    dom <- br(d$co_addep) & br(d$co_addes)
+    non <- d$co_addep %in% c("AFIL", "ZZZZ") | d$co_addes %in% c("AFIL", "ZZZZ")
+    tibble::tibble(SIDE = label, ROWS = nrow(d),
+                   DOMESTIC = sum(dom & !non),
+                   INTERNATIONAL = sum(!dom & !non),
+                   NO_AERODROME = sum(non),
+                   INTERNATIONAL_PCT = round(100 * mean(!dom & !non), 1))
+  }
+  message("\nThe residual by scope — is one side holding traffic the other never counted?")
+  print(as.data.frame(dplyr::bind_rows(scope(res_a, "only archive"),
+                                       scope(res_b, "only download"))))
+
+  top_apt <- function(d, label) {
+    if (nrow(d) == 0) return(NULL)
+    tibble::tibble(SIDE = label,
+                   VALUE = c(as.character(d$co_addep), as.character(d$co_addes))) |>
+      dplyr::count(SIDE, VALUE, name = "ROWS") |>
+      dplyr::arrange(dplyr::desc(ROWS)) |> head(10)
+  }
+  message("\nBusiest aerodromes in the residual:")
+  print(as.data.frame(dplyr::bind_rows(top_apt(res_a, "only archive"),
+                                       top_apt(res_b, "only download"))))
+
   message("\nThe residual — nothing recovered it — by traffic class:")
   print(as.data.frame(dplyr::bind_rows(cls(res_a, "only archive"),
                                        cls(res_b, "only download"))))

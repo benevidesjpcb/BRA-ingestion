@@ -1163,6 +1163,54 @@ The residual is the answer to the original question, and it is reported split by
 class — registration-style callsigns against airline ones — so the general-aviation shortfall
 can be read off directly rather than inferred from a top-ten list.
 
+#### What the residual turned out to be
+
+Nothing recovered it, and nothing about it is an artefact:
+
+```
+PASS                                PAIRED  LEFT_ARCHIVE  LEFT_DOWNLOAD
+callsign + route                   1918467        191156         190006
+route only (callsign differs)           60        191096         189946
+callsign only (aerodrome differs)     1317        189779         188629
+callsign + route, 24h window           147        189632         188482
+
+SIDE            RESIDUAL  NO_TIME  NO_CALLSIGN  UNTESTABLE_PCT
+only archive      189632        0            0               0
+only download     188482        0            0               0
+```
+
+Relaxing the callsign recovered 60. Relaxing the aerodromes recovered 1,317. Widening the
+window to 24 hours recovered 147 — which also rules out the pairing having lost anything to
+its own greediness, since a lost pair would sit in the same group and be found instantly.
+Nothing is untestable. And the residual is **flat across the months**, 15–18 thousand on each
+side, so it is not an extraction boundary either.
+
+| | Only in the archive | Only in the download |
+| --- | --- | --- |
+| Registration callsign (general aviation) | 134,765 | 84,367 |
+| Airline callsign | 11,585 | **98,578** |
+| Other | 43,282 | 5,537 |
+
+So each source holds about **9% that the other does not**, every month, and of different
+kinds. This is not one source being more complete than the other — it is two different
+coverages of the same airspace, and choosing between them stops being a technical detail and
+becomes a decision about the study.
+
+The strange half is the download's 98,578 airline flights. General aviation missing from an
+API has an obvious explanation; scheduled airline flights missing from the official archive
+does not. The scope breakdown in the output tests the most likely one — whether those flights
+are international, and the two sources therefore disagree about what counts as a Brazilian
+movement rather than about the traffic itself.
+
+#### One earlier figure was wrong, and why
+
+An earlier pass reported that only 1% of the download was absent from the archive (20,115
+rows for 2024, on `flight_day`). That was an undercount, from the same flaw already noted for
+`eobt_day` but not carried back: a day-level key checks whether a **value exists** on both
+sides, not whether the counts agree. One archive flight of a callsign and route on a day
+"matches" three downloaded ones, and all four rows are counted as matched. Per flight, the
+figure is the one the nearest-match pairing gives.
+
 ### Where they disagree on the same flight
 
 ```{r}
