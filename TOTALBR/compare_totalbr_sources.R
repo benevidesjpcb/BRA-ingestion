@@ -1075,6 +1075,59 @@ totalbr_unmatched_nearest <- function(years     = 2025,
   out
 }
 
+# =============================================================================
+# totalbr_lookup(callsign, day, years, ...)
+#
+# Every row from BOTH sources for one callsign on one day, side by side. No
+# matching, no key, no pairing — just what each file contains.
+#
+# This is the audit tool. When the comparison says a flight is in one source and
+# not the other, this is how to check that claim without trusting any of the code
+# above it: look the flight up directly and see. If it appears on both sides here
+# while the comparison called it one-sided, the fault is in the matching and worth
+# reporting; if it appears on one side only, the difference is real.
+#
+#   totalbr_lookup("TAM3756", "2025-03-14")
+# =============================================================================
+totalbr_lookup <- function(callsign,
+                           day      = NULL,
+                           years    = NULL,
+                           raw_dir  = here::here("data-raw", "totalbr"),
+                           date_col = "dt_dia") {
+  if (is.null(years) && !is.null(day)) years <- substr(day, 1, 4)
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+
+  pick <- function(d, src) {
+    keep <- d$co_indicativo %in% callsign
+    if (!is.null(day))
+      keep <- keep & format(d$dh_inicio, "%Y-%m-%d", tz = "UTC") %in% day
+    if (!any(keep)) return(NULL)
+    d <- d[keep, ]
+    tibble::tibble(
+      SOURCE = src, co_indicativo = d$co_indicativo,
+      co_addep = d$co_addep, co_addes = d$co_addes,
+      dh_inicio = format(d$dh_inicio, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_fim    = format(d$dh_fim,    "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_eobt   = format(d$dh_eobt,   "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      co_matricula = d$co_matricula, co_modelo = d$co_modelo, pk = d$pk)
+  }
+  out <- dplyr::bind_rows(pick(sides$parquet, "parquet"),
+                          pick(sides$csv, "csv"))
+  if (is.null(out) || nrow(out) == 0) {
+    message("Neither source has ", paste(callsign, collapse = ", "),
+            if (!is.null(day)) paste0(" on ", paste(day, collapse = ", ")) else "")
+    return(tibble::tibble())
+  }
+  # a day filter on dh_inicio is itself subject to the 50-minute shift, so a
+  # flight can sit on the previous day in one source; say so rather than let the
+  # lookup repeat the mistake the comparison had to be fixed for
+  if (!is.null(day) && dplyr::n_distinct(out$SOURCE) == 1)
+    message("Only one source matched. The archive stamps dh_inicio 50 minutes ",
+            "earlier, so a flight near midnight can fall on the previous day — ",
+            "try the neighbouring day, or call without `day`.")
+  dplyr::arrange(out, dh_inicio, SOURCE)
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({

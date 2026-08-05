@@ -1198,9 +1198,50 @@ becomes a decision about the study.
 
 The strange half is the download's 98,578 airline flights. General aviation missing from an
 API has an obvious explanation; scheduled airline flights missing from the official archive
-does not. The scope breakdown in the output tests the most likely one — whether those flights
-are international, and the two sources therefore disagree about what counts as a Brazilian
-movement rather than about the traffic itself.
+does not.
+
+**The scope hypothesis does not hold.** Only 15.4% of the download's residual is
+international, and 0.3% of the archive's — nowhere near enough to explain 188,000 rows:
+
+```
+SIDE            ROWS  DOMESTIC  INTERNATIONAL  NO_AERODROME  INTERNATIONAL_PCT
+only archive  189632    181272            484          7876                0.3
+only download 188482    151251          28995          8236               15.4
+```
+
+The aerodromes say what it really is. The two residuals live at **different airports**:
+
+```
+only archive   SBYS 24480  SBJD 19733  SBBH 16937  SBNV 16207  SBJR 14905  SBBI 14365
+only download  SBGR 31449  SBGO 20244  SBBR 17750  SBSP 13401  SBKP 11653  SBMO 11204
+```
+
+General-aviation and training fields on one side, the commercial hubs on the other. That
+also explains why the relaxation passes recovered nothing: there was nothing to pair with at
+those aerodromes, whatever the callsign said.
+
+Which leaves 98,578 airline movements at the hubs — about 270 a day — that the API serves and
+the official archive does not. That figure has no benign explanation yet, and it should be
+checked outside this code before being reported anywhere.
+
+### Checking a single flight, without trusting any of this
+
+```{r}
+#| label: compare-bra-totalbr-lookup
+#| eval: false
+
+totalbr_lookup("TAM3756", "2025-03-14", raw_dir = bra_totalbr_raw_dir)
+```
+
+Every row from both sources for one callsign on one day. No key, no pairing, no tolerance —
+just what each file contains. Take a flight the comparison called one-sided and look it up:
+
+- **it appears on both sides** — the matching is at fault, and that is worth knowing before
+  anything is sent to ICEA;
+- **it appears on one side only** — the difference is real.
+
+Given how many of the numbers in this section turned out to be artefacts of a method before
+the method was fixed, that check is not optional for anything that leaves the repository.
 
 #### One earlier figure was wrong, and why
 
