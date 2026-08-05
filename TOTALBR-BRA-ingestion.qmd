@@ -761,6 +761,18 @@ The output is written to a **new file**; nothing overwrites a download. A nation
 table with rows removed is a derived product, and the raw file has to stay available for the
 next question that comes up about it.
 
+::: {.callout-warning}
+## These rules are for the API download only
+They were read off the CSVs and describe how ODIN serves data today. The **parquet archive
+has not been analysed the same way** and may duplicate in a different shape — the plan rows
+that rule 1 exists for have not been found in it, so that rule could not even fire there.
+
+`totalbr_dedupe(source = "parquet")` therefore refuses to run, and says why. It can be
+overridden with `force_rules = TRUE`, but only once the archive has been looked at on its own
+terms. A reference file quietly edited by an unproven rule is worse than one left alone —
+and unlike a download, it cannot be fetched again.
+:::
+
 ### One cause we removed on our side first
 
 Before measuring anyone else's duplication it was worth removing ours. The downloader

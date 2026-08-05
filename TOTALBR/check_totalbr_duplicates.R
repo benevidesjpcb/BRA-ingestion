@@ -834,6 +834,14 @@ totalbr_duplicate_rows <- function(years    = NULL,
 # Exact pk repeats are dropped first, keeping the first occurrence — no rule
 # needed, the rows are identical.
 #
+# THE RULES APPLY TO THE API DOWNLOAD ONLY. They were read off the CSVs and hold
+# for how ODIN serves data today; the parquet archive has not been analysed the
+# same way, and its duplication may take a different shape entirely — it carries
+# no plan rows in the sample looked at so far, so rule 1 could not even fire.
+# Running them over the archive is refused unless force_rules = TRUE says the
+# analysis has been done, because a reference file quietly edited by an unproven
+# rule is worse than one left alone.
+#
 #   totalbr_dedupe(2025, "csv")
 #   totalbr_dedupe(2025, "csv", out_file = here::here("data-raw", "totalbr",
 #                                                     "totalbr_2025_dedup.csv"))
@@ -843,9 +851,15 @@ totalbr_dedupe <- function(years        = NULL,
                            tol_min      = TOTALBR_NEAR_MIN,
                            plan_tol_min = TOTALBR_PLAN_TOL_MIN,
                            out_file     = NULL,
+                           force_rules  = FALSE,
                            raw_dir      = here::here("data-raw", "totalbr"),
                            date_col     = "dt_dia") {
   source <- match.arg(source)
+  if (source == "parquet" && !force_rules)
+    stop("These de-duplication rules were derived from the API download and have ",
+         "not been validated against the parquet archive, which may duplicate in ",
+         "a different way. Analyse it first; pass force_rules = TRUE only once ",
+         "that is done.")
   src    <- totalbr_sources(raw_dir)
   paths  <- if (source == "csv") src$csv else src$parquet
   if (length(paths) == 0) {
