@@ -855,6 +855,9 @@ totalbr_leftovers_explained <- function(years     = 2025,
     ia <<- setdiff(ia, got_a); ib <<- setdiff(ib, got_b)
   }
 
+  message("Rows with no dh_inicio, which no pass can ever pair: archive ",
+          sum(is.na(ta)), ", download ", sum(is.na(tb)))
+
   key3 <- function(d) paste(d$co_indicativo, d$co_addep, d$co_addes, sep = "")
   key_route <- function(d) paste(d$co_addep, d$co_addes, sep = "")
   key_call  <- function(d) d$co_indicativo
@@ -869,6 +872,32 @@ totalbr_leftovers_explained <- function(years     = 2025,
   print(as.data.frame(out))
 
   res_a <- a[ia, ]; res_b <- b[ib, ]
+
+  # A row with no usable time cannot be paired at all: the join drops it, so it
+  # survives every pass and looks like "nothing recovers it" when in fact nothing
+  # ever tried. Reported first, because it changes what the residual means.
+  cannot <- function(d, label) {
+    if (nrow(d) == 0) return(NULL)
+    no_time <- is.na(d$dh_inicio)
+    no_call <- is.na(d$co_indicativo) | !nzchar(d$co_indicativo)
+    tibble::tibble(SIDE = label, RESIDUAL = nrow(d),
+                   NO_TIME = sum(no_time), NO_CALLSIGN = sum(no_call),
+                   UNTESTABLE_PCT = round(100 * mean(no_time | no_call), 1))
+  }
+  message("\nOf the residual, how much could never be paired in the first place:")
+  print(as.data.frame(dplyr::bind_rows(cannot(res_a, "only archive"),
+                                       cannot(res_b, "only download"))))
+
+  by_month <- function(d, label) {
+    if (nrow(d) == 0) return(NULL)
+    tibble::tibble(SIDE = label,
+                   MONTH = format(d$dh_inicio, "%Y-%m", tz = "UTC")) |>
+      dplyr::count(SIDE, MONTH, name = "ROWS")
+  }
+  message("\nResidual by month (a spike means an extraction boundary, not traffic):")
+  print(as.data.frame(dplyr::bind_rows(by_month(res_a, "only archive"),
+                                       by_month(res_b, "only download"))))
+
   cls <- function(d, label) {
     if (nrow(d) == 0) return(NULL)
     reg <- grepl("^P[PRSTU][A-Z]{3}$", d$co_indicativo)
