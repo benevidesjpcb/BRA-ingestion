@@ -59,19 +59,33 @@ totalbr_sources <- function(raw_dir = here::here("data-raw", "totalbr"),
   list(parquet = parquet, csv = csv, parts = parts)
 }
 
-# THE ZONE A COUNT IS TAKEN IN, stated once and used everywhere.
+# THE ZONE THE STAMPS ARE REALLY IN.
 #
-# The parquet archive stores its time columns as timestamp[us, tz=Europe/Paris].
-# That zone says where the FILE WAS WRITTEN, not anything about Brazilian
-# traffic — and it silently decided results: arrow computes lubridate::year() in
-# the field's own zone, so a scan that let it do the work counted 2025 in Paris
-# time (2,109,623 rows) while a scan that collected the column and formatted it
-# in UTC counted 2,109,856. Two functions, one file, 233 rows apart, with nothing
-# on screen to say why.
+# The parquet declares timestamp[us, tz=Europe/Paris], but that label is an
+# accident of where the file was written: the values are UTC, confirmed by DECEA.
+# The label being wrong is not cosmetic — it decides what the numbers mean:
 #
-# Every derivation of a year or a day now names its zone. Change it here, not by
-# whichever engine happened to evaluate the expression.
+#   The WRITTEN CLOCK is the truth. "2026-01-01 00:59:40" is 2026, and belongs to
+#   2026, whatever instant the Paris label implies.
+#
+#   The stored INSTANT is therefore an hour or two off, and anything comparing
+#   instants inherits that error. The archive appeared to stamp dh_inicio 50
+#   minutes after the API; with the label removed the real figure is 50 - 60 =
+#   -10 minutes, which is what the raw printout showed before it was "corrected".
+#
+# So the operation is force_tz — KEEP the clock, replace the label — never
+# with_tz, which keeps the instant and moves the clock. In arrow, the field's own
+# zone already displays the written clock, so year() needs no shift at all.
 TOTALBR_TZ <- "UTC"
+
+# The zone a parquet column claims, read from the schema. Bounds for filtering
+# have to be built in it: "written clock 2025-01-01" is the instant that reads as
+# 2025-01-01 in the stored zone, not in ours.
+totalbr_stored_tz <- function(ds, col) {
+  ty <- ds$schema$GetFieldByName(col)$type$ToString()
+  m  <- regmatches(ty, regexpr("tz=[^]]+", ty))
+  if (length(m) == 0) "UTC" else sub("^tz=", "", m)
+}
 
 # ---- deriving YEAR / DAY from the date column, in arrow or in R -------------
 # The date column may be a timestamp or text, and the two need different
@@ -92,26 +106,11 @@ totalbr_add_year_day <- function(q, date_col, is_text, day = FALSE,
     if (day) q <- dplyr::mutate(q, DAY = substr(!!s, 1, 10))
     return(q)
   }
-  # A stored timestamp carries a zone, and arrow will use it unless told
-  # otherwise. with_tz() moves the instant into the zone we chose to count in;
-  # if this arrow build has no binding for it, fall back to the field's own zone
-  # and SAY SO, rather than return a number whose meaning is unstated.
-  shifted <- tryCatch({
-    qq <- dplyr::mutate(q, .TZ_AT = lubridate::with_tz(!!s, tzone = tz))
-    dplyr::compute(utils::head(qq, 1))   # force it: with_tz may fail lazily
-    qq
-  }, error = function(e) {
-    message("  (this arrow build cannot shift the timezone: counting in the ",
-            "field's own zone, not ", tz, ")")
-    NULL
-  })
-  if (is.null(shifted)) {
-    q <- dplyr::mutate(q, YEAR = as.character(lubridate::year(!!s)))
-    if (day) q <- dplyr::mutate(q, DAY = as.character(as.Date(!!s)))
-    return(q)
-  }
-  q <- dplyr::mutate(shifted, YEAR = as.character(lubridate::year(.TZ_AT)))
-  if (day) q <- dplyr::mutate(q, DAY = as.character(as.Date(.TZ_AT)))
+  # NO SHIFT. The written clock is the real one, and arrow's year() reads the
+  # field in its own zone — which is exactly the written clock. Converting to
+  # another zone here would move the reading off the value that was recorded.
+  q <- dplyr::mutate(q, YEAR = as.character(lubridate::year(!!s)))
+  if (day) q <- dplyr::mutate(q, DAY = as.character(as.Date(!!s)))
   q
 }
 
@@ -270,8 +269,10 @@ totalbr_year_count <- function(years       = NULL,
                           showProgress = FALSE))
     }
     if (is.null(d) || nrow(d) == 0) return(NULL)
+    # force_tz: keep the clock that was written, relabel it UTC. attr(tzone) would
+    # keep the instant and move the clock — the opposite of what a wrong label needs.
     to_t <- function(v) {
-      if (inherits(v, "POSIXct")) { attr(v, "tzone") <- "UTC"; return(v) }
+      if (inherits(v, "POSIXct")) return(lubridate::force_tz(v, "UTC"))
       as.POSIXct(sub("T", " ", as.character(v), fixed = TRUE), tz = "UTC")
     }
     off <- tz_offset_h * 3600
@@ -353,20 +354,35 @@ totalbr_read_year <- function(year     = 2025,
     message("No ", source, " source in ", raw_dir); return(tibble::tibble())
   }
   # half-open interval [1 Jan of the year, 1 Jan of the next): the only form that
-  # keeps the whole of 31 December without reaching into the next year
-  from <- as.POSIXct(sprintf("%d-01-01", year),     tz = tz)
-  to   <- as.POSIXct(sprintf("%d-01-01", year + 1), tz = tz)
-  message("Year ", year, " as [", format(from, tz = tz, usetz = TRUE), ", ",
-          format(to, tz = tz, usetz = TRUE), ")")
+  # keeps the whole of 31 December without reaching into the next year.
+  #
+  # The bounds are built in the zone the COLUMN claims, not in ours. The stamps
+  # are UTC values wearing a Europe/Paris label, so the instant that reads as
+  # "2025-01-01 00:00" in the stored zone is the one the written clock means. Ask
+  # for it in UTC instead and the filter lands an hour off — which is how a row
+  # written 2026-01-01 00:59 came back inside 2025.
+  bound_tz <- tz
+  if (source == "parquet") {
+    ds0 <- arrow::open_dataset(paths[1])
+    if (date_col %in% names(ds0)) bound_tz <- totalbr_stored_tz(ds0, date_col)
+  }
+  from <- as.POSIXct(sprintf("%d-01-01", year),     tz = bound_tz)
+  to   <- as.POSIXct(sprintf("%d-01-01", year + 1), tz = bound_tz)
+  message("Year ", year, " as written-clock [", sprintf("%d-01-01", year), ", ",
+          sprintf("%d-01-01", year + 1), ")",
+          if (bound_tz != tz) paste0(" (bounds built in the stored zone ",
+                                     bound_tz, ")") else "")
 
   # Show the result in the zone it was FILTERED in. The archive's columns carry
   # tz=Europe/Paris, so a row kept as 2025-12-31 23:59:40 UTC prints as
   # "2026-01-01 00:59:40" and reads like a filter that leaked into the next year.
   # It did not; the clock on screen was simply a different one. Same trap that
   # turned a +50 minute difference into an apparent -10.
+  # force_tz on the way out: the written clock is the value, so it is shown
+  # unchanged and simply labelled with the zone it really is.
   show_in_tz <- function(d) {
     for (nm in names(d))
-      if (inherits(d[[nm]], "POSIXct")) attr(d[[nm]], "tzone") <- tz
+      if (inherits(d[[nm]], "POSIXct")) d[[nm]] <- lubridate::force_tz(d[[nm]], tz)
     d
   }
 
@@ -435,7 +451,7 @@ totalbr_year_boundary_rows <- function(year        = 2025,
     }
     if (is.null(d) || nrow(d) == 0) return(NULL)
     to_t <- function(v) {
-      if (inherits(v, "POSIXct")) { attr(v, "tzone") <- "UTC"; return(v) }
+      if (inherits(v, "POSIXct")) return(lubridate::force_tz(v, "UTC"))
       as.POSIXct(sub("T", " ", as.character(v), fixed = TRUE), tz = "UTC")
     }
     v  <- to_t(d[[date_col]])

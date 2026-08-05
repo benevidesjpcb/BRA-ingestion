@@ -34,6 +34,17 @@
 
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
 
+# How far the archive's dh_inicio sits from the API's, in minutes, once both are
+# read on their WRITTEN clocks rather than their stored instants.
+#
+# It was measured at +50 while the parquet's Europe/Paris label was being taken
+# at face value. DECEA confirmed the stamps are UTC and the label is an artefact
+# of where the file was written, so the instant carried an hour of error that the
+# measurement absorbed: the real figure is 50 - 60 = -10, the archive stamping ten
+# minutes AFTER the API. Re-measure with compare_totalbr_time_shift() and set this
+# to whatever the matched pairs now say before trusting any matching built on it.
+TOTALBR_SHIFT_MIN <- -10
+
 # Columns the comparison needs from each source, whichever key is used.
 TOTALBR_CMP_COLS <- c("pk", "id", "co_indicativo", "co_addep", "co_addes",
                       "co_matricula", "co_modelo", "dh_inicio", "dh_fim",
@@ -833,7 +844,7 @@ totalbr_pair_nearest <- function(ka, ta, kb, tb, tol_min) {
 # =============================================================================
 totalbr_leftovers_explained <- function(years     = 2025,
                                         tol_min   = 120,
-                                        shift_min = 50,
+                                        shift_min = TOTALBR_SHIFT_MIN,
                                         drop_plans = TRUE,
                                         raw_dir   = here::here("data-raw", "totalbr"),
                                         date_col  = "dt_dia") {
@@ -979,7 +990,7 @@ totalbr_leftovers_explained <- function(years     = 2025,
 # =============================================================================
 totalbr_match_flights <- function(years     = 2025,
                                   tol_min   = 120,
-                                  shift_min = 50,
+                                  shift_min = TOTALBR_SHIFT_MIN,
                                   drop_plans = TRUE,
                                   raw_dir   = here::here("data-raw", "totalbr"),
                                   date_col  = "dt_dia") {
@@ -1059,7 +1070,7 @@ totalbr_match_flights <- function(years     = 2025,
 # =============================================================================
 totalbr_unmatched_nearest <- function(years     = 2025,
                                       tol_min   = 120,
-                                      shift_min = 50,
+                                      shift_min = TOTALBR_SHIFT_MIN,
                                       drop_plans = TRUE,
                                       out_file  = NULL,
                                       raw_dir   = here::here("data-raw", "totalbr"),

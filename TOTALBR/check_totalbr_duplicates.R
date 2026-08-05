@@ -119,16 +119,16 @@ totalbr_normalise <- function(d) {
 # downloaded row into "no time known" and made the near-duplicate test pass over
 # the whole file without comparing anything. The separator is normalised first.
 totalbr_parse_time <- function(v) {
-  # Force the display timezone to UTC even when the value is already a timestamp.
-  # arrow hands back POSIXct with no tzone set, which prints in the session's
-  # local zone, while a value parsed from the CSV prints in UTC. Two such columns
-  # side by side in one table show two different clocks with nothing to say so —
-  # that is how a +50 minute difference was read off a printout as -10. Setting
-  # tzone changes the display only; the instant is untouched.
-  if (inherits(v, "POSIXct")) {
-    attr(v, "tzone") <- "UTC"
-    return(v)
-  }
+  # FORCE the zone, do not convert it. The parquet's stamps are UTC values
+  # carrying a Europe/Paris label, so the clock that was written is the real one
+  # and the stored instant is an hour or two off. force_tz keeps the clock and
+  # replaces the label, which is what a wrong label needs; attr(tzone) <- would
+  # keep the instant and move the clock, in the wrong direction.
+  #
+  # This is what decided +50 versus -10 minutes between the sources: reading the
+  # instants made the archive look 50 minutes late, reading the written clocks
+  # makes it 10 minutes late, and the second is the one the files mean.
+  if (inherits(v, "POSIXct")) return(lubridate::force_tz(v, "UTC"))
   v <- as.character(v)
   v[!is.na(v) & !nzchar(trimws(v))] <- NA_character_
   out <- as.POSIXct(sub("T", " ", v, fixed = TRUE), tz = "UTC")

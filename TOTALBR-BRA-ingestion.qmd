@@ -337,7 +337,37 @@ totalbr_year_edges(2025, raw_dir = bra_totalbr_raw_dir)
 figure; `totalbr_year_edges()` shows the days at the year boundaries, which is the population
 any change of definition can move.
 
-#### The archive is stamped in Paris time
+#### The archive is stamped in Paris time — and the label is wrong
+
+DECEA confirmed the stamps are **UTC**. The `Europe/Paris` label is an artefact of where the
+file was written, and that changes what every instant-based number means.
+
+Two readings were possible and they give opposite answers:
+
+| Reading | Consequence |
+| --- | --- |
+| the label is real | the stored instant is correct; `dh_inicio` differs by **+50 min**; a row showing `2026-01-01 00:59` Paris is 2025 |
+| the label is wrong | the **written clock** is correct; the real difference is 50 − 60 = **−10 min**; that row is 2026 |
+
+The second is the case. So:
+
+- the archive stamps `dh_inicio` about **ten minutes after** the API, not fifty before — which
+  is what the raw printout showed before it was "corrected" the wrong way;
+- a row written `2026-01-01 00:59:40` belongs to **2026**, and a 2025 filter that keeps it is
+  filtering on the wrong clock;
+- the operation everywhere is **`force_tz`** — keep the clock, replace the label — never
+  `with_tz`, which keeps the instant and moves the clock;
+- in arrow, `year()` on the field's own zone already reads the written clock, so it needs no
+  shift at all;
+- and bounds for filtering are built **in the zone the column claims**, because the instant
+  that reads as `2025-01-01 00:00` there is the one the written clock means.
+
+`TOTALBR_SHIFT_MIN` now carries the alignment (−10) instead of the 50 being spread through
+the matching code. Re-measure it with `compare_totalbr_time_shift()` before trusting any
+comparison built on it: every figure in this section that depended on the instant needs
+re-running.
+
+#### How the label was hiding
 
 ```
 COLUMN     TYPE
