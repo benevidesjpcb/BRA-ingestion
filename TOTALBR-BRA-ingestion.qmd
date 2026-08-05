@@ -434,6 +434,48 @@ that belong together, `ROLE` (`repeat` or `original`) and `GAP_MIN`. So a repeat
 next to the row it repeats, which is what makes the output usable as evidence rather than
 as a list of record ids.
 
+### What the duplication actually is: the plan and the movement
+
+Filtering the API download for a single callsign showed it plainly:
+
+```
+pk        co_indicativo  co_addep co_addes  dh_inicio            dh_fim               co_matricula
+6d3783f4  TAM3756        SBBR     SBGO      2025-01-02 00:14:00  2025-01-02 00:14:00  NA
+f12dd2b2  TAM3756        SBBR     SBGO      2025-01-02 00:20:30  2025-01-02 00:37:49  PTTPB
+875178b5  TAM3756        SBBR     SBGO      2025-01-05 00:15:00  2025-01-05 00:15:00  NA
+fa1dac77  TAM3756        SBBR     SBGO      2025-01-05 00:19:30  2025-01-05 00:35:46  PRMHG
+```
+
+Two rows per flight, minutes apart, and they are not alike. One has **`dh_fim` equal to
+`dh_inicio`** — no duration at all — no registration, and a round time. The other has a real
+duration, a registration, and seconds that are not round. The first is the **filed plan**;
+the second is the **movement**. ODIN serves both.
+
+That is the duplication ICEA reported, and it is in the API feed.
+
+::: {.callout-important}
+## The test was blind to exactly this
+The near-duplicate rule grouped on `co_matricula` and required it to be **equal** on both
+rows. The plan row has no registration, so it was filtered out before any comparison — the
+test discarded precisely the class of row that constitutes the problem, and reported 6,231
+near-duplicates for 2025 as if that were the answer.
+
+The rule now groups on the **flight** — callsign and aerodrome pair — and requires the
+registrations to be **compatible** rather than equal: equal, or missing on either side. Two
+rows naming different aircraft are still two flights; a row naming none cannot contradict its
+neighbour. Rows without a registration are no longer excluded, so `NO_REG` is context rather
+than an exclusion, and `PLAN_ROWS` counts the zero-duration rows directly.
+
+Each pair is now labelled `plan + movement` or `repeat`, because the two need different
+answers: the first is a modelling decision about which row represents the flight, the second
+is a fault.
+:::
+
+This also bears on the archive-versus-API comparison. If the API carries plan rows and the
+archive does not, those rows can never find a counterpart — which is a candidate explanation
+for the 98,578 airline movements that appeared to be download-only, and it should be checked
+before that figure is repeated anywhere.
+
 ### The T that hid every timestamp
 
 The first run of `check_totalbr_duplicates(2025, "csv")` came back with `NO_TIME_PCT` of

@@ -147,38 +147,51 @@ totalbr_is_midnight <- function(x) {
 totalbr_near_pairs <- function(d, tol_min) {
   dt <- data.table::as.data.table(d)
   dt[, ROW_ID := .I]
-  # Exact pk repeats are already counted by the first test, and they trivially
-  # satisfy this one — same aircraft, same place, zero minutes apart — so leaving
-  # them in makes the near test report the same rows twice and fills the examples
-  # with pairs that share a pk instead of the case this rule exists to find:
-  # duplication the pk does NOT identify. Only the first copy of each pk is kept.
+  # Exact pk repeats are counted by the first test and trivially satisfy this one,
+  # so only the first copy of each pk takes part here.
   dt <- dt[!duplicated(pk)]
-  dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
+
+  # GROUPED ON THE FLIGHT, NOT THE AIRFRAME. An earlier version grouped on
+  # co_matricula and required it to be equal on both rows — which made the test
+  # blind to the very duplication it was looking for. ODIN carries the same flight
+  # twice: once as the FILED PLAN (dh_fim equal to dh_inicio, no registration, a
+  # round time) and once as the MOVEMENT (a real duration, usually a registration).
+  # Requiring equal registrations threw the plan row away before comparison.
+  dt[, GRP := paste(co_indicativo, co_addep, co_addes, sep = "")]
+  # a plan row: no duration at all
+  dt[, IS_PLAN := !is.na(dh_inicio) & !is.na(dh_fim) & dh_inicio == dh_fim]
 
   flagged <- list()
   for (tcol in c("dh_inicio", "dh_fim")) {
-    # Rows whose time is exactly midnight carry no time of day: like dt_dia, these
-    # columns fall back to the bare date on part of the data. Left in, every such
-    # row of one aircraft on one day would sit at the same instant and be flagged
-    # as a duplicate of the others — the test would measure the missing clock
-    # rather than the traffic. They are untestable by this rule and counted as
-    # NO_TIME. Done per column: a row with no dh_inicio can still be judged on
-    # dh_fim.
+    # Rows whose time is exactly midnight carry no time of day and cannot be
+    # compared; they are counted as NO_TIME rather than silently paired.
     sub <- dt[!is.na(get(tcol)) & !totalbr_is_midnight(get(tcol)) &
-              !is.na(co_matricula) & nzchar(co_matricula)]
+              !is.na(co_indicativo) & nzchar(co_indicativo)]
     if (nrow(sub) == 0) next
     data.table::setorderv(sub, c("GRP", tcol))
-    sub[, PARTNER_ID := data.table::shift(ROW_ID), by = GRP]
-    sub[, GAP := as.numeric(difftime(get(tcol), data.table::shift(get(tcol)),
-                                     units = "mins")), by = GRP]
-    hit <- sub[!is.na(GAP) & abs(GAP) <= tol_min,
-               list(ROW_ID, PARTNER_ID, GAP_MIN = round(GAP, 1), TIME_COL = tcol)]
+    sub[, `:=`(PARTNER_ID = data.table::shift(ROW_ID),
+               PREV_REG   = data.table::shift(co_matricula),
+               PREV_PLAN  = data.table::shift(IS_PLAN),
+               GAP = as.numeric(difftime(get(tcol), data.table::shift(get(tcol)),
+                                         units = "mins"))), by = GRP]
+    # Registrations must be COMPATIBLE, not equal: equal, or missing on either
+    # side. Two rows naming different aircraft are two flights; a row naming none
+    # cannot contradict its neighbour, and that is the plan/movement pair.
+    ok_reg <- is.na(sub$co_matricula) | is.na(sub$PREV_REG) |
+              !nzchar(sub$co_matricula) | !nzchar(sub$PREV_REG) |
+              sub$co_matricula == sub$PREV_REG
+    hit <- sub[!is.na(GAP) & abs(GAP) <= tol_min & ok_reg,
+               list(ROW_ID, PARTNER_ID, GAP_MIN = round(GAP, 1), TIME_COL = tcol,
+                    # which shape the pair has, so a plan/movement pair is not
+                    # reported as if it were the same row served twice
+                    KIND = data.table::fifelse(IS_PLAN | PREV_PLAN,
+                                               "plan + movement", "repeat"))]
     if (nrow(hit) > 0) flagged[[length(flagged) + 1L]] <- hit
   }
   if (length(flagged) == 0)
     return(data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
-                                  GAP_MIN = numeric(), TIME_COL = character()))
-  # a pair can be caught on both time columns; keep it once
+                                  GAP_MIN = numeric(), TIME_COL = character(),
+                                  KIND = character()))
   unique(data.table::rbindlist(flagged), by = c("ROW_ID", "PARTNER_ID"))
 }
 
@@ -238,15 +251,19 @@ check_totalbr_duplicates <- function(years    = NULL,
         NEAR_DUP      = sum(IS_NEAR),
         # rows the near test cannot judge, so the figure above is not mistaken
         # for a statement about the whole year
+        # Rows with no registration are still TESTED — the rule only requires the
+        # registrations to be compatible, and a missing one is exactly the filed
+        # plan whose pairing with its movement this test exists to find. The count
+        # stays for context; it is no longer an exclusion.
         NO_REG        = sum(is.na(co_matricula) | !nzchar(co_matricula)),
-        # ... and rows with no time of day on EITHER column to compare
+        # a filed plan carries no duration at all: dh_fim equals dh_inicio
+        PLAN_ROWS     = sum(!is.na(dh_inicio) & !is.na(dh_fim) &
+                            dh_inicio == dh_fim),
+        # rows with no time of day on EITHER column: the only real exclusion
         NO_TIME       = sum((is.na(dh_inicio) | totalbr_is_midnight(dh_inicio)) &
                             (is.na(dh_fim)    | totalbr_is_midnight(dh_fim))),
-        # the two exclusions OVERLAP — a row can lack both — so the untestable
-        # total is the union, not the sum. Adding them drove TESTED_PCT negative.
-        UNTESTABLE    = sum((is.na(co_matricula) | !nzchar(co_matricula)) |
-                            ((is.na(dh_inicio) | totalbr_is_midnight(dh_inicio)) &
-                             (is.na(dh_fim)    | totalbr_is_midnight(dh_fim)))),
+        UNTESTABLE    = sum((is.na(dh_inicio) | totalbr_is_midnight(dh_inicio)) &
+                            (is.na(dh_fim)    | totalbr_is_midnight(dh_fim))),
         .groups = "drop"
       )
   }) |> purrr::list_rbind()
@@ -274,8 +291,8 @@ check_totalbr_duplicates <- function(years    = NULL,
 
   out <- res |>
     dplyr::group_by(YEAR) |>
-    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG, NO_TIME,
-                                     UNTESTABLE), sum), .groups = "drop")
+    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG, PLAN_ROWS,
+                                     NO_TIME, UNTESTABLE), sum), .groups = "drop")
   if (!is.null(parts_pk)) out <- dplyr::left_join(out, parts_pk, by = "YEAR")
 
   # A file where almost nothing is testable is usually a reading problem, not a
@@ -289,6 +306,7 @@ check_totalbr_duplicates <- function(years    = NULL,
     dplyr::mutate(
       NEAR_PCT    = round(100 * NEAR_DUP / ROWS, 3),
       NO_REG_PCT  = round(100 * NO_REG   / ROWS, 1),
+      PLAN_PCT    = round(100 * PLAN_ROWS / ROWS, 1),
       NO_TIME_PCT = round(100 * NO_TIME  / ROWS, 1),
       # the share the near test could actually look at
       TESTED_PCT  = round(100 * (1 - UNTESTABLE / ROWS), 1)
