@@ -788,6 +788,138 @@ totalbr_unmatched <- function(years    = 2024,
   out
 }
 
+# =============================================================================
+# totalbr_match_flights(years, tol_min, shift_min, ...)
+#
+# Matching by NEARNESS instead of by an equal key — because every exact key here
+# is brittle for a reason that is now measured:
+#
+#   dh_inicio  differs by a constant 50 minutes between the sources
+#   dh_eobt    changes whenever the plan is re-filed
+#
+# So a key on either one reports differences that are its own doing. On 2025 the
+# two files differ by 1,150 rows in total, while key-based comparison called
+# ~604,000 rows unmatched on each side. That gap is the method, not the data.
+#
+# Here, within each (callsign, departure, destination), the archive's clock is
+# aligned by shift_min and each downloaded flight is paired with the nearest
+# remaining archive flight inside tol_min. The pairing is ONE TO ONE: an archive
+# row can be used once, so a genuine extra rotation stays unmatched instead of
+# being absorbed by its neighbour.
+#
+# What is left over is the real difference between the two sources.
+#
+#   totalbr_match_flights(2025)                    # counts
+#   totalbr_match_flights(2025, tol_min = 30)      # stricter
+# =============================================================================
+totalbr_match_flights <- function(years     = 2025,
+                                  tol_min   = 120,
+                                  shift_min = 50,
+                                  raw_dir   = here::here("data-raw", "totalbr"),
+                                  date_col  = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+
+  A <- data.table::data.table(
+    A_ID = seq_len(nrow(a)),
+    K    = paste(a$co_indicativo, a$co_addep, a$co_addes, sep = ""),
+    # the archive is the side that runs early on dh_inicio, so it is the side
+    # moved; the shift is measured, not assumed (compare_totalbr_time_shift())
+    TA   = a$dh_inicio + shift_min * 60)
+  B <- data.table::data.table(
+    B_ID = seq_len(nrow(b)),
+    K    = paste(b$co_indicativo, b$co_addep, b$co_addes, sep = ""),
+    TB   = b$dh_inicio)
+  A <- A[!is.na(TA)]; B <- B[!is.na(TB)]
+
+  A[, TJ := TA]; B[, TJ := TB]
+  data.table::setkey(A, K, TJ)
+  data.table::setkey(B, K, TJ)
+  m <- A[B, roll = "nearest", nomatch = 0L]
+  if (nrow(m) == 0) {
+    message("Nothing paired at all — check that the callsigns match.")
+    return(invisible(NULL))
+  }
+  m[, DIFF_MIN := abs(as.numeric(difftime(TB, TA, units = "mins")))]
+  m <- m[DIFF_MIN <= tol_min]
+
+  # ONE TO ONE. The rolling join alone can hand the same archive row to several
+  # downloaded rows; keeping the closest pairing for each side in turn leaves a
+  # surplus rotation genuinely unpaired, which is what makes the leftovers mean
+  # something.
+  data.table::setorder(m, A_ID, DIFF_MIN)
+  m <- m[!duplicated(A_ID)]
+  data.table::setorder(m, B_ID, DIFF_MIN)
+  m <- m[!duplicated(B_ID)]
+
+  out <- tibble::tibble(
+    YEAR              = paste(range(years), collapse = "-"),
+    TOL_MIN           = tol_min,
+    SHIFT_MIN         = shift_min,
+    ARCHIVE_ROWS      = nrow(a),
+    DOWNLOAD_ROWS     = nrow(b),
+    MATCHED           = nrow(m),
+    ONLY_ARCHIVE      = nrow(a) - nrow(m),
+    ONLY_DOWNLOAD     = nrow(b) - nrow(m),
+    MED_DIFF_MIN      = round(stats::median(m$DIFF_MIN), 1),
+    MATCH_PCT         = round(100 * nrow(m) / nrow(a), 1)
+  )
+  attr(out, "matched") <- m
+  attr(out, "only_archive")  <- setdiff(seq_len(nrow(a)), m$A_ID)
+  attr(out, "only_download") <- setdiff(seq_len(nrow(b)), m$B_ID)
+  out
+}
+
+# =============================================================================
+# totalbr_unmatched_nearest(years, tol_min, shift_min, out_file, ...)
+#
+# The leftovers of totalbr_match_flights(), as the same dataset totalbr_unmatched()
+# produces: one row per record, with SOURCE and the fields needed to look the
+# flight up by hand. These are the rows with no counterpart within the tolerance,
+# so they are the difference itself rather than an artefact of a key.
+# =============================================================================
+totalbr_unmatched_nearest <- function(years     = 2025,
+                                      tol_min   = 120,
+                                      shift_min = 50,
+                                      out_file  = NULL,
+                                      raw_dir   = here::here("data-raw", "totalbr"),
+                                      date_col  = "dt_dia") {
+  res <- totalbr_match_flights(years, tol_min, shift_min, raw_dir, date_col)
+  if (is.null(res)) return(tibble::tibble())
+  print(as.data.frame(res))
+
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  take <- function(d, idx, src) {
+    if (length(idx) == 0) return(NULL)
+    d <- d[idx, ]
+    tibble::tibble(
+      YEAR = d$YEAR, SOURCE = src,
+      co_indicativo = d$co_indicativo, co_addep = d$co_addep,
+      co_addes = d$co_addes,
+      dt_dia    = format(totalbr_parse_time(d[[date_col]]),
+                         "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_inicio = format(d$dh_inicio, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_eobt   = format(d$dh_eobt,   "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      co_matricula = d$co_matricula, pk = d$pk,
+      id = if ("id" %in% names(d)) d$id else NA_character_)
+  }
+  out <- dplyr::bind_rows(
+    take(sides$parquet, attr(res, "only_archive"),  "parquet"),
+    take(sides$csv,     attr(res, "only_download"), "csv"))
+  if (is.null(out) || nrow(out) == 0) {
+    message("Every flight found a counterpart within ", tol_min, " minutes.")
+    return(tibble::tibble())
+  }
+  out <- dplyr::arrange(out, SOURCE, dh_inicio)
+  message(nrow(out), " row(s) with no counterpart within ", tol_min, " minutes.")
+  if (!is.null(out_file)) {
+    utils::write.table(out, out_file, sep = ";", row.names = FALSE,
+                       quote = TRUE, na = "", fileEncoding = "UTF-8")
+    message("Written to ", out_file)
+  }
+  out
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({

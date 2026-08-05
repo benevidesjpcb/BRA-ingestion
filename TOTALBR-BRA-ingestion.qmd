@@ -1070,9 +1070,60 @@ The summary now reports `ONLY_PARQUET`/`ONLY_CSV` (distinct keys) **and**
 `ROWS_ONLY_PARQUET`/`ROWS_ONLY_CSV` (records) side by side, so it can no longer be read as
 disagreeing with the row-level output.
 
-Compare the unmatched counts across keys. `flight_day` versus `eobt_day` measures the
-midnight artefact; `eobt_day` versus `eobt_seq` measures how much the day-level key was
-hiding. What survives `eobt_seq` is a genuinely one-sided flight.
+#### Every exact key is brittle here, and the numbers proved it
+
+| Key (2025) | matched | rows only in archive | rows only in download |
+| --- | --- | --- | --- |
+| `flight_day` | 93.4% | ~130k keys | ~21k keys |
+| `eobt_day` | 87.9% | 604,728 rows | 532,626 rows |
+| `eobt_seq` | 71.3% | 604,811 rows | 603,661 rows |
+
+Set that against the fact the files differ by **1,150 rows in total** — 2,109,623 against
+2,108,473. No arrangement of the data makes 604,000 flights genuinely one-sided when the two
+sources are within a thousand rows of each other. **The unmatched counts are the method's
+own doing.**
+
+They have to be. Both stamps drift: `dh_inicio` by a constant 50 minutes, `dh_eobt` whenever
+a plan is re-filed. An exact key on either one manufactures differences, and `eobt_seq` made
+it worse because a shifted `dh_eobt` reorders the rotations and the sequence numbers stop
+lining up.
+
+#### Matching by nearness instead
+
+```{r}
+#| label: compare-bra-totalbr-nearest
+#| eval: false
+
+totalbr_match_flights(2025, raw_dir = bra_totalbr_raw_dir)
+
+# the leftovers, as a dataset to search
+totalbr_unmatched_nearest(2025, raw_dir = bra_totalbr_raw_dir,
+                          out_file = here::here("outputs",
+                                                "totalbr-2025-unmatched.csv"))
+```
+
+Within each callsign and aerodrome pair, the archive's clock is aligned by the measured 50
+minutes and each downloaded flight is paired with the **nearest remaining** archive flight
+inside a tolerance. The pairing is one-to-one: an archive row can be used once, so a genuine
+extra rotation stays unmatched rather than being absorbed by its neighbour.
+
+Nothing is exact-matched, so nothing breaks when a stamp moves by a few minutes. What is
+left over is the difference between the sources — and it should now be of the same order as
+the 1,150-row gap plus the general-aviation shortfall, not half a million.
+
+Vary the tolerance to see how sensitive the answer is:
+
+```{r}
+#| label: compare-bra-totalbr-nearest-tol
+#| eval: false
+
+for (tol in c(15, 30, 60, 120))
+  print(totalbr_match_flights(2025, tol_min = tol, raw_dir = bra_totalbr_raw_dir))
+```
+
+If the leftovers barely move between 30 and 120 minutes, they are real absences. If they
+shrink steadily, the tolerance is still absorbing timing differences and the true figure is
+the one at the wide end.
 
 ### Where they disagree on the same flight
 
