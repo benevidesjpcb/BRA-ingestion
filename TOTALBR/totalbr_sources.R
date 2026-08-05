@@ -154,6 +154,40 @@ totalbr_day_counts <- function(raw_dir  = here::here("data-raw", "totalbr"),
 }
 
 # =============================================================================
+# totalbr_schema_info(raw_dir)
+#
+# The arrow type of every time column in the parquet, TIMEZONE INCLUDED.
+#
+# This exists because two functions in this repository counted the same year of
+# the same file and disagreed by 233 rows: the comparison lets arrow compute the
+# year with lubridate::year(), which honours whatever timezone the field carries,
+# while totalbr_year_count() collects the column and formats it in UTC. If the
+# field is stored as timestamp[us, tz=America/Sao_Paulo] those two are three hours
+# apart and a few hundred rows fall on different sides of 1 January.
+#
+# A count is only as trustworthy as the zone it was taken in, and the zone is a
+# property of the file that has to be read rather than assumed.
+# =============================================================================
+totalbr_schema_info <- function(raw_dir = here::here("data-raw", "totalbr")) {
+  src <- totalbr_sources(raw_dir)
+  if (length(src$parquet) == 0) {
+    message("No parquet archive in ", raw_dir); return(tibble::tibble())
+  }
+  purrr::map(src$parquet, function(path) {
+    sch <- arrow::open_dataset(path)$schema
+    nm  <- names(sch)
+    tibble::tibble(
+      FILE   = basename(path),
+      COLUMN = nm,
+      TYPE   = vapply(nm, function(x) sch$GetFieldByName(x)$type$ToString(),
+                      character(1))
+    ) |>
+      dplyr::filter(grepl("^d[ht]_|timestamp", COLUMN) |
+                    grepl("timestamp", TYPE, ignore.case = TRUE))
+  }) |> purrr::list_rbind()
+}
+
+# =============================================================================
 # totalbr_year_count(years, official, tz_offset_h, raw_dir, date_col)
 #
 # How many rows each year holds, under EVERY plausible definition of "the year" —
