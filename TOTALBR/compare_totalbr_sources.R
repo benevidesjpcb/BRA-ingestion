@@ -1294,6 +1294,75 @@ totalbr_pk_overlap <- function(years    = 2025,
   invisible(out)
 }
 
+# =============================================================================
+# totalbr_offset_by_month(years, ...)
+#
+# THE DAYLIGHT-SAVING TEST — is the archive's Europe/Paris label real or spurious?
+#
+# The parquet declares timestamp[us, tz=Europe/Paris]. Two readings are possible
+# and they give opposite answers:
+#
+#   REAL      the stored instants are correct and Paris is just how they display.
+#             The measured difference against the API (+50 min on dh_inicio) is
+#             the truth, and a row displaying 2026-01-01 00:59 Paris really is
+#             2025-12-31 23:59 UTC — inside 2025.
+#
+#   SPURIOUS  the data was UTC and was written with a Paris label, so the WRITTEN
+#             CLOCK is the true one and every instant is off by the Paris offset.
+#             The real difference is then 50 - 60 = -10 minutes, and that same row
+#             is genuinely 2026 and should not be counted in 2025.
+#
+# Daylight saving separates them, because Paris is UTC+1 in winter and UTC+2 in
+# summer. If the label is spurious the error changes by exactly 60 minutes at the
+# end of March and back at the end of October, so the measured offset JUMPS. If
+# the instants are genuine, it stays flat all year.
+#
+# A flat line says believe the +50. A 60-minute step at the DST changeovers says
+# the label is wrong, the written clock is UTC, and everything built on the
+# instant needs the shift removed.
+# =============================================================================
+totalbr_offset_by_month <- function(years    = 2025,
+                                    raw_dir  = here::here("data-raw", "totalbr"),
+                                    date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+  a$KEY <- totalbr_build_key(a, "flight_day")
+  b$KEY <- totalbr_build_key(b, "flight_day")
+  a <- a[!duplicated(a$KEY), ]; b <- b[!duplicated(b$KEY), ]
+  shared <- intersect(a$KEY, b$KEY)
+  if (length(shared) == 0) {
+    message("No flight matched; the test needs pairs."); return(tibble::tibble())
+  }
+  ia <- match(shared, a$KEY); ib <- match(shared, b$KEY)
+
+  d <- tibble::tibble(
+    MONTH = format(b$dh_inicio[ib], "%Y-%m", tz = "UTC"),
+    DIFF  = as.numeric(difftime(b$dh_inicio[ib], a$dh_inicio[ia], units = "mins"))
+  ) |> dplyr::filter(!is.na(MONTH), !is.na(DIFF))
+
+  out <- d |>
+    dplyr::group_by(MONTH) |>
+    dplyr::summarise(
+      N = dplyr::n(),
+      MODE_MIN = as.numeric(names(sort(table(round(DIFF)), decreasing = TRUE))[1]),
+      MODE_PCT = round(100 * max(table(round(DIFF))) / dplyr::n(), 1),
+      .groups = "drop"
+    )
+  rng <- diff(range(out$MODE_MIN, na.rm = TRUE))
+  message("Modal offset spans ", rng, " minutes across the months.")
+  if (rng >= 55 && rng <= 65)
+    message("=> A 60-minute step: the Europe/Paris label is SPURIOUS. The written ",
+            "clock is the real one, the instants are shifted, and the true ",
+            "difference is the winter figure minus 60.")
+  else if (rng < 5)
+    message("=> Flat all year: the instants are genuine and the Paris label is ",
+            "only a display zone.")
+  else
+    message("=> Neither flat nor a clean 60-minute step; look at the months ",
+            "before concluding.")
+  out
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
