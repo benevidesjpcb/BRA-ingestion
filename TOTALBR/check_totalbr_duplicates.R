@@ -23,7 +23,11 @@
 #   check_totalbr_duplicates(2026)              # the summary
 #   totalbr_duplicate_examples(2026)            # the rows themselves
 #
-# Nothing here repairs anything. Which copy to keep is DECEA's call.
+# Everything here MEASURES and leaves the data alone, with one exception:
+# totalbr_dedupe() removes the duplication, by the rules DECEA set for which copy
+# of a pair to keep. Deciding that is not this pipeline's call to make on its own,
+# which is why the rules live in one documented function rather than spread
+# through the reading code.
 # =============================================================================
 
 source(here::here("TOTALBR", "totalbr_sources.R"))
@@ -38,7 +42,8 @@ TOTALBR_PLAN_TOL_MIN <- 180
 # The columns the check needs. A source missing any of them is skipped, with a
 # message, rather than producing a silently partial answer.
 TOTALBR_DUP_COLS <- c("pk", "co_matricula", "co_addep", "co_addes",
-                      "dh_inicio", "dh_fim", "co_indicativo")
+                      "dh_inicio", "dh_fim", "dh_eobt", "dh_eet",
+                      "co_indicativo")
 
 # ---- read the columns the check needs, from either source kind --------------
 totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
@@ -805,6 +810,128 @@ totalbr_duplicate_rows <- function(years    = NULL,
     message("Written to ", out_file)
   }
   out
+}
+
+# =============================================================================
+# totalbr_dedupe(years, source, tol_min, plan_tol_min, out_file, ...)
+#
+# Removes the duplication instead of only measuring it. Everything else in this
+# file reports and leaves the data alone; this is the one function that decides,
+# and it decides by the rules DECEA set:
+#
+#   RULE 1  In a duplicated pair where one row has dh_fim equal to dh_inicio —
+#           no duration — that row goes and the one with a duration stays. The
+#           filed plan is not the movement.
+#
+#   RULE 2  Where both rows have a duration but one carries neither dh_eobt nor
+#           dh_eet, that row goes. A movement with no filed time behind it is the
+#           weaker record of the two.
+#
+#   TIE     Neither rule separates them: keep the earlier row, drop the later.
+#           Recorded separately in the summary, because a tie is a case the rules
+#           do not really cover and its size is worth watching.
+#
+# Exact pk repeats are dropped first, keeping the first occurrence — no rule
+# needed, the rows are identical.
+#
+#   totalbr_dedupe(2025, "csv")
+#   totalbr_dedupe(2025, "csv", out_file = here::here("data-raw", "totalbr",
+#                                                     "totalbr_2025_dedup.csv"))
+# =============================================================================
+totalbr_dedupe <- function(years        = NULL,
+                           source       = c("csv", "parquet"),
+                           tol_min      = TOTALBR_NEAR_MIN,
+                           plan_tol_min = TOTALBR_PLAN_TOL_MIN,
+                           out_file     = NULL,
+                           raw_dir      = here::here("data-raw", "totalbr"),
+                           date_col     = "dt_dia") {
+  source <- match.arg(source)
+  src    <- totalbr_sources(raw_dir)
+  paths  <- if (source == "csv") src$csv else src$parquet
+  if (length(paths) == 0) {
+    message("No ", source, " source in ", raw_dir); return(tibble::tibble())
+  }
+
+  out <- purrr::map(paths, function(path) {
+    message("Reading ", basename(path), " ...")
+    # every column: the result is meant to be a usable dataset, not a report
+    d <- if (grepl("\\.parquet$", path)) {
+      d0 <- dplyr::collect(arrow::open_dataset(path))
+      d0$YEAR <- format(totalbr_parse_time(d0[[date_col]]), "%Y", tz = "UTC")
+      if (!is.null(years)) d0 <- d0[d0$YEAR %in% as.character(years), ]
+      d0
+    } else {
+      x <- data.table::fread(file = path, sep = ";", colClasses = "character",
+                             na.strings = "", showProgress = FALSE)
+      x <- tibble::as_tibble(x)
+      x$YEAR <- substr(x[[date_col]], 1, 4)
+      if (!is.null(years)) x <- x[x$YEAR %in% as.character(years), ]
+      x
+    }
+    if (nrow(d) == 0) return(NULL)
+    d <- totalbr_normalise(d)
+    n_in <- nrow(d)
+
+    # ---- identical rows -----------------------------------------------------
+    dup_pk <- duplicated(d$pk)
+    n_pk <- sum(dup_pk)
+    d <- d[!dup_pk, ]
+
+    # ---- the pairs, and which row of each loses ----------------------------
+    pairs <- totalbr_near_pairs(d, tol_min, plan_tol_min)
+    n_r1 <- n_r2 <- n_tie <- 0L
+    if (nrow(pairs) > 0) {
+      A <- d[pairs$ROW_ID, ]; B <- d[pairs$PARTNER_ID, ]
+      zero <- function(x) !is.na(x$dh_inicio) & !is.na(x$dh_fim) &
+                          x$dh_inicio == x$dh_fim
+      bare <- function(x) is.na(x$dh_eobt) & is.na(x$dh_eet)
+      za <- zero(A); zb <- zero(B)
+      ba <- bare(A); bb <- bare(B)
+
+      loser <- rep(NA_integer_, nrow(pairs))
+      rule  <- rep(NA_character_, nrow(pairs))
+      # rule 1: the row without a duration
+      r1 <- xor(za, zb)
+      loser[r1] <- ifelse(za[r1], pairs$ROW_ID[r1], pairs$PARTNER_ID[r1])
+      rule[r1]  <- "rule 1: no duration"
+      # rule 2: both have a duration, one has no filed time at all
+      r2 <- !r1 & !za & !zb & xor(ba, bb)
+      loser[r2] <- ifelse(ba[r2], pairs$ROW_ID[r2], pairs$PARTNER_ID[r2])
+      rule[r2]  <- "rule 2: no dh_eobt and no dh_eet"
+      # tie: keep the earlier row
+      tie <- is.na(loser)
+      loser[tie] <- pmax(pairs$ROW_ID[tie], pairs$PARTNER_ID[tie])
+      rule[tie]  <- "tie: kept the earlier row"
+
+      n_r1 <- sum(r1); n_r2 <- sum(r2); n_tie <- sum(tie)
+      d <- d[-unique(loser), ]
+    }
+
+    message(sprintf(
+      "  %s: %s in -> %s out  (identical pk %s, rule 1 %s, rule 2 %s, tie %s)",
+      basename(path), format(n_in, big.mark = ","),
+      format(nrow(d), big.mark = ","), format(n_pk, big.mark = ","),
+      format(n_r1, big.mark = ","), format(n_r2, big.mark = ","),
+      format(n_tie, big.mark = ",")))
+    attr(d, "removed") <- tibble::tibble(
+      FILE = basename(path), ROWS_IN = n_in, ROWS_OUT = nrow(d),
+      IDENTICAL_PK = n_pk, RULE_1 = n_r1, RULE_2 = n_r2, TIE = n_tie)
+    d
+  })
+
+  removed <- purrr::list_rbind(lapply(Filter(Negate(is.null), out),
+                                      function(x) attr(x, "removed")))
+  res <- dplyr::bind_rows(Filter(Negate(is.null), out))
+  if (nrow(res) == 0) return(tibble::tibble())
+  print(as.data.frame(removed))
+
+  if (!is.null(out_file)) {
+    utils::write.table(res, out_file, sep = ";", row.names = FALSE,
+                       quote = TRUE, na = "", fileEncoding = "UTF-8")
+    message("Written to ", out_file)
+  }
+  attr(res, "removed") <- removed
+  res
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

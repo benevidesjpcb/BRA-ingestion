@@ -722,9 +722,44 @@ totalbr_eet_check(raw_dir = bra_totalbr_raw_dir)
 `dh_eet` can be used there as an estimated arrival; low means it cannot, whatever the median
 says.
 
-Nothing here repairs anything, deliberately. De-duplicating a national movement table
-changes every count computed from it, and which copy to keep is DECEA's call, not a choice
-this pipeline should make silently.
+### Removing it: the rules for which copy stays
+
+Measuring is one thing; deciding which row of a pair represents the flight is another, and
+that decision is DECEA's. These are the rules they set, and `totalbr_dedupe()` is the one
+function in the pipeline that acts on the data rather than reporting on it:
+
+| Rule | Condition | Action |
+| --- | --- | --- |
+| 1 | one row of the pair has `dh_fim` = `dh_inicio` | drop it, keep the row with a duration |
+| 2 | both have a duration, one carries **neither** `dh_eobt` nor `dh_eet` | drop that one |
+| tie | neither rule separates them | keep the earlier row, and count it separately |
+
+Rule 1 says the filed plan is not the movement. Rule 2 says a movement with no filed time
+behind it is the weaker record of the two. The tie is counted on its own because it is the
+case the rules do not really cover — if it turns out to be large, the rules need another
+clause rather than a coin toss.
+
+```{r}
+#| label: dedupe-bra-totalbr
+#| eval: false
+
+source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
+
+# what would be removed, and by which rule
+clean <- totalbr_dedupe(2025, "csv", raw_dir = bra_totalbr_raw_dir)
+
+# ... and written out as a usable dataset, all columns, semicolon-delimited
+totalbr_dedupe(2025, "csv", raw_dir = bra_totalbr_raw_dir,
+               out_file = file.path(bra_totalbr_raw_dir, "totalbr_2025_dedup.csv"))
+```
+
+It reports `ROWS_IN`, `ROWS_OUT` and the count removed under each rule, so the effect on any
+figure derived from the table can be stated exactly rather than estimated. Identical `pk`
+rows are dropped first and need no rule — the rows are the same row.
+
+The output is written to a **new file**; nothing overwrites a download. A national movement
+table with rows removed is a derived product, and the raw file has to stay available for the
+next question that comes up about it.
 
 ### One cause we removed on our side first
 
