@@ -30,6 +30,10 @@ source(here::here("TOTALBR", "totalbr_sources.R"))
 
 # How close two times must be to count as the same movement. Minutes.
 TOTALBR_NEAR_MIN <- 10
+# How far a filed plan may sit from its own movement. Much wider on purpose: the
+# plan holds the time the flight was DUE off blocks and the movement the time it
+# actually went, so the gap between them is the delay, not an error.
+TOTALBR_PLAN_TOL_MIN <- 180
 
 # The columns the check needs. A source missing any of them is skipped, with a
 # message, rather than producing a silently partial answer.
@@ -144,60 +148,82 @@ totalbr_is_midnight <- function(x) {
 # their dh_inicio are further apart.
 # Which row each flagged row repeats, and by how many minutes. The count only
 # needs the flagged row; showing the evidence needs both, so the pair is kept.
-totalbr_near_pairs <- function(d, tol_min) {
+totalbr_near_pairs <- function(d, tol_min, plan_tol_min = TOTALBR_PLAN_TOL_MIN) {
   dt <- data.table::as.data.table(d)
   dt[, ROW_ID := .I]
-  # Exact pk repeats are counted by the first test and trivially satisfy this one,
-  # so only the first copy of each pk takes part here.
-  dt <- dt[!duplicated(pk)]
-
-  # GROUPED ON THE FLIGHT, NOT THE AIRFRAME. An earlier version grouped on
-  # co_matricula and required it to be equal on both rows — which made the test
-  # blind to the very duplication it was looking for. ODIN carries the same flight
-  # twice: once as the FILED PLAN (dh_fim equal to dh_inicio, no registration, a
-  # round time) and once as the MOVEMENT (a real duration, usually a registration).
-  # Requiring equal registrations threw the plan row away before comparison.
+  dt <- dt[!duplicated(pk)]          # exact pk repeats belong to the first test
   dt[, GRP := paste(co_indicativo, co_addep, co_addes, sep = "")]
-  # a plan row: no duration at all
+  # A FILED PLAN carries no duration: dh_fim equals dh_inicio. That shape is what
+  # identifies it — not a missing registration. Both rows of a pair can lack the
+  # registration (2025-01-04 has two such rows for TAM3756) and they are still a
+  # plan and a movement.
   dt[, IS_PLAN := !is.na(dh_inicio) & !is.na(dh_fim) & dh_inicio == dh_fim]
 
-  flagged <- list()
-  for (tcol in c("dh_inicio", "dh_fim")) {
-    # Rows whose time is exactly midnight carry no time of day and cannot be
-    # compared; they are counted as NO_TIME rather than silently paired.
-    sub <- dt[!is.na(get(tcol)) & !totalbr_is_midnight(get(tcol)) &
-              !is.na(co_indicativo) & nzchar(co_indicativo)]
-    if (nrow(sub) == 0) next
-    data.table::setorderv(sub, c("GRP", tcol))
+  usable <- dt[!is.na(dh_inicio) & !totalbr_is_midnight(dh_inicio) &
+               !is.na(co_indicativo) & nzchar(co_indicativo)]
+  if (nrow(usable) == 0)
+    return(data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
+                                  GAP_MIN = numeric(), KIND = character()))
+
+  out <- list()
+
+  # ---- 1. the plan and its movement --------------------------------------
+  # A WIDE window, because the two are not meant to agree: the plan carries the
+  # time the flight was due off blocks and the movement the time it actually
+  # went. Fifteen to thirty minutes between them is an ordinary delay, so the
+  # 10-minute tolerance used for outright repeats would miss half of them —
+  # 2025-01-04 is 13.6 minutes apart and 2025-01-06 is 18.1.
+  P <- usable[IS_PLAN == TRUE,  list(GRP, P_ID = ROW_ID, TP = dh_inicio, TJ = dh_inicio)]
+  M <- usable[IS_PLAN == FALSE, list(GRP, M_ID = ROW_ID, TM = dh_inicio, TJ = dh_inicio)]
+  if (nrow(P) > 0 && nrow(M) > 0) {
+    data.table::setkey(M, GRP, TJ); data.table::setkey(P, GRP, TJ)
+    j <- M[P, roll = "nearest", nomatch = 0L]
+    if (nrow(j) > 0) {
+      j[, GAP := as.numeric(difftime(TP, TM, units = "mins"))]
+      j[, AGAP := abs(GAP)]
+      j <- j[AGAP <= plan_tol_min]
+      # one to one: a movement answers for one plan, and vice versa
+      data.table::setorder(j, M_ID, AGAP); j <- j[!duplicated(M_ID)]
+      data.table::setorder(j, P_ID, AGAP); j <- j[!duplicated(P_ID)]
+      if (nrow(j) > 0)
+        # the PLAN row is the surplus copy: the movement is the flight
+        out[[length(out) + 1L]] <- j[, list(ROW_ID = P_ID, PARTNER_ID = M_ID,
+                                            GAP_MIN = round(GAP, 1),
+                                            KIND = "plan + movement")]
+    }
+  }
+
+  # ---- 2. outright repeats, within the same shape -------------------------
+  # Two movements, or two plans, of the same flight a few minutes apart. Narrow
+  # window: here the rows ARE meant to agree, so a real gap means two flights.
+  for (cls in c(TRUE, FALSE)) {
+    sub <- usable[IS_PLAN == cls]
+    if (nrow(sub) < 2) next
+    data.table::setorderv(sub, c("GRP", "dh_inicio"))
     sub[, `:=`(PARTNER_ID = data.table::shift(ROW_ID),
                PREV_REG   = data.table::shift(co_matricula),
-               PREV_PLAN  = data.table::shift(IS_PLAN),
-               GAP = as.numeric(difftime(get(tcol), data.table::shift(get(tcol)),
+               GAP = as.numeric(difftime(dh_inicio,
+                                         data.table::shift(dh_inicio),
                                          units = "mins"))), by = GRP]
-    # Registrations must be COMPATIBLE, not equal: equal, or missing on either
-    # side. Two rows naming different aircraft are two flights; a row naming none
-    # cannot contradict its neighbour, and that is the plan/movement pair.
-    ok_reg <- is.na(sub$co_matricula) | is.na(sub$PREV_REG) |
-              !nzchar(sub$co_matricula) | !nzchar(sub$PREV_REG) |
-              sub$co_matricula == sub$PREV_REG
-    hit <- sub[!is.na(GAP) & abs(GAP) <= tol_min & ok_reg,
-               list(ROW_ID, PARTNER_ID, GAP_MIN = round(GAP, 1), TIME_COL = tcol,
-                    # which shape the pair has, so a plan/movement pair is not
-                    # reported as if it were the same row served twice
-                    KIND = data.table::fifelse(IS_PLAN | PREV_PLAN,
-                                               "plan + movement", "repeat"))]
-    if (nrow(hit) > 0) flagged[[length(flagged) + 1L]] <- hit
+    # compatible, not equal: two rows naming different aircraft are two flights
+    ok <- is.na(sub$co_matricula) | is.na(sub$PREV_REG) |
+          !nzchar(sub$co_matricula) | !nzchar(sub$PREV_REG) |
+          sub$co_matricula == sub$PREV_REG
+    hit <- sub[!is.na(GAP) & abs(GAP) <= tol_min & ok,
+               list(ROW_ID, PARTNER_ID, GAP_MIN = round(GAP, 1),
+                    KIND = if (cls) "repeated plan" else "repeated movement")]
+    if (nrow(hit) > 0) out[[length(out) + 1L]] <- hit
   }
-  if (length(flagged) == 0)
+
+  if (length(out) == 0)
     return(data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
-                                  GAP_MIN = numeric(), TIME_COL = character(),
-                                  KIND = character()))
-  unique(data.table::rbindlist(flagged), by = c("ROW_ID", "PARTNER_ID"))
+                                  GAP_MIN = numeric(), KIND = character()))
+  unique(data.table::rbindlist(out), by = c("ROW_ID", "PARTNER_ID"))
 }
 
 # just the flagged row ids, for the counts
-totalbr_flag_near <- function(d, tol_min) {
-  unique(totalbr_near_pairs(d, tol_min)$ROW_ID)
+totalbr_flag_near <- function(d, tol_min, plan_tol_min = TOTALBR_PLAN_TOL_MIN) {
+  unique(totalbr_near_pairs(d, tol_min, plan_tol_min)$ROW_ID)
 }
 
 # =============================================================================
@@ -210,6 +236,7 @@ totalbr_flag_near <- function(d, tol_min) {
 check_totalbr_duplicates <- function(years    = NULL,
                                      source   = c("all", "csv", "parquet"),
                                      tol_min  = TOTALBR_NEAR_MIN,
+                                     plan_tol_min = TOTALBR_PLAN_TOL_MIN,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
   source <- match.arg(source)
@@ -238,8 +265,13 @@ check_totalbr_duplicates <- function(years    = NULL,
 
     # the near test runs on the pk-unique rows, so NEAR_DUP is duplication BEYOND
     # what SAME_PK already reports, never the same rows counted a second time
-    near <- totalbr_flag_near(d, tol_min)
-    d$IS_NEAR <- seq_len(nrow(d)) %in% near
+    pairs <- totalbr_near_pairs(d, tol_min, plan_tol_min)
+    d$IS_NEAR <- seq_len(nrow(d)) %in% pairs$ROW_ID
+    # split by kind: a plan paired with its movement is a modelling decision
+    # (which row is the flight), an outright repeat is a fault. Reporting one
+    # number for both would hide which of the two the file actually has.
+    d$IS_PLAN_DUP <- seq_len(nrow(d)) %in%
+      pairs$ROW_ID[pairs$KIND == "plan + movement"]
 
     tibble::as_tibble(d) |>
       dplyr::group_by(YEAR) |>
@@ -249,6 +281,8 @@ check_totalbr_duplicates <- function(years    = NULL,
         SAME_PK       = sum(duplicated(pk)),
         # same aircraft, same aerodrome pair, times within the tolerance
         NEAR_DUP      = sum(IS_NEAR),
+        PLAN_DUP      = sum(IS_PLAN_DUP),
+        REPEAT_DUP    = sum(IS_NEAR & !IS_PLAN_DUP),
         # rows the near test cannot judge, so the figure above is not mistaken
         # for a statement about the whole year
         # Rows with no registration are still TESTED — the rule only requires the
@@ -291,8 +325,9 @@ check_totalbr_duplicates <- function(years    = NULL,
 
   out <- res |>
     dplyr::group_by(YEAR) |>
-    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, NO_REG, PLAN_ROWS,
-                                     NO_TIME, UNTESTABLE), sum), .groups = "drop")
+    dplyr::summarise(dplyr::across(c(ROWS, SAME_PK, NEAR_DUP, PLAN_DUP,
+                                     REPEAT_DUP, NO_REG, PLAN_ROWS, NO_TIME,
+                                     UNTESTABLE), sum), .groups = "drop")
   if (!is.null(parts_pk)) out <- dplyr::left_join(out, parts_pk, by = "YEAR")
 
   # A file where almost nothing is testable is usually a reading problem, not a
@@ -732,12 +767,16 @@ totalbr_duplicate_rows <- function(years    = NULL,
     near_rows <- if (nrow(pairs) > 0) {
       pairs[, PAIR := paste0("NEAR", .I)]
       both <- data.table::rbindlist(list(
-        merge(dt, pairs[, list(ROW_ID, PAIR, GAP_MIN)], by = "ROW_ID")[
+        merge(dt, pairs[, list(ROW_ID, PAIR, GAP_MIN, KIND)], by = "ROW_ID")[
           , ROLE := "repeat"],
-        merge(dt, pairs[, list(ROW_ID = PARTNER_ID, PAIR, GAP_MIN)],
+        merge(dt, pairs[, list(ROW_ID = PARTNER_ID, PAIR, GAP_MIN, KIND)],
               by = "ROW_ID")[, ROLE := "original"]
       ))
-      both[, REASON := "near"]
+      # KIND carries through: "plan + movement" is a modelling choice about which
+      # row is the flight, "repeated movement" is a fault. Labelling both "near"
+      # would leave the reader to guess which one they are looking at.
+      both[, REASON := KIND]
+      both[, KIND := NULL]
       both
     } else NULL
 
