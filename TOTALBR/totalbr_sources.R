@@ -359,6 +359,17 @@ totalbr_read_year <- function(year     = 2025,
   message("Year ", year, " as [", format(from, tz = tz, usetz = TRUE), ", ",
           format(to, tz = tz, usetz = TRUE), ")")
 
+  # Show the result in the zone it was FILTERED in. The archive's columns carry
+  # tz=Europe/Paris, so a row kept as 2025-12-31 23:59:40 UTC prints as
+  # "2026-01-01 00:59:40" and reads like a filter that leaked into the next year.
+  # It did not; the clock on screen was simply a different one. Same trap that
+  # turned a +50 minute difference into an apparent -10.
+  show_in_tz <- function(d) {
+    for (nm in names(d))
+      if (inherits(d[[nm]], "POSIXct")) attr(d[[nm]], "tzone") <- tz
+    d
+  }
+
   purrr::map(paths, function(path) {
     if (grepl("\\.parquet$", path)) {
       ds <- arrow::open_dataset(path)
@@ -367,8 +378,9 @@ totalbr_read_year <- function(year     = 2025,
            else dplyr::select(ds, dplyr::all_of(unique(c(date_col, cols))))
       # !!from / !!to: the bounds are computed in R and injected, never left as
       # calls for arrow to translate
-      dplyr::collect(dplyr::filter(q, !!rlang::sym(date_col) >= !!from,
-                                      !!rlang::sym(date_col) <  !!to))
+      show_in_tz(
+        dplyr::collect(dplyr::filter(q, !!rlang::sym(date_col) >= !!from,
+                                        !!rlang::sym(date_col) <  !!to)))
     } else {
       x <- data.table::fread(file = path, sep = ";",
                              select = if (is.null(cols)) NULL
@@ -377,7 +389,7 @@ totalbr_read_year <- function(year     = 2025,
                              showProgress = FALSE)
       x <- tibble::as_tibble(x)
       v <- as.POSIXct(sub("T", " ", x[[date_col]], fixed = TRUE), tz = "UTC")
-      x[!is.na(v) & v >= from & v < to, ]
+      x[!is.na(v) & v >= from & v < to, ]   # CSV columns stay text, no zone to set
     }
   }) |> purrr::list_rbind()
 }
