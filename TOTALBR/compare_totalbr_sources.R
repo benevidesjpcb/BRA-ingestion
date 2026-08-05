@@ -788,6 +788,102 @@ totalbr_unmatched <- function(years    = 2024,
   out
 }
 
+# ---- greedy one-to-one nearest pairing, given a group and a time ------------
+# Shared by the matcher and by the leftover decomposition, so both use exactly
+# the same rule and their numbers can be added up.
+totalbr_pair_nearest <- function(ka, ta, kb, tb, tol_min) {
+  A <- data.table::data.table(A_ID = seq_along(ka), K = ka, TA = ta)[!is.na(TA)]
+  B <- data.table::data.table(B_ID = seq_along(kb), K = kb, TB = tb)[!is.na(TB)]
+  if (nrow(A) == 0 || nrow(B) == 0)
+    return(data.table::data.table(A_ID = integer(), B_ID = integer(),
+                                  DIFF_MIN = numeric()))
+  A[, TJ := TA]; B[, TJ := TB]
+  data.table::setkey(A, K, TJ); data.table::setkey(B, K, TJ)
+  m <- A[B, roll = "nearest", nomatch = 0L]
+  if (nrow(m) == 0)
+    return(data.table::data.table(A_ID = integer(), B_ID = integer(),
+                                  DIFF_MIN = numeric()))
+  m[, DIFF_MIN := abs(as.numeric(difftime(TB, TA, units = "mins")))]
+  m <- m[DIFF_MIN <= tol_min]
+  # one to one, closest first on each side in turn
+  data.table::setorder(m, A_ID, DIFF_MIN); m <- m[!duplicated(A_ID)]
+  data.table::setorder(m, B_ID, DIFF_MIN); m <- m[!duplicated(B_ID)]
+  m[, list(A_ID, B_ID, DIFF_MIN)]
+}
+
+# =============================================================================
+# totalbr_leftovers_explained(years, tol_min, shift_min, ...)
+#
+# The rows left over by totalbr_match_flights(), decomposed.
+#
+# Those leftovers came back SYMMETRIC — 191,156 and 190,006 for 2025, differing
+# by exactly the 1,150 rows the two files differ by overall. Symmetry is the
+# signature of a field disagreeing rather than a flight missing: the pairing
+# groups on callsign + departure + destination, so if any one of the three
+# differs, the same flight is left over on BOTH sides at once.
+#
+# Each pass takes what is still unpaired and relaxes one part of the group:
+#
+#   route only     callsign ignored  -> the callsign differs between sources
+#   callsign only  route ignored     -> an aerodrome differs
+#   wide window    same group, 24h   -> only the timing differs
+#   residual       nothing recovers  -> a genuinely one-sided flight
+#
+# The residual is the answer to "what is really in one and not the other".
+# =============================================================================
+totalbr_leftovers_explained <- function(years     = 2025,
+                                        tol_min   = 120,
+                                        shift_min = 50,
+                                        raw_dir   = here::here("data-raw", "totalbr"),
+                                        date_col  = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  a <- sides$parquet; b <- sides$csv
+  ta <- a$dh_inicio + shift_min * 60
+  tb <- b$dh_inicio
+
+  ia <- seq_len(nrow(a)); ib <- seq_len(nrow(b))
+  steps <- list()
+
+  run <- function(label, ka, kb, tol) {
+    m <- totalbr_pair_nearest(ka[ia], ta[ia], kb[ib], tb[ib], tol)
+    # the pairing works on positions within the current leftovers, so map back
+    got_a <- ia[m$A_ID]; got_b <- ib[m$B_ID]
+    steps[[length(steps) + 1L]] <<- tibble::tibble(
+      PASS = label, PAIRED = nrow(m),
+      LEFT_ARCHIVE = length(ia) - nrow(m),
+      LEFT_DOWNLOAD = length(ib) - nrow(m))
+    ia <<- setdiff(ia, got_a); ib <<- setdiff(ib, got_b)
+  }
+
+  key3 <- function(d) paste(d$co_indicativo, d$co_addep, d$co_addes, sep = "")
+  key_route <- function(d) paste(d$co_addep, d$co_addes, sep = "")
+  key_call  <- function(d) d$co_indicativo
+
+  run("callsign + route",        key3(a),      key3(b),      tol_min)
+  run("route only (callsign differs)", key_route(a), key_route(b), tol_min)
+  run("callsign only (aerodrome differs)", key_call(a), key_call(b), tol_min)
+  run("callsign + route, 24h window", key3(a), key3(b), 24 * 60)
+
+  out <- purrr::list_rbind(steps)
+  message("Rows: archive ", nrow(a), ", download ", nrow(b))
+  print(as.data.frame(out))
+
+  res_a <- a[ia, ]; res_b <- b[ib, ]
+  cls <- function(d, label) {
+    if (nrow(d) == 0) return(NULL)
+    reg <- grepl("^P[PRSTU][A-Z]{3}$", d$co_indicativo)
+    air <- grepl("^[A-Z]{3}[0-9]", d$co_indicativo)
+    tibble::tibble(SIDE = label, ROWS = nrow(d),
+                   REGISTRATION = sum(reg), AIRLINE = sum(air),
+                   OTHER = sum(!reg & !air))
+  }
+  message("\nThe residual — nothing recovered it — by traffic class:")
+  print(as.data.frame(dplyr::bind_rows(cls(res_a, "only archive"),
+                                       cls(res_b, "only download"))))
+
+  invisible(list(passes = out, only_archive = res_a, only_download = res_b))
+}
+
 # =============================================================================
 # totalbr_match_flights(years, tol_min, shift_min, ...)
 #

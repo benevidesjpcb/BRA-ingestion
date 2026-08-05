@@ -1125,6 +1125,44 @@ If the leftovers barely move between 30 and 120 minutes, they are real absences.
 shrink steadily, the tolerance is still absorbing timing differences and the true figure is
 the one at the wide end.
 
+#### The result, and what the leftovers are
+
+```
+TOL_MIN SHIFT_MIN ARCHIVE_ROWS DOWNLOAD_ROWS MATCHED ONLY_ARCHIVE ONLY_DOWNLOAD MED_DIFF_MIN
+    120        50      2109623       2108473 1918467       191156        190006            0
+```
+
+90.9% paired, and a **median difference of zero** once the 50 minutes are taken out — the
+shift is exactly 50 minutes, confirmed a second way.
+
+But the leftovers are **symmetric**: 191,156 and 190,006, differing by exactly the 1,150
+rows the two files differ by overall. That symmetry is the tell. The pairing groups on
+callsign + departure + destination, so if any one of the three disagrees, the same flight is
+left over on **both** sides at once. It is not a missing flight; it is a flight both sources
+hold with one field written differently — and `co_indicativo` already showed only 89.5%
+overlap.
+
+```{r}
+#| label: compare-bra-totalbr-leftovers
+#| eval: false
+
+totalbr_leftovers_explained(2025, raw_dir = bra_totalbr_raw_dir)
+```
+
+Each pass takes what is still unpaired and relaxes one part of the group, so the 190,000
+splits into causes that add up:
+
+| Pass | Recovers | Meaning |
+| --- | --- | --- |
+| route only | callsign ignored | the **callsign** differs between the sources |
+| callsign only | route ignored | an **aerodrome** differs |
+| 24-hour window | same group | only the **timing** differs |
+| residual | nothing | a genuinely one-sided flight |
+
+The residual is the answer to the original question, and it is reported split by traffic
+class — registration-style callsigns against airline ones — so the general-aviation shortfall
+can be read off directly rather than inferred from a top-ten list.
+
 ### Where they disagree on the same flight
 
 ```{r}
