@@ -243,6 +243,9 @@ totalbr_schema_info <- function(raw_dir = here::here("data-raw", "totalbr")) {
 # study should adopt — and it should be adopted deliberately, not inherited from
 # whichever column a script happened to filter on.
 # =============================================================================
+# `official` takes one figure per year, named — c("2025" = 2109588, "2024" = ...)
+# — or a bare number when a single year is requested. Years with no figure get NA
+# rather than a difference against somebody else's total.
 totalbr_year_count <- function(years       = NULL,
                                official    = NULL,
                                tz_offset_h = -3,
@@ -294,9 +297,25 @@ totalbr_year_count <- function(years       = NULL,
     dplyr::count(SOURCE, DEFINITION, YEAR, name = "ROWS")
   if (!is.null(years))
     out <- dplyr::filter(out, YEAR %in% as.character(years))
-  if (!is.null(official))
-    out <- dplyr::mutate(out, OFFICIAL = official,
-                         DIFF = ROWS - official)
+
+  if (!is.null(official)) {
+    # An official figure belongs to ONE year. Applied to every row it subtracts
+    # the 2025 total from 2019 and prints a difference of minus half a million,
+    # which is not a finding about anything. Either name the years, or ask for a
+    # single year and let the one figure attach to it.
+    if (is.null(names(official))) {
+      if (length(official) == 1 && !is.null(years) &&
+          length(unique(as.character(years))) == 1) {
+        official <- stats::setNames(official, as.character(years)[1])
+      } else {
+        stop("`official` needs one figure per year, named: ",
+             "c(\"2025\" = 2109588). A bare number is only unambiguous when a ",
+             "single year is requested.")
+      }
+    }
+    out$OFFICIAL <- unname(official[out$YEAR])   # NA where no figure is known
+    out$DIFF     <- out$ROWS - out$OFFICIAL
+  }
   dplyr::arrange(out, SOURCE, YEAR, DEFINITION)
 }
 
