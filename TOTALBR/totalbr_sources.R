@@ -324,6 +324,65 @@ totalbr_year_count <- function(years       = NULL,
 }
 
 # =============================================================================
+# totalbr_read_year(year, tz, source, cols, raw_dir, date_col)
+#
+# The rows of one year, filtered correctly. Written because filtering this file
+# by hand invites four mistakes, three of them silent:
+#
+#   case_when() selects VALUES, not rows — filter() selects rows.
+#   2025-01-01 without quotes is arithmetic: R reads 2025 - 1 - 1 = 2023, and
+#     2025-12-31 = 1982. No error, just a comparison against the wrong number.
+#   <= "2025-12-31" keeps only the midnight of the 31st and drops the rest of
+#     the day; the upper bound has to be < the 1st of January following.
+#   The stored column carries tz=Europe/Paris, so a boundary without a named
+#     zone is whatever the session happens to be in.
+#
+# The zone is an argument because it is a decision, not a detail: counting 2025
+# in UTC gives 2,109,856 rows and in America/Sao_Paulo 2,109,631.
+# =============================================================================
+totalbr_read_year <- function(year     = 2025,
+                              tz       = TOTALBR_TZ,
+                              source   = c("parquet", "csv"),
+                              cols     = NULL,
+                              raw_dir  = here::here("data-raw", "totalbr"),
+                              date_col = "dt_dia") {
+  source <- match.arg(source)
+  src    <- totalbr_sources(raw_dir)
+  paths  <- if (source == "parquet") src$parquet else src$csv
+  if (length(paths) == 0) {
+    message("No ", source, " source in ", raw_dir); return(tibble::tibble())
+  }
+  # half-open interval [1 Jan of the year, 1 Jan of the next): the only form that
+  # keeps the whole of 31 December without reaching into the next year
+  from <- as.POSIXct(sprintf("%d-01-01", year),     tz = tz)
+  to   <- as.POSIXct(sprintf("%d-01-01", year + 1), tz = tz)
+  message("Year ", year, " as [", format(from, tz = tz, usetz = TRUE), ", ",
+          format(to, tz = tz, usetz = TRUE), ")")
+
+  purrr::map(paths, function(path) {
+    if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!date_col %in% names(ds)) return(NULL)
+      q <- if (is.null(cols)) ds
+           else dplyr::select(ds, dplyr::all_of(unique(c(date_col, cols))))
+      # !!from / !!to: the bounds are computed in R and injected, never left as
+      # calls for arrow to translate
+      dplyr::collect(dplyr::filter(q, !!rlang::sym(date_col) >= !!from,
+                                      !!rlang::sym(date_col) <  !!to))
+    } else {
+      x <- data.table::fread(file = path, sep = ";",
+                             select = if (is.null(cols)) NULL
+                                      else unique(c(date_col, cols)),
+                             colClasses = "character", na.strings = "",
+                             showProgress = FALSE)
+      x <- tibble::as_tibble(x)
+      v <- as.POSIXct(sub("T", " ", x[[date_col]], fixed = TRUE), tz = "UTC")
+      x[!is.na(v) & v >= from & v < to, ]
+    }
+  }) |> purrr::list_rbind()
+}
+
+# =============================================================================
 # totalbr_year_boundary_rows(year, tz_offset_h, cols, raw_dir, date_col)
 #
 # The rows that CHANGE YEAR when the counting zone changes — the flights any
