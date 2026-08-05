@@ -249,12 +249,13 @@ totalbr_schema_info <- function(raw_dir = here::here("data-raw", "totalbr")) {
 totalbr_year_count <- function(years       = NULL,
                                official    = NULL,
                                tz_offset_h = -3,
+                               cols        = c("dt_dia", "dh_inicio", "dh_fim"),
                                raw_dir     = here::here("data-raw", "totalbr"),
                                date_col    = "dt_dia") {
   src <- totalbr_sources(raw_dir)
 
   one <- function(path) {
-    want <- c(date_col, "dh_inicio")
+    want <- unique(c(date_col, cols))
     d <- if (grepl("\\.parquet$", path)) {
       ds <- arrow::open_dataset(path)
       if (!all(want %in% names(ds))) return(NULL)
@@ -273,19 +274,20 @@ totalbr_year_count <- function(years       = NULL,
       if (inherits(v, "POSIXct")) { attr(v, "tzone") <- "UTC"; return(v) }
       as.POSIXct(sub("T", " ", as.character(v), fixed = TRUE), tz = "UTC")
     }
-    dtd <- to_t(d[[date_col]]); ini <- to_t(d$dh_inicio)
     off <- tz_offset_h * 3600
-    dplyr::bind_rows(
-      tibble::tibble(SOURCE = basename(path), DEFINITION = "dt_dia (UTC)",
-                     YEAR = format(dtd, "%Y", tz = "UTC")),
-      tibble::tibble(SOURCE = basename(path),
-                     DEFINITION = sprintf("dt_dia (UTC%+d)", tz_offset_h),
-                     YEAR = format(dtd + off, "%Y", tz = "UTC")),
-      tibble::tibble(SOURCE = basename(path), DEFINITION = "dh_inicio (UTC)",
-                     YEAR = format(ini, "%Y", tz = "UTC")),
-      tibble::tibble(SOURCE = basename(path),
-                     DEFINITION = sprintf("dh_inicio (UTC%+d)", tz_offset_h),
-                     YEAR = format(ini + off, "%Y", tz = "UTC")))
+    # every requested column, in both zones. dh_fim belongs here as much as the
+    # other two: a flight that starts on 31 December ends on 1 January, and which
+    # side of the boundary it counts on depends on the column as much as the zone.
+    purrr::map(cols, function(cl) {
+      v <- to_t(d[[cl]])
+      dplyr::bind_rows(
+        tibble::tibble(SOURCE = basename(path),
+                       DEFINITION = sprintf("%s (UTC)", cl),
+                       YEAR = format(v, "%Y", tz = "UTC")),
+        tibble::tibble(SOURCE = basename(path),
+                       DEFINITION = sprintf("%s (UTC%+d)", cl, tz_offset_h),
+                       YEAR = format(v + off, "%Y", tz = "UTC")))
+    }) |> purrr::list_rbind()
   }
 
   all <- dplyr::bind_rows(Filter(Negate(is.null),
