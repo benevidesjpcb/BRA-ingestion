@@ -316,7 +316,9 @@ totalbr_year_count <- function(years       = NULL,
     out$OFFICIAL <- unname(official[out$YEAR])   # NA where no figure is known
     out$DIFF     <- out$ROWS - out$OFFICIAL
   }
-  dplyr::arrange(out, SOURCE, YEAR, DEFINITION)
+  # most recent year first: the archive spans 2018-2026 and a tibble prints ten
+  # rows, so ascending order hides exactly the years anyone is asking about
+  dplyr::arrange(out, dplyr::desc(YEAR), SOURCE, DEFINITION)
 }
 
 # =============================================================================
