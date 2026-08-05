@@ -946,7 +946,8 @@ worth measuring separately before deciding which source feeds which figure.
 | --- | --- | --- | --- |
 | `pk` | 0% | — | nothing across sources: the hash is computed per source |
 | `flight_day` | 93.2% | 18,384 | matches, but cannot see the first 50 minutes of any day |
-| `eobt_day` | — | — | **the matching key**: built on a field both sources define identically |
+| `eobt_day` | 87.9% (2025) | — | drift-proof but day-level: hides a missing rotation |
+| `eobt_seq` | — | — | **the matching key**: per flight, and immune to the midnight drift |
 | `eobt` | 84.2% | 469,837 | measuring how far the filed times agree |
 
 `eobt` is the stricter key and matches nine points *worse*, which is the interesting part.
@@ -1039,9 +1040,39 @@ totalbr_unmatched(2024, "eobt_day", raw_dir = bra_totalbr_raw_dir,
                   out_file = here::here("outputs", "totalbr-2024-unmatched.csv"))
 ```
 
-`eobt_day` is now the default. Compare its unmatched count with `flight_day`'s: the
-difference is the size of the midnight artefact, and everything that survives both keys is a
-genuine one-sided flight.
+#### But a day-level key is too coarse to answer this
+
+The first run with `eobt_day` exposed the next problem. The summary reported 199,968
+one-sided keys for 2025 while `totalbr_unmatched()` wrote 604,728 rows — because one counts
+distinct **keys** and the other counts **rows**, and a day-level key covers every rotation of
+a route that day.
+
+That multiplicity is not just a counting nuisance, it hides differences. If the archive holds
+three rotations of a route on a day and the download holds two, the key **matches** and the
+missing flight is never reported at all.
+
+So the default is now `eobt_seq`: the same callsign, aerodrome pair and filed day, plus the
+**rotation number within that day**, earliest first. The first flight matches the first, the
+second the second, and a surplus one is left unmatched — which is precisely what the question
+asks for. It is ordered on `dh_eobt` because that is the field the two sources agree on: a
+re-filed off-block time changes the value but rarely the running order.
+
+```{r}
+#| label: compare-bra-totalbr-eobt-seq
+#| eval: false
+
+compare_totalbr_sources(2025, "eobt_seq", raw_dir = bra_totalbr_raw_dir)
+totalbr_unmatched(2025, "eobt_seq", raw_dir = bra_totalbr_raw_dir,
+                  out_file = here::here("outputs", "totalbr-2025-unmatched.csv"))
+```
+
+The summary now reports `ONLY_PARQUET`/`ONLY_CSV` (distinct keys) **and**
+`ROWS_ONLY_PARQUET`/`ROWS_ONLY_CSV` (records) side by side, so it can no longer be read as
+disagreeing with the row-level output.
+
+Compare the unmatched counts across keys. `flight_day` versus `eobt_day` measures the
+midnight artefact; `eobt_day` versus `eobt_seq` measures how much the day-level key was
+hiding. What survives `eobt_seq` is a genuinely one-sided flight.
 
 ### Where they disagree on the same flight
 

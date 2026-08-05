@@ -69,6 +69,23 @@ totalbr_build_key <- function(d, key) {
     eobt_day = paste(d$co_indicativo, d$co_addep, d$co_addes,
                      format(d$dh_eobt, "%Y-%m-%d", tz = "UTC"),
                      sep = ""),
+    # PER FLIGHT, and drift-proof. eobt_day is one key for every rotation of a
+    # route in a day, so an archive holding three and a download holding two
+    # still "match" and the missing flight is never reported. Numbering the
+    # rotations within the day — earliest first — matches the first flight to the
+    # first, the second to the second, and leaves the surplus one unmatched, which
+    # is the thing being looked for.
+    #
+    # Ordered on dh_eobt because that is the field the two sources agree on: a
+    # re-filed off-block time changes the value but rarely the running order.
+    eobt_seq = {
+      base <- paste(d$co_indicativo, d$co_addep, d$co_addes,
+                    format(d$dh_eobt, "%Y-%m-%d", tz = "UTC"), sep = "")
+      ord  <- order(base, d$dh_eobt, d$dh_inicio, na.last = TRUE)
+      seq_no <- integer(length(base))
+      seq_no[ord] <- stats::ave(seq_along(ord), base[ord], FUN = seq_along)
+      paste(base, seq_no, sep = "")
+    },
     stop("Unknown key '", key, "'.")
   )
 }
@@ -181,7 +198,7 @@ totalbr_cmp_sides <- function(years, raw_dir, date_col, all_cols = FALSE,
 # identifier, not a difference in the data.
 # =============================================================================
 compare_totalbr_sources <- function(years    = 2023:2025,
-                                    key      = c("eobt_day", "flight_day", "eobt", "pk"),
+                                    key      = c("eobt_seq", "eobt_day", "flight_day", "eobt", "pk"),
                                     raw_dir  = here::here("data-raw", "totalbr"),
                                     date_col = "dt_dia") {
   key   <- match.arg(key)
@@ -194,17 +211,24 @@ compare_totalbr_sources <- function(years    = 2023:2025,
   purrr::map(sort(unique(c(a$YEAR, b$YEAR))), function(yr) {
     ka <- a$KEY[a$YEAR == yr]
     kb <- b$KEY[b$YEAR == yr]
-    # unique keys, so a duplicate on one side does not inflate the overlap
+    # unique keys, so a key held twice on one side does not inflate the overlap
     ua <- unique(ka); ub <- unique(kb)
     both <- length(intersect(ua, ub))
+    only_a <- setdiff(ua, ub); only_b <- setdiff(ub, ua)
     tibble::tibble(
       YEAR          = yr,
       KEY           = key,
       PARQUET       = length(ka),
       CSV           = length(kb),
       MATCHED       = both,
-      ONLY_PARQUET  = length(setdiff(ua, ub)),
-      ONLY_CSV      = length(setdiff(ub, ua)),
+      ONLY_PARQUET  = length(only_a),
+      ONLY_CSV      = length(only_b),
+      # ROWS_* count records, KEYS above count distinct key values. With a coarse
+      # key one value covers several rows, so the two differ — and reporting only
+      # one of them made this table disagree with totalbr_unmatched(), which
+      # returns rows. Both are here so neither number can be read as the other.
+      ROWS_ONLY_PARQUET = sum(ka %in% only_a),
+      ROWS_ONLY_CSV     = sum(kb %in% only_b),
       MATCH_PCT     = round(100 * both / max(length(ua), 1), 1)
     )
   }) |> purrr::list_rbind()
@@ -221,7 +245,7 @@ compare_totalbr_sources <- function(years    = 2023:2025,
 # =============================================================================
 compare_totalbr_examples <- function(years    = 2023:2025,
                                      side     = c("only_parquet", "only_csv", "both"),
-                                     key      = c("eobt_day", "flight_day", "eobt", "pk"),
+                                     key      = c("eobt_seq", "eobt_day", "flight_day", "eobt", "pk"),
                                      n        = 20L,
                                      raw_dir  = here::here("data-raw", "totalbr"),
                                      date_col = "dt_dia") {
@@ -264,7 +288,7 @@ compare_totalbr_examples <- function(years    = 2023:2025,
 # agree on. Comparing on pk would only compare rows that agree by construction.
 # =============================================================================
 compare_totalbr_fields <- function(years    = 2023:2025,
-                                   key      = c("eobt_day", "flight_day", "eobt", "pk"),
+                                   key      = c("eobt_seq", "eobt_day", "flight_day", "eobt", "pk"),
                                    max_rows = 200000L,
                                    all_cols = FALSE,
                                    raw_dir  = here::here("data-raw", "totalbr"),
@@ -708,7 +732,7 @@ compare_totalbr_time_shift <- function(years    = 2024,
 #   totalbr_unmatched(2024, out_file = "unmatched-2024.csv")  # written out
 # =============================================================================
 totalbr_unmatched <- function(years    = 2024,
-                              key      = c("eobt_day", "flight_day", "eobt", "pk"),
+                              key      = c("eobt_seq", "eobt_day", "flight_day", "eobt", "pk"),
                               out_file = NULL,
                               raw_dir  = here::here("data-raw", "totalbr"),
                               date_col = "dt_dia") {
