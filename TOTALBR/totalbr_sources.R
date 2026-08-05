@@ -411,6 +411,50 @@ totalbr_read_year <- function(year     = 2025,
 }
 
 # =============================================================================
+# totalbr_year_span(year, tz, source, raw_dir, date_col)
+#
+# What a year filter actually kept: the first and last written clock in the
+# result, and the row count for each of the first and last three days.
+#
+# A year that ends at "00:59 on 31 December" is either a filter cutting 23 hours
+# off the last day, or a boundary landing an hour into the NEXT year — the two
+# look similar in a printout and mean opposite things. Counting the edge days
+# separates them: a full last day carries a normal day's traffic, a truncated one
+# carries a fraction of it.
+# =============================================================================
+totalbr_year_span <- function(year     = 2025,
+                              tz       = TOTALBR_TZ,
+                              source   = c("parquet", "csv"),
+                              raw_dir  = here::here("data-raw", "totalbr"),
+                              date_col = "dt_dia") {
+  source <- match.arg(source)
+  d <- totalbr_read_year(year, tz = tz, source = source,
+                         cols = c("co_indicativo"), raw_dir = raw_dir,
+                         date_col = date_col)
+  if (nrow(d) == 0) return(tibble::tibble())
+
+  v <- d[[date_col]]
+  if (!inherits(v, "POSIXct"))
+    v <- as.POSIXct(sub("T", " ", as.character(v), fixed = TRUE), tz = "UTC")
+  day <- format(v, "%Y-%m-%d", tz = tz)
+
+  message("Rows: ", format(nrow(d), big.mark = ","),
+          " | first: ", format(min(v, na.rm = TRUE), "%Y-%m-%d %H:%M:%S", tz = tz),
+          " | last: ",  format(max(v, na.rm = TRUE), "%Y-%m-%d %H:%M:%S", tz = tz))
+
+  cnt <- tibble::tibble(DAY = day) |> dplyr::count(DAY, name = "ROWS")
+  edges <- c(head(sort(unique(day)), 3), tail(sort(unique(day)), 3))
+  cnt |>
+    dplyr::filter(DAY %in% edges) |>
+    dplyr::arrange(DAY) |>
+    # a day with a fraction of the year's daily average is a cut, not a quiet day
+    dplyr::mutate(VS_DAILY_MEAN = round(ROWS / mean(cnt$ROWS), 2),
+                  NOTE = dplyr::if_else(ROWS < 0.5 * mean(cnt$ROWS),
+                                        "PARTIAL — the filter cut this day",
+                                        "full day"))
+}
+
+# =============================================================================
 # totalbr_year_boundary_rows(year, tz_offset_h, cols, raw_dir, date_col)
 #
 # The rows that CHANGE YEAR when the counting zone changes — the flights any
