@@ -847,6 +847,33 @@ KAL274        SBKP     SCEL      2024-01-01 01:01:59  2024-01-01 00:51:59
 Well-formed on both sides, so the hash is source-specific, not mangled in reading. `pk`
 cannot be used across sources and the zero match is expected, not a defect.
 
+#### Is the 50 minutes real, or a matching artefact?
+
+A cross-source measurement can always be the matching's own fault, so the shift is worth
+establishing **without comparing the sources at all**. Take the two rows from the lookup and
+read each one against itself:
+
+| | `dh_inicio` | its own `dh_eobt` | difference |
+| --- | --- | --- | --- |
+| download | 00:12:37 | 00:15:00 | −2 min |
+| archive | 23:25:00 | 00:23:00 (next day) | **−58 min** |
+
+No pairing, no key, no tolerance — just two columns of the same record. The download's window
+opens on top of the filed time; the archive's opens about an hour before it. That is not the
+same field with a different clock, it is a different definition of when the window starts.
+
+```{r}
+#| label: compare-bra-totalbr-window
+#| eval: false
+
+totalbr_window_shape(2025, raw_dir = bra_totalbr_raw_dir)
+```
+
+It reports the quartiles of `dh_inicio − dh_eobt` and `dh_fim − dh_eobt` for each source
+separately. If the archive's median sits near −50 and the download's near zero, the shift is
+a property of the files and every cross-source figure that depends on it stands. If both
+medians are near zero, the shift is my measurement's doing and the pairing has to be redone.
+
 #### The shift, measured on matched flights
 
 ```{r}

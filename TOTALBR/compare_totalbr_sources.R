@@ -1162,6 +1162,56 @@ totalbr_lookup <- function(callsign,
   out
 }
 
+# =============================================================================
+# totalbr_window_shape(years, ...)
+#
+# What dh_inicio and dh_fim mean IN EACH SOURCE, measured without comparing the
+# sources at all.
+#
+# The 50-minute shift is easy to distrust, because a cross-source measurement can
+# always be a matching fault. This one cannot be: it compares dh_inicio and dh_fim
+# against dh_eobt WITHIN THE SAME ROW of the same file. If the archive's window
+# opens an hour before the filed time while the download's opens on top of it,
+# the two files mean different things by the column, and that conclusion needs no
+# pairing to hold.
+#
+# Sampled rows showed exactly that:
+#   download  dh_inicio  00:12:37  vs its own dh_eobt 00:15:00   ->  -2 min
+#   archive   dh_inicio  23:25:00  vs its own dh_eobt 00:23:00   -> -58 min
+# =============================================================================
+totalbr_window_shape <- function(years    = 2025,
+                                 raw_dir  = here::here("data-raw", "totalbr"),
+                                 date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+
+  one <- function(d, label) {
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+    ok <- !is.na(d$dh_eobt)
+    ini <- as.numeric(difftime(d$dh_inicio[ok], d$dh_eobt[ok], units = "mins"))
+    fim <- as.numeric(difftime(d$dh_fim[ok],    d$dh_eobt[ok], units = "mins"))
+    q <- function(x) stats::quantile(x, c(0.25, 0.5, 0.75), na.rm = TRUE)
+    tibble::tibble(
+      SOURCE = label,
+      ROWS   = sum(ok),
+      # minutes from the filed off-block time to the start of the row's window;
+      # negative means the window opens before the flight was due off blocks
+      INICIO_Q1 = round(q(ini)[1], 1),
+      INICIO_MED = round(q(ini)[2], 1),
+      INICIO_Q3 = round(q(ini)[3], 1),
+      FIM_Q1  = round(q(fim)[1], 1),
+      FIM_MED = round(q(fim)[2], 1),
+      FIM_Q3  = round(q(fim)[3], 1),
+      # how long the row's own window lasts
+      DURATION_MED = round(stats::median(fim - ini, na.rm = TRUE), 1)
+    )
+  }
+
+  out <- dplyr::bind_rows(one(sides$parquet, "archive"), one(sides$csv, "download"))
+  message("Minutes from dh_eobt to dh_inicio and dh_fim, WITHIN each row.\n",
+          "No cross-source comparison: each file is measured against itself.")
+  out
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
