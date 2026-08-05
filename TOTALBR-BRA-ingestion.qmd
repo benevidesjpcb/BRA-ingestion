@@ -400,6 +400,40 @@ Thirty-five rows do not matter to a national total. The definition does: it appl
 year and every table built from them, and until it was named, two functions in this
 repository could disagree by 233 rows with nothing on screen to explain it.
 
+### Where the 35 went
+
+Once the written clock is read as written, 2025 counts **2,109,623** against the published
+**2,109,588** — the +35 the reconciliation started from, and the only figure that survived
+all the zone corrections.
+
+Twenty-three of them are the file repeating itself:
+
+| | Archive (parquet) | API (csv) |
+| --- | --- | --- |
+| Rows, 2025 | 2,109,623 | 2,108,473 |
+| Identical `pk` | **23** | 0 |
+| Plan + movement | 9,352 | 47,357 |
+| Outright repeats | 6,209 | 6,439 |
+| Duplication, total | **0.74%** | 2.55% |
+| Plan rows | 3.1% | 8.1% |
+
+2,109,623 − 23 = 2,109,600, twelve above the published figure. Twelve rows in 2.1 million is
+0.0006%, and chasing it further needs the official definition rather than more code.
+
+Two things worth keeping from that table. **The API duplicates more than the archive** — 2.55%
+against 0.74% — but the archive carries a fault the API does not: 23 rows repeated hash and
+all. Each source is wrong in its own way, which is why "which source is better" has no answer
+and "which source for which figure" does.
+
+And an earlier speculation of mine was wrong: I had said the archive holds no plan rows, so
+rule 1 could never fire on it. It holds 65,846 of them, and 9,352 are paired with their own
+movement. The rules may well apply — that remains DECEA's call, and the guard on
+`totalbr_dedupe(source = "parquet")` stays until they say so.
+
+The gap in plan rows between the two files (170,808 against 65,846, about 105,000) is the
+right order of magnitude for the ~98,600 airline movements that looked download-only. That
+hypothesis now has a number on both sides instead of one.
+
 ## Duplication Check
 
 ICEA/DECEA have reported duplication in the ODIN data. The check applies the operational
