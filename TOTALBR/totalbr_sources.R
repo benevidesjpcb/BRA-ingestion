@@ -324,6 +324,82 @@ totalbr_year_count <- function(years       = NULL,
 }
 
 # =============================================================================
+# totalbr_year_boundary_rows(year, tz_offset_h, cols, raw_dir, date_col)
+#
+# The rows that CHANGE YEAR when the counting zone changes — the flights any
+# redefinition moves across the boundary, listed one by one.
+#
+# A word on what this can and cannot answer. The gap against the published figure
+# is a NET: our 2,109,631 against their 2,109,588 is +43, which could be 43 rows
+# too many, or 500 too many and 457 too few. Without the official list row by row
+# there is no set of "43 flights" to point at, and any list claiming to be one
+# would be invented.
+#
+# What is real and inspectable is this population: rows whose year depends on the
+# zone. On a boundary of three hours it is a few hundred flights, small enough to
+# read, and the 43 are somewhere inside it.
+# =============================================================================
+totalbr_year_boundary_rows <- function(year        = 2025,
+                                       tz_offset_h = -3,
+                                       cols        = c("co_indicativo", "co_addep",
+                                                       "co_addes", "co_matricula",
+                                                       "pk"),
+                                       raw_dir     = here::here("data-raw", "totalbr"),
+                                       date_col    = "dt_dia") {
+  src <- totalbr_sources(raw_dir)
+  out <- purrr::map(c(src$parquet, src$csv), function(path) {
+    want <- unique(c(date_col, "dh_inicio", "dh_fim", cols))
+    d <- if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!all(want %in% names(ds))) return(NULL)
+      dplyr::collect(dplyr::select(ds, dplyr::all_of(want)))
+    } else {
+      head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
+                                 showProgress = FALSE)
+      if (!all(want %in% names(head1))) return(NULL)
+      tibble::as_tibble(
+        data.table::fread(file = path, sep = ";", select = want,
+                          colClasses = "character", na.strings = "",
+                          showProgress = FALSE))
+    }
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+    to_t <- function(v) {
+      if (inherits(v, "POSIXct")) { attr(v, "tzone") <- "UTC"; return(v) }
+      as.POSIXct(sub("T", " ", as.character(v), fixed = TRUE), tz = "UTC")
+    }
+    v  <- to_t(d[[date_col]])
+    y1 <- format(v, "%Y", tz = "UTC")
+    y2 <- format(v + tz_offset_h * 3600, "%Y", tz = "UTC")
+    keep <- !is.na(y1) & !is.na(y2) & y1 != y2 &
+            (y1 == as.character(year) | y2 == as.character(year))
+    if (!any(keep)) return(NULL)
+    d <- d[which(keep), ]
+    tibble::tibble(
+      SOURCE = basename(path),
+      YEAR_UTC   = y1[keep],
+      YEAR_LOCAL = y2[keep],
+      # which way it moves: INTO the year under local time, or OUT of it
+      MOVES = ifelse(y2[keep] == as.character(year), "into", "out of"),
+      DT_DIA    = format(v[keep], "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_inicio = format(to_t(d$dh_inicio), "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      dh_fim    = format(to_t(d$dh_fim),    "%Y-%m-%d %H:%M:%S", tz = "UTC")) |>
+      dplyr::bind_cols(d[, intersect(cols, names(d)), drop = FALSE])
+  }) |> purrr::list_rbind()
+
+  if (is.null(out) || nrow(out) == 0) {
+    message("No row changes year between UTC and UTC", sprintf("%+d", tz_offset_h),
+            " for ", year, ".")
+    return(tibble::tibble())
+  }
+  message(nrow(out), " row(s) change year: ",
+          sum(out$MOVES == "into"), " move into ", year, ", ",
+          sum(out$MOVES == "out of"), " move out. Net ",
+          sprintf("%+d", sum(out$MOVES == "into") - sum(out$MOVES == "out of")),
+          ".")
+  dplyr::arrange(out, SOURCE, DT_DIA)
+}
+
+# =============================================================================
 # totalbr_year_edges(year, hours, raw_dir, date_col)
 #
 # The rows sitting within `hours` of a year boundary — the ones any change of
