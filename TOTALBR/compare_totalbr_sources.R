@@ -1076,56 +1076,90 @@ totalbr_unmatched_nearest <- function(years     = 2025,
 }
 
 # =============================================================================
-# totalbr_lookup(callsign, day, years, ...)
+# totalbr_lookup(callsign, day, window_days, tol_min, shift_min, ...)
 #
-# Every row from BOTH sources for one callsign on one day, side by side. No
-# matching, no key, no pairing — just what each file contains.
+# Every row from BOTH sources for one callsign, with the pairing this code
+# actually made: which row was matched to which, and by how many minutes.
 #
-# This is the audit tool. When the comparison says a flight is in one source and
-# not the other, this is how to check that claim without trusting any of the code
-# above it: look the flight up directly and see. If it appears on both sides here
-# while the comparison called it one-sided, the fault is in the matching and worth
-# reporting; if it appears on one side only, the difference is real.
+# Two things it does that a plain filter must not omit, both learned by getting
+# them wrong:
+#
+#   IT WIDENS THE DAY. The archive stamps dh_inicio 50 minutes earlier, so a
+#   rotation the download files at 00:12 sits at 23:22 of the PREVIOUS day in the
+#   archive. Filtering both sources to one calendar day therefore shows the
+#   download's first rotation beside the archive's LAST one — two different
+#   flights, side by side, looking like a comparison. They were never compared.
+#   The window is +/- window_days so the real counterpart is on screen.
+#
+#   IT SHOWS THE PAIRING. PAIR groups the rows this code treats as one flight and
+#   GAP_MIN is their separation after the shift; PAIR of NA means the row was left
+#   unmatched. Without it the reader has to guess what was compared, which is how
+#   two unrelated rotations came to be read as a mismatch.
 #
 #   totalbr_lookup("TAM3756", "2025-03-14")
 # =============================================================================
 totalbr_lookup <- function(callsign,
-                           day      = NULL,
-                           years    = NULL,
-                           raw_dir  = here::here("data-raw", "totalbr"),
-                           date_col = "dt_dia") {
-  if (is.null(years) && !is.null(day)) years <- substr(day, 1, 4)
+                           day         = NULL,
+                           window_days = 1L,
+                           tol_min     = 120,
+                           shift_min   = 50,
+                           years       = NULL,
+                           raw_dir     = here::here("data-raw", "totalbr"),
+                           date_col    = "dt_dia") {
+  if (is.null(years) && !is.null(day))
+    years <- unique(format(as.Date(day) + c(-1, 0, 1), "%Y"))
   sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+
+  days <- if (is.null(day)) NULL
+          else format(rep(as.Date(day), each = 2 * window_days + 1) +
+                        seq(-window_days, window_days), "%Y-%m-%d")
 
   pick <- function(d, src) {
     keep <- d$co_indicativo %in% callsign
-    if (!is.null(day))
-      keep <- keep & format(d$dh_inicio, "%Y-%m-%d", tz = "UTC") %in% day
-    if (!any(keep)) return(NULL)
-    d <- d[keep, ]
+    if (!is.null(days))
+      keep <- keep & format(d$dh_inicio, "%Y-%m-%d", tz = "UTC") %in% days
+    if (!any(keep, na.rm = TRUE)) return(NULL)
+    d <- d[which(keep), ]
     tibble::tibble(
       SOURCE = src, co_indicativo = d$co_indicativo,
       co_addep = d$co_addep, co_addes = d$co_addes,
-      dh_inicio = format(d$dh_inicio, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
-      dh_fim    = format(d$dh_fim,    "%Y-%m-%d %H:%M:%S", tz = "UTC"),
-      dh_eobt   = format(d$dh_eobt,   "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      # the archive's clock, moved by the measured shift, is what the pairing
+      # compares — so it is what the table shows
+      T_ALIGNED = if (src == "parquet") d$dh_inicio + shift_min * 60 else d$dh_inicio,
+      dh_inicio = d$dh_inicio, dh_fim = d$dh_fim, dh_eobt = d$dh_eobt,
       co_matricula = d$co_matricula, co_modelo = d$co_modelo, pk = d$pk)
   }
-  out <- dplyr::bind_rows(pick(sides$parquet, "parquet"),
-                          pick(sides$csv, "csv"))
-  if (is.null(out) || nrow(out) == 0) {
-    message("Neither source has ", paste(callsign, collapse = ", "),
-            if (!is.null(day)) paste0(" on ", paste(day, collapse = ", ")) else "")
+  a <- pick(sides$parquet, "parquet"); b <- pick(sides$csv, "csv")
+  if (is.null(a) && is.null(b)) {
+    message("Neither source has ", paste(callsign, collapse = ", "))
     return(tibble::tibble())
   }
-  # a day filter on dh_inicio is itself subject to the 50-minute shift, so a
-  # flight can sit on the previous day in one source; say so rather than let the
-  # lookup repeat the mistake the comparison had to be fixed for
-  if (!is.null(day) && dplyr::n_distinct(out$SOURCE) == 1)
-    message("Only one source matched. The archive stamps dh_inicio 50 minutes ",
-            "earlier, so a flight near midnight can fall on the previous day — ",
-            "try the neighbouring day, or call without `day`.")
-  dplyr::arrange(out, dh_inicio, SOURCE)
+
+  # the same pairing rule the comparison uses, on these rows only
+  pair <- if (!is.null(a) && !is.null(b)) {
+    k <- function(d) paste(d$co_addep, d$co_addes, sep = "")
+    totalbr_pair_nearest(k(a), a$T_ALIGNED, k(b), b$T_ALIGNED, tol_min)
+  } else data.table::data.table(A_ID = integer(), B_ID = integer(),
+                                DIFF_MIN = numeric())
+
+  if (!is.null(a)) { a$PAIR <- NA_integer_; a$GAP_MIN <- NA_real_ }
+  if (!is.null(b)) { b$PAIR <- NA_integer_; b$GAP_MIN <- NA_real_ }
+  if (nrow(pair) > 0) {
+    a$PAIR[pair$A_ID] <- seq_len(nrow(pair))
+    b$PAIR[pair$B_ID] <- seq_len(nrow(pair))
+    a$GAP_MIN[pair$A_ID] <- round(pair$DIFF_MIN, 1)
+    b$GAP_MIN[pair$B_ID] <- round(pair$DIFF_MIN, 1)
+  }
+
+  out <- dplyr::bind_rows(a, b) |>
+    dplyr::mutate(dplyr::across(c(T_ALIGNED, dh_inicio, dh_fim, dh_eobt),
+                                ~ format(.x, "%Y-%m-%d %H:%M:%S", tz = "UTC"))) |>
+    dplyr::arrange(!is.na(PAIR), PAIR, T_ALIGNED)
+
+  message(sum(!is.na(out$PAIR)) / 2, " pair(s); ",
+          sum(is.na(out$PAIR)), " row(s) with no counterpart within ",
+          tol_min, " minutes.")
+  out
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------

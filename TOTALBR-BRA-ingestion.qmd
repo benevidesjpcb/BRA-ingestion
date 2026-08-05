@@ -1233,12 +1233,34 @@ checked outside this code before being reported anywhere.
 totalbr_lookup("TAM3756", "2025-03-14", raw_dir = bra_totalbr_raw_dir)
 ```
 
-Every row from both sources for one callsign on one day. No key, no pairing, no tolerance —
-just what each file contains. Take a flight the comparison called one-sided and look it up:
+Every row from both sources for one callsign, with **the pairing this code actually made**:
+`PAIR` groups the rows treated as one flight, `GAP_MIN` is their separation after the shift,
+and `PAIR` of `NA` means the row was left unmatched. `T_ALIGNED` is the archive's clock moved
+by the measured 50 minutes — the value the comparison works on.
 
-- **it appears on both sides** — the matching is at fault, and that is worth knowing before
-  anything is sent to ICEA;
-- **it appears on one side only** — the difference is real.
+The first version of this lookup filtered both sources to one calendar day and showed this:
+
+```
+SOURCE   co_indicativo  dh_inicio            co_matricula  co_modelo
+csv      TAM3756        2025-03-14 00:12:37  PRTYT         A320
+parquet  TAM3756        2025-03-14 23:25:00  PTXPI         A321
+```
+
+Two different rotations, different airframes, twenty-three hours apart — presented as though
+they were a comparison. They never were: the pairing groups on callsign and route with a
+120-minute tolerance, so it had not put those two together at all. The archive's `23:25`
+belongs to the download's rotation on the **15th** (23:25 + 50 min = 00:15 next day), and the
+download's `00:12` belongs to the archive's on the **13th**.
+
+The day filter was the fault, and it was the same mistake `flight_day` had already been
+retired for: filtering on a stamp that differs by 50 minutes between the sources cuts each
+flight's counterpart out of view. The lookup now spans ±1 day and reports the pairing, so what
+is on screen is what was compared.
+
+Take a flight the comparison called one-sided and look it up:
+
+- **`PAIR` filled on both rows** — they were matched; nothing is one-sided.
+- **`PAIR` empty and no counterpart in the window** — the difference is real.
 
 Given how many of the numbers in this section turned out to be artefacts of a method before
 the method was fixed, that check is not optional for anything that leaves the repository.
