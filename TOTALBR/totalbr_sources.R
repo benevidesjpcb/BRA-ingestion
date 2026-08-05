@@ -154,6 +154,108 @@ totalbr_day_counts <- function(raw_dir  = here::here("data-raw", "totalbr"),
 }
 
 # =============================================================================
+# totalbr_year_count(years, official, tz_offset_h, raw_dir, date_col)
+#
+# How many rows each year holds, under EVERY plausible definition of "the year" —
+# because the answer differs and only one of them reproduces the official figure.
+#
+# Brazil publishes 2,109,588 controlled flights for 2025; this repository counts
+# 2,109,623 in the archive, 35 more. A gap that small is a boundary, not a data
+# difference, and there are four candidates for where the boundary sits:
+#
+#   dt_dia in UTC          what the pipeline uses today
+#   dt_dia in local time   UTC-3: the first three hours of 1 January UTC are
+#                          still 31 December in Brazil
+#   dh_inicio in UTC       the movement rather than the reference day
+#   dh_inicio in local
+#
+# Whichever column and zone reproduce the published number is the definition the
+# study should adopt — and it should be adopted deliberately, not inherited from
+# whichever column a script happened to filter on.
+# =============================================================================
+totalbr_year_count <- function(years       = NULL,
+                               official    = NULL,
+                               tz_offset_h = -3,
+                               raw_dir     = here::here("data-raw", "totalbr"),
+                               date_col    = "dt_dia") {
+  src <- totalbr_sources(raw_dir)
+
+  one <- function(path) {
+    want <- c(date_col, "dh_inicio")
+    d <- if (grepl("\\.parquet$", path)) {
+      ds <- arrow::open_dataset(path)
+      if (!all(want %in% names(ds))) return(NULL)
+      dplyr::collect(dplyr::select(ds, dplyr::all_of(want)))
+    } else {
+      head1 <- data.table::fread(file = path, sep = ";", nrows = 0,
+                                 showProgress = FALSE)
+      if (!all(want %in% names(head1))) return(NULL)
+      tibble::as_tibble(
+        data.table::fread(file = path, sep = ";", select = want,
+                          colClasses = "character", na.strings = "",
+                          showProgress = FALSE))
+    }
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+    to_t <- function(v) {
+      if (inherits(v, "POSIXct")) { attr(v, "tzone") <- "UTC"; return(v) }
+      as.POSIXct(sub("T", " ", as.character(v), fixed = TRUE), tz = "UTC")
+    }
+    dtd <- to_t(d[[date_col]]); ini <- to_t(d$dh_inicio)
+    off <- tz_offset_h * 3600
+    dplyr::bind_rows(
+      tibble::tibble(SOURCE = basename(path), DEFINITION = "dt_dia (UTC)",
+                     YEAR = format(dtd, "%Y", tz = "UTC")),
+      tibble::tibble(SOURCE = basename(path),
+                     DEFINITION = sprintf("dt_dia (UTC%+d)", tz_offset_h),
+                     YEAR = format(dtd + off, "%Y", tz = "UTC")),
+      tibble::tibble(SOURCE = basename(path), DEFINITION = "dh_inicio (UTC)",
+                     YEAR = format(ini, "%Y", tz = "UTC")),
+      tibble::tibble(SOURCE = basename(path),
+                     DEFINITION = sprintf("dh_inicio (UTC%+d)", tz_offset_h),
+                     YEAR = format(ini + off, "%Y", tz = "UTC")))
+  }
+
+  all <- dplyr::bind_rows(Filter(Negate(is.null),
+                                 lapply(c(src$parquet, src$csv), one)))
+  if (nrow(all) == 0) return(tibble::tibble())
+
+  out <- all |>
+    dplyr::filter(!is.na(YEAR)) |>
+    dplyr::count(SOURCE, DEFINITION, YEAR, name = "ROWS")
+  if (!is.null(years))
+    out <- dplyr::filter(out, YEAR %in% as.character(years))
+  if (!is.null(official))
+    out <- dplyr::mutate(out, OFFICIAL = official,
+                         DIFF = ROWS - official)
+  dplyr::arrange(out, SOURCE, YEAR, DEFINITION)
+}
+
+# =============================================================================
+# totalbr_year_edges(year, hours, raw_dir, date_col)
+#
+# The rows sitting within `hours` of a year boundary — the ones any change of
+# definition moves from one year to the other. When a count is off by a few dozen,
+# this is the population it can be off by, and it is small enough to read.
+# =============================================================================
+totalbr_year_edges <- function(year     = 2025,
+                               hours    = 3,
+                               raw_dir  = here::here("data-raw", "totalbr"),
+                               date_col = "dt_dia") {
+  counts <- totalbr_day_counts(raw_dir, date_col)
+  if (nrow(counts) == 0) return(tibble::tibble())
+  # day granularity is enough to show whether the edges are populated at all
+  edge_days <- c(sprintf("%d-01-01", year), sprintf("%d-12-31", year),
+                 sprintf("%d-12-31", year - 1), sprintf("%d-01-01", year + 1))
+  counts |>
+    dplyr::filter(DATE %in% edge_days) |>
+    dplyr::arrange(SOURCE, DATE) |>
+    dplyr::mutate(NOTE = dplyr::case_when(
+      DATE == sprintf("%d-01-01", year + 1) ~ "next year: first hours UTC are 31 Dec in Brazil",
+      DATE == sprintf("%d-12-31", year - 1) ~ "previous year: last hours UTC are 1 Jan in Brazil",
+      TRUE ~ "inside the year"))
+}
+
+# =============================================================================
 # totalbr_count_by(cols, ...)
 #
 # Movement counts grouped by YEAR plus the given columns, across every source.

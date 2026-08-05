@@ -308,6 +308,42 @@ source(here::here("TOTALBR", "download_totalbr.R"))
 download_totalbr(<the offending years>, out_dir = bra_totalbr_raw_dir, force = TRUE)
 ```
 
+## Reconciling With the Official Figure
+
+Brazil publishes **2,109,588** controlled flights for 2025. The archive here counts
+**2,109,623** — 35 more. A gap that small is not a data difference; it is a boundary, and the
+question is which definition of "the year" the published number uses.
+
+There are four candidates, and they disagree by exactly the kind of margin seen here:
+
+| Definition | Why it differs |
+| --- | --- |
+| `dt_dia` in UTC | what this pipeline filters on today |
+| `dt_dia` in local time (UTC−3) | the first three hours of 1 January UTC are still 31 December in Brazil |
+| `dh_inicio` in UTC | the movement rather than the reference day |
+| `dh_inicio` in local time | both differences at once |
+
+```{r}
+#| label: tbl-bra-totalbr-year-count
+#| eval: false
+
+source(here::here("TOTALBR", "totalbr_sources.R"))
+
+totalbr_year_count(2025, official = 2109588, raw_dir = bra_totalbr_raw_dir)
+totalbr_year_edges(2025, raw_dir = bra_totalbr_raw_dir)
+```
+
+`totalbr_year_count()` reports the row count under all four, with `DIFF` against the official
+figure; `totalbr_year_edges()` shows the days at the year boundaries, which is the population
+any change of definition can move.
+
+The archive is already known to spill into **2026-01-01** in the first hours UTC — the evening
+of 31 December in Brazil — so a local-time definition is the leading candidate. Whichever
+reproduces 2,109,588 is the one the study should adopt, and it should be adopted **explicitly**
+rather than inherited from whichever column a script happened to filter on. Thirty-five rows
+do not matter to a national total; the definition does, because it applies to every year and
+every table built from them.
+
 ## Duplication Check
 
 ICEA/DECEA have reported duplication in the ODIN data. The check applies the operational
