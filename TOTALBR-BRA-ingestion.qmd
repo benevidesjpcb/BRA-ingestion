@@ -847,6 +847,27 @@ KAL274        SBKP     SCEL      2024-01-01 01:01:59  2024-01-01 00:51:59
 Well-formed on both sides, so the hash is source-specific, not mangled in reading. `pk`
 cannot be used across sources and the zero match is expected, not a defect.
 
+#### Testing the obvious hypothesis first: match on `pk`
+
+The natural rule is "the same row is the same `pk`; where it does not match, look at the
+times". Whether that rule is available at all is a question about the files, and it is
+answered by a set intersection with no matching logic anywhere near it:
+
+```{r}
+#| label: compare-bra-totalbr-pk-overlap
+#| eval: false
+
+totalbr_pk_overlap(2025, raw_dir = bra_totalbr_raw_dir)
+```
+
+It reports the overlap raw, trimmed and case-folded, so a formatting difference cannot be
+mistaken for a real one — the archive writes the hash uppercase and the API lowercase, which
+on its own would show zero overlap for a trivial reason.
+
+If the case-folded overlap is zero while both sides are well-formed 32-character hex, the
+hash is computed per source: same flight, different value. The rule then collapses into
+"compare the times for every row", because there is no row that `pk` can match.
+
 #### Is the 50 minutes real, or a matching artefact?
 
 A cross-source measurement can always be the matching's own fault, so the shift is worth

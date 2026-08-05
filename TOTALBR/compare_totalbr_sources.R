@@ -1212,6 +1212,56 @@ totalbr_window_shape <- function(years    = 2025,
   out
 }
 
+# =============================================================================
+# totalbr_pk_overlap(years, ...)
+#
+# Does pk ever match between the two files? Set intersection, nothing else — no
+# key, no pairing, no tolerance, no normalisation beyond what is shown.
+#
+# It reports the overlap three ways so a formatting difference cannot be mistaken
+# for a real one: raw, trimmed, and case-folded. If the case-folded overlap is
+# zero while both sides are well-formed 32-character hex, the hash is computed per
+# source and cannot identify a flight across them — which makes "match on pk,
+# and compare dh_inicio where it does not match" collapse into "compare dh_inicio
+# for every row".
+# =============================================================================
+totalbr_pk_overlap <- function(years    = 2025,
+                               raw_dir  = here::here("data-raw", "totalbr"),
+                               date_col = "dt_dia") {
+  sides <- totalbr_cmp_sides(years, raw_dir, date_col)
+  # NOTE: totalbr_normalise() has already upper-cased pk on read, so the raw
+  # comparison below is against that. The point of the three rows is to show that
+  # no amount of tidying creates an overlap.
+  a <- sides$parquet$pk; b <- sides$csv$pk
+
+  row <- function(label, x, y) tibble::tibble(
+    COMPARISON = label,
+    ARCHIVE_DISTINCT = dplyr::n_distinct(x),
+    DOWNLOAD_DISTINCT = dplyr::n_distinct(y),
+    IN_BOTH = length(intersect(unique(x), unique(y))))
+
+  out <- dplyr::bind_rows(
+    row("as read", a, b),
+    row("trimmed", trimws(a), trimws(b)),
+    row("case-folded", toupper(trimws(a)), tolower(trimws(b)) |> toupper()))
+  print(as.data.frame(out))
+
+  message("\nShape of pk on each side:")
+  shape <- function(v, label) {
+    v <- v[!is.na(v) & nzchar(v)]
+    tibble::tibble(SIDE = label, NCHAR_MIN = min(nchar(v)),
+                   NCHAR_MAX = max(nchar(v)),
+                   ALL_HEX = all(grepl("^[0-9A-Fa-f]+$", head(v, 200000))),
+                   EXAMPLE = v[1])
+  }
+  print(as.data.frame(dplyr::bind_rows(shape(a, "archive"), shape(b, "download"))))
+
+  if (out$IN_BOTH[3] == 0)
+    message("\npk never matches. Any comparison between these files has to be ",
+            "built on the flight's own attributes, not on the row hash.")
+  invisible(out)
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({
