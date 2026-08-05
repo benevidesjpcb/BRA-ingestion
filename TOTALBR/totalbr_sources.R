@@ -59,6 +59,20 @@ totalbr_sources <- function(raw_dir = here::here("data-raw", "totalbr"),
   list(parquet = parquet, csv = csv, parts = parts)
 }
 
+# THE ZONE A COUNT IS TAKEN IN, stated once and used everywhere.
+#
+# The parquet archive stores its time columns as timestamp[us, tz=Europe/Paris].
+# That zone says where the FILE WAS WRITTEN, not anything about Brazilian
+# traffic — and it silently decided results: arrow computes lubridate::year() in
+# the field's own zone, so a scan that let it do the work counted 2025 in Paris
+# time (2,109,623 rows) while a scan that collected the column and formatted it
+# in UTC counted 2,109,856. Two functions, one file, 233 rows apart, with nothing
+# on screen to say why.
+#
+# Every derivation of a year or a day now names its zone. Change it here, not by
+# whichever engine happened to evaluate the expression.
+TOTALBR_TZ <- "UTC"
+
 # ---- deriving YEAR / DAY from the date column, in arrow or in R -------------
 # The date column may be a timestamp or text, and the two need different
 # expressions. Built with rlang symbols rather than the .data pronoun because
@@ -69,13 +83,35 @@ totalbr_is_text_date <- function(ds, date_col) {
         ds$schema$GetFieldByName(date_col)$type$ToString(), ignore.case = TRUE)
 }
 
-totalbr_add_year_day <- function(q, date_col, is_text, day = FALSE) {
+totalbr_add_year_day <- function(q, date_col, is_text, day = FALSE,
+                                 tz = TOTALBR_TZ) {
   s <- rlang::sym(date_col)
-  q <- if (is_text) dplyr::mutate(q, YEAR = substr(!!s, 1, 4))
-       else dplyr::mutate(q, YEAR = as.character(lubridate::year(!!s)))
-  if (day)
-    q <- if (is_text) dplyr::mutate(q, DAY = substr(!!s, 1, 10))
-         else         dplyr::mutate(q, DAY = as.character(as.Date(!!s)))
+  if (is_text) {
+    # text is already an ISO string; there is no zone to honour or ignore
+    q <- dplyr::mutate(q, YEAR = substr(!!s, 1, 4))
+    if (day) q <- dplyr::mutate(q, DAY = substr(!!s, 1, 10))
+    return(q)
+  }
+  # A stored timestamp carries a zone, and arrow will use it unless told
+  # otherwise. with_tz() moves the instant into the zone we chose to count in;
+  # if this arrow build has no binding for it, fall back to the field's own zone
+  # and SAY SO, rather than return a number whose meaning is unstated.
+  shifted <- tryCatch({
+    qq <- dplyr::mutate(q, .TZ_AT = lubridate::with_tz(!!s, tzone = tz))
+    dplyr::compute(utils::head(qq, 1))   # force it: with_tz may fail lazily
+    qq
+  }, error = function(e) {
+    message("  (this arrow build cannot shift the timezone: counting in the ",
+            "field's own zone, not ", tz, ")")
+    NULL
+  })
+  if (is.null(shifted)) {
+    q <- dplyr::mutate(q, YEAR = as.character(lubridate::year(!!s)))
+    if (day) q <- dplyr::mutate(q, DAY = as.character(as.Date(!!s)))
+    return(q)
+  }
+  q <- dplyr::mutate(shifted, YEAR = as.character(lubridate::year(.TZ_AT)))
+  if (day) q <- dplyr::mutate(q, DAY = as.character(as.Date(.TZ_AT)))
   q
 }
 

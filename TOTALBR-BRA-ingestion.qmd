@@ -337,12 +337,38 @@ totalbr_year_edges(2025, raw_dir = bra_totalbr_raw_dir)
 figure; `totalbr_year_edges()` shows the days at the year boundaries, which is the population
 any change of definition can move.
 
-The archive is already known to spill into **2026-01-01** in the first hours UTC — the evening
-of 31 December in Brazil — so a local-time definition is the leading candidate. Whichever
-reproduces 2,109,588 is the one the study should adopt, and it should be adopted **explicitly**
-rather than inherited from whichever column a script happened to filter on. Thirty-five rows
-do not matter to a national total; the definition does, because it applies to every year and
-every table built from them.
+#### The archive is stamped in Paris time
+
+```
+COLUMN     TYPE
+dt_dia     timestamp[us, tz=Europe/Paris]
+dh_inicio  timestamp[us, tz=Europe/Paris]
+dh_fim     timestamp[us, tz=Europe/Paris]
+```
+
+Every time column in the parquet carries **Europe/Paris**. That records where the file was
+written, not anything about Brazilian traffic — and it had been deciding results without
+appearing anywhere. arrow evaluates `lubridate::year()` in the field's own zone, so a scan
+that pushed the work down counted 2025 in Paris time while a scan that collected the column
+and formatted it in UTC counted it in UTC. Same file, same year, same column:
+
+| Zone the year was counted in | 2025 | vs official |
+| --- | --- | --- |
+| Europe/Paris (the file's own label) | 2,109,623 | **+35** |
+| UTC | 2,109,856 | +268 |
+| UTC−3 (Brazil) | 2,109,631 | +43 |
+
+The original 35-row gap came from the Paris reading — an accident of where the archive was
+produced, not a choice anyone made.
+
+Every derivation of a year or a day now names its zone explicitly (`TOTALBR_TZ`, UTC by
+default) and shifts the instant into it, instead of inheriting whatever the engine decided.
+Where an arrow build cannot shift zones, it says so rather than returning a number whose
+meaning is unstated.
+
+Thirty-five rows do not matter to a national total. The definition does: it applies to every
+year and every table built from them, and until it was named, two functions in this
+repository could disagree by 233 rows with nothing on screen to explain it.
 
 ## Duplication Check
 
