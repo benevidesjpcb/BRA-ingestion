@@ -18,19 +18,20 @@
 # only the missing months are fetched.
 #
 # ---------------------------------------------------------------------------
-# TWO THINGS HAVE TO BE NAMED BEFORE THIS CAN RUN, and neither is guessed here.
+# The table is `dstaxi` — the same ODIN API as KPI08 and TOTALBR, with the table
+# name swapped. Confirmed by DECEA, so it is the default here.
 #
-#   TAXI_TABLE     which ODIN table holds the taxi source
-#   TAXI_DATE_COL  which column the month windows filter on
+# THE DATE COLUMN IS STILL NOT GUESSED. A wrong table announces itself with an
+# HTTP error; a wrong date column returns the WRONG MONTHS with no error at all,
+# and the mistake surfaces much later as a coverage hole nobody can explain. One
+# request settles it:
 #
-# A wrong table wastes a download; a wrong date column silently returns the wrong
-# months. Both are discoverable in one request each — odin_tables() lists what
-# the API exposes and odin_probe() shows a table's columns — so the function asks
-# rather than assumes, and prints the candidates when either is missing.
+#   odin_probe("dstaxi")                        # the columns, date-like flagged
+#   Sys.setenv(TAXI_DATE_COL = "<column>")      # or put it in .Renviron
 #
-# Once known, set them for the session:
-#   Sys.setenv(TAXI_TABLE = "...", TAXI_DATE_COL = "...")
-# or permanently in .Renviron, beside the token.
+# Taxi time needs both ends of the movement, so the column that anchors a flight
+# to a month has to be chosen deliberately — an arrival-only stamp would drop
+# every departure from the window it belongs to.
 # ---------------------------------------------------------------------------
 # =============================================================================
 
@@ -39,7 +40,9 @@ source(here::here("ODIN", "download_odin.R"))
 
 download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
                           out_dir  = here::here("data-raw"),
-                          table    = Sys.getenv("TAXI_TABLE",    unset = ""),
+                          # confirmed by DECEA: the same ODIN API as the other
+                          # datasets, with `dstaxi` in place of `total_brasil`
+                          table    = Sys.getenv("TAXI_TABLE", unset = "dstaxi"),
                           date_col = Sys.getenv("TAXI_DATE_COL", unset = ""),
                           id_col   = Sys.getenv("TAXI_ID_COL",   unset = "id"),
                           dedup_col = {
@@ -47,15 +50,6 @@ download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
                             if (nzchar(x)) x else NULL
                           },
                           force    = FALSE) {
-
-  # ---- which table? -------------------------------------------------------
-  if (!nzchar(table)) {
-    message("TAXI_TABLE is not set. The API exposes:")
-    tb <- odin_tables()
-    if (length(tb) > 0) print(tb)
-    stop("Pick the taxi table and set it: Sys.setenv(TAXI_TABLE = \"<name>\").\n",
-         "  Guessing it here would cost a download to find out it was wrong.")
-  }
 
   # ---- which date column? -------------------------------------------------
   if (!nzchar(date_col)) {

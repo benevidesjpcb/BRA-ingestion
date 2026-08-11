@@ -32,19 +32,15 @@ their files from `data-raw/` and do not care how they got there.
 Years you already hold as `dsTaxiYYYY.csv` stay where they are; the downloader inspects what
 each covers and fetches **only the missing months**.
 
-### Name the table and the date column first
+### Name the date column first
 
-Two things have to be known before the first download, and neither is guessed:
+The table is **`dstaxi`** — the same ODIN API as KPI08 and TOTALBR with the table name
+swapped, confirmed by DECEA — so it is the default and needs no setting.
 
-| Setting | What it is | How to find it |
-| --- | --- | --- |
-| `TAXI_TABLE` | which ODIN table holds the taxi source | `odin_tables()` |
-| `TAXI_DATE_COL` | which column the month windows filter on | `odin_probe(table)` |
-
-A wrong table costs a download to discover. A wrong date column is worse: it returns the
-wrong months **without any error**, and the mistake only surfaces later as a coverage gap
-nobody can explain. Both are one request away, so `download_taxi()` refuses to run until
-they are set and prints the candidates instead.
+The **date column is not guessed**, and the asymmetry is the reason: a wrong table announces
+itself with an HTTP error, while a wrong date column returns the **wrong months with no error
+at all**, surfacing much later as a coverage hole nobody can explain. One request settles it,
+so `download_taxi()` stops until it is named and shows the candidates:
 
 ```{r}
 #| label: discover-bra-taxi-api
@@ -52,13 +48,13 @@ they are set and prints the candidates instead.
 
 source(here::here("TAXI", "download_taxi.R"))
 
-odin_tables()            # what the API exposes
-odin_probe("<table>")    # its columns, with the date-like ones flagged
-
-Sys.setenv(TAXI_TABLE = "<table>", TAXI_DATE_COL = "<column>")
+odin_probe("dstaxi")     # its columns, with the date-like ones flagged
+Sys.setenv(TAXI_DATE_COL = "<column>")
 ```
 
-Set them permanently in `.Renviron`, beside the token, once they are confirmed.
+Choose it deliberately: taxi time needs **both ends** of the movement, and a stamp that only
+exists for arrivals would drop every departure from the window it belongs to. Put it in
+`.Renviron` beside the token once confirmed.
 
 ### Download
 

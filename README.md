@@ -36,8 +36,7 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 2. **Provide the source data**, in any of three ways:
    - download it: `source(here::here("TAXI", "download_taxi.R")); download_taxi(dsTaxi_years)`
      — one file per year into `data-raw/`, resuming whatever is already there. Set
-     `TAXI_TABLE` and `TAXI_DATE_COL` first; `odin_tables()` and `odin_probe()` find them,
-     **or**
+     `TAXI_DATE_COL` first; `odin_probe("dstaxi")` shows the candidates, **or**
    - copy `dsTaxi2023.csv`, `dsTaxi2024.csv`, `dsTaxi2025.csv` into `data-raw/`, **or**
    - set the environment variable `BRA_TAXI_ZIP` to a zip archive that contains them.
 3. **Run the preparation.** The `prepare-bra-taxi-data` chunk is `eval: false`
@@ -56,7 +55,7 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `BRA_TAXI_ZIP` | Path to a zip archive holding the `dsTaxiYYYY.csv` files | unset → read from `data-raw/` |
-| `TAXI_TABLE` | The ODIN table holding the taxi source. No default: a wrong guess costs a download | unset → `download_taxi()` lists the tables and stops |
+| `TAXI_TABLE` | The ODIN table holding the taxi source | `dstaxi` |
 | `TAXI_DATE_COL` | The column the month windows filter on. No default: a wrong one returns the wrong months with no error | unset → `download_taxi()` shows the columns and stops |
 | `BRA_REPORT_DATA` | Data directory of the sibling report project that receives the combined analytic CSVs | this project's `data/` |
 
@@ -192,7 +191,7 @@ wrapper per dataset supplying only what differs:
 | Dataset | Wrapper | Table | Date column | Unique key |
 | --- | --- | --- | --- | --- |
 | KPI08 (ASMA) | `KPI08/download_kpi08.R` | `kpi08` | `aldt` | `id` + `c` (the ASMA ring) |
-| Taxi time | `TAXI/download_taxi.R` | `TAXI_TABLE` (set it) | `TAXI_DATE_COL` (set it) | `id` |
+| Taxi time | `TAXI/download_taxi.R` | `dstaxi` | `TAXI_DATE_COL` (set it) | `id` |
 | TOTALBR | `TOTALBR/download_totalbr.R` | `total_brasil` | `dt_dia` | `pk` |
 
 The engine fetches **one month per request window**, saves each month as it arrives so an
@@ -251,10 +250,10 @@ never repairs, because which copy to keep is DECEA's decision.
 > row on two pages or on none. The order now includes the unique id, so the pages partition
 > the window. Parts downloaded before this may carry duplicates of our own making.
 
-The taxi row deliberately has no defaults. Its table and date column are discovered, not
-guessed: `odin_tables()` lists what the API exposes and `odin_probe()` shows a table's
-columns, and `download_taxi()` refuses to run until both are named. A wrong table costs a
-download; a wrong date column returns the wrong months with no error at all.
+The taxi row deliberately has no default date column. A wrong table announces itself with an
+HTTP error, but a wrong date column returns the wrong months with **no error at all**, so
+`download_taxi()` stops until it is named and shows the candidates via `odin_probe()`.
+`odin_tables()` lists everything the API exposes, for when a new dataset appears.
 
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:
