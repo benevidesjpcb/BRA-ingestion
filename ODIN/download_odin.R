@@ -117,6 +117,49 @@ odin_tables <- function() {
   out
 }
 
+# =============================================================================
+# odin_count(table, date_col, from, to) — how many rows the API HAS in a window
+#
+# Asks the server to count, without transferring the rows: PostgREST answers
+# `Prefer: count=exact` in the Content-Range header. One cheap request.
+#
+# This is what separates "the download lost a day" from "the source has no such
+# day" — two problems with opposite fixes. Re-downloading a day the API does not
+# have just wastes time; treating a download gap as a source gap silently loses
+# data.
+#
+#   odin_count("dstaxi", "dhbimtra", "2025-10-31", "2025-11-01")
+#
+# Bounds are half-open [from, to), the same as the downloader's month windows.
+# =============================================================================
+odin_count <- function(table, date_col, from, to, base_url = NULL) {
+  api_root <- Sys.getenv("ODIN_API_ROOT",
+                         unset = "https://odin-ms.icea.decea.mil.br/api")
+  if (is.null(base_url)) base_url <- paste0(api_root, "/", table)
+  req <- httr2::request(base_url) |>
+    httr2::req_url_query(
+      and = sprintf("(%s.gte.%s,%s.lt.%s)", date_col, from, date_col, to),
+      limit = 1) |>
+    # ask for the count and for as little data as possible
+    httr2::req_headers(Prefer = "count=exact") |>
+    httr2::req_user_agent(paste0("BRA-ingestion/count/", table)) |>
+    httr2::req_timeout(120)
+  tok <- Sys.getenv("ODIN_TOKEN", unset = "")
+  if (nzchar(tok)) req <- httr2::req_headers(req, Authorization = paste("Bearer", tok))
+
+  resp <- httr2::req_perform(req)
+  cr   <- httr2::resp_header(resp, "content-range")   # e.g. "0-0/9291"
+  n    <- suppressWarnings(as.integer(sub(".*/", "", cr %||% "")))
+  if (is.na(n))
+    message("The server did not return a count (Content-Range: ", cr, ").")
+  else
+    message(sprintf("%s [%s, %s): %s row(s)", table, from, to,
+                    format(n, big.mark = ",")))
+  invisible(n)
+}
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
 odin_rbind_fill <- function(lst) {
   cols <- unique(unlist(lapply(lst, names)))
   lst <- lapply(lst, function(d) {
