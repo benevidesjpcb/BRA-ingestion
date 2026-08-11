@@ -589,6 +589,32 @@ download_odin <- function(table,
     message(sprintf("Year %d: merged %d month(s) -> %d row(s), %d column(s) -> %s",
                     yr, length(parts), nrow(combined), ncol(combined), out_csv))
     message("  Columns: ", paste(names(combined), collapse = ", "))
+
+    # ---- days with no rows at all -------------------------------------------
+    # A month is allowed to skip re-fetching with one day missing, so that a day
+    # the source genuinely has no rows for does not trigger a download on every
+    # run. That tolerance is silent, and it hid a real hole: dstaxi has NO rows
+    # for 2025-10-31, ~9,300 movements that another export of the same data has.
+    # Report the gap rather than re-fetch it: if the API does not have the day,
+    # downloading it again changes nothing. odin_count() settles which it is.
+    if (date_col_disk %in% names(combined)) {
+      have  <- unique(substr(combined[[date_col_disk]], 1, 10))
+      last  <- min(as.Date(sprintf("%d-12-31", yr)), today - 1)
+      if (as.Date(sprintf("%d-01-01", yr)) <= last) {
+        want <- format(seq(as.Date(sprintf("%d-01-01", yr)), last, by = "day"))
+        miss <- setdiff(want, have)
+        if (length(miss) > 0) {
+          shown <- paste(utils::head(miss, 15), collapse = ", ")
+          if (length(miss) > 15) shown <- paste0(shown, ", ... (+",
+                                                 length(miss) - 15, " more)")
+          message(sprintf("  NOTE: %d day(s) with no rows: %s", length(miss), shown))
+          message("        Check whether the source has them, e.g.\n",
+                  sprintf("          odin_count(\"%s\", \"%s\", \"%s\", \"%s\")",
+                          table, date_col, miss[1],
+                          format(as.Date(miss[1]) + 1)))
+        }
+      }
+    }
   }
 
   invisible(written)
