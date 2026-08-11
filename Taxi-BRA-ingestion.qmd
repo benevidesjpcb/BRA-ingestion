@@ -19,34 +19,75 @@ The project paths and analysis parameters are defined once in `_chapter-setup.R`
 
 ::: {.callout-important}
 ## Prerequisites to run this document
-The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Before rendering, place them in `data-raw/` (or set the `BRA_TAXI_ZIP` environment variable) and run the `prepare-bra-taxi-data` chunk once to generate the analytic outputs. Until then, the tables below render with a short notice instead of failing. See `README.md` for the full setup.
+The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Get them with the `download-bra-taxi-data` chunk below (ODIN API), or place your own in `data-raw/`, or set `BRA_TAXI_ZIP` to an archive holding them. Then run the `prepare-bra-taxi-data` chunk once to generate the analytic outputs. Until then, the tables below render with a short notice instead of failing. See `README.md` for the full setup.
 :::
 
 ## Getting the Source Data
 
-An API for the taxi source is planned but **not available yet**, so today the
-`dsTaxiYYYY.csv` files arrive as an archive. They are not shipped with the repository;
-provide them in one of two ways and everything below runs from the project root on any
-machine:
+The taxi source comes from the ICEA/DECEA **ODIN** API, one file per year in `data-raw/`,
+named `dsTaxiYYYY.csv` — the same name the rest of this document already reads. Nothing
+downstream changes: the inventory, the preparation, the validation and the dashboard take
+their files from `data-raw/` and do not care how they got there.
 
-- copy the `dsTaxiYYYY.csv` files into `data-raw/`, or
-- set `BRA_TAXI_ZIP` to a zip archive containing them (nothing is unpacked into the
-  project tree; the preparation reads the members directly).
+Years you already hold as `dsTaxiYYYY.csv` stay where they are; the downloader inspects what
+each covers and fetches **only the missing months**.
 
-::: {.callout-note}
-## When the API arrives
-It slots in here, following the shape already proven on the KPI08 side: a
-`download_taxi(years, out_dir)` function in its own script, sourced by an `eval: false`
-chunk in this section, writing one file per year into `data-raw/`. Everything downstream —
-the inventory, the preparation, the validation, the dashboard — reads from `data-raw/` and
-does not care how the files got there, so no other section changes.
+### Name the table and the date column first
 
-Two lessons from the KPI08 downloader are worth carrying over: fetch in windows small
-enough to save progress as it goes (a long run that only writes at the end loses
-everything when it is interrupted), and judge a period as already downloaded by the days
-it actually contains, not by a file existing — a period fetched while still open is
-partial and must be fetched again later.
-:::
+Two things have to be known before the first download, and neither is guessed:
+
+| Setting | What it is | How to find it |
+| --- | --- | --- |
+| `TAXI_TABLE` | which ODIN table holds the taxi source | `odin_tables()` |
+| `TAXI_DATE_COL` | which column the month windows filter on | `odin_probe(table)` |
+
+A wrong table costs a download to discover. A wrong date column is worse: it returns the
+wrong months **without any error**, and the mistake only surfaces later as a coverage gap
+nobody can explain. Both are one request away, so `download_taxi()` refuses to run until
+they are set and prints the candidates instead.
+
+```{r}
+#| label: discover-bra-taxi-api
+#| eval: false
+
+source(here::here("TAXI", "download_taxi.R"))
+
+odin_tables()            # what the API exposes
+odin_probe("<table>")    # its columns, with the date-like ones flagged
+
+Sys.setenv(TAXI_TABLE = "<table>", TAXI_DATE_COL = "<column>")
+```
+
+Set them permanently in `.Renviron`, beside the token, once they are confirmed.
+
+### Download
+
+`eval: false` — the download is slow, so it is not executed on render; run it when you need
+data. It is **incremental and resumable**, sharing its engine with the KPI08 and TOTALBR
+downloaders, which means it carries the lessons those cost:
+
+- **one month per request window**, saved the moment it arrives, so an interrupted run keeps
+  everything already fetched;
+- a month is judged downloaded by the **days it contains**, never by a file existing — a
+  month fetched while it was still the current one is partial and is fetched again once it
+  closes;
+- pagination advances by the **rows actually returned**, and orders on a **total** key, so a
+  server-side page cap cannot truncate the download and ties cannot make a row arrive twice
+  or not at all.
+
+```{r}
+#| label: download-bra-taxi-data
+#| eval: false
+
+source(here::here("TAXI", "download_taxi.R"))
+
+# the study period; drop to the current year for the routine refresh
+download_taxi(dsTaxi_years, out_dir = bra_raw_data_dir)
+```
+
+The zip route still works and needs no API: set `BRA_TAXI_ZIP` to an archive holding the
+`dsTaxiYYYY.csv` files, and the preparation reads the members directly without unpacking
+anything into the project tree.
 
 ```{r}
 #| label: check-bra-taxi-data

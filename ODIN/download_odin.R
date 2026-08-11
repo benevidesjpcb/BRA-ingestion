@@ -87,6 +87,36 @@ odin_probe <- function(table, n = 5L) {
   invisible(df)
 }
 
+# =============================================================================
+# odin_tables()
+#
+# The tables the API actually exposes. PostgREST serves an OpenAPI description at
+# its root, so the list can be read instead of guessed — which matters when a new
+# dataset is added and nobody remembers whether it is called "taxi", "kpi09" or
+# something else entirely. Guessing costs a wasted download; asking costs one
+# request.
+# =============================================================================
+odin_tables <- function() {
+  api_root <- Sys.getenv("ODIN_API_ROOT",
+                         unset = "https://odin-ms.icea.decea.mil.br/api")
+  out <- tryCatch({
+    req <- httr2::request(api_root) |>
+      httr2::req_headers(Accept = "application/openapi+json") |>
+      httr2::req_user_agent("BRA-ingestion/tables") |>
+      httr2::req_timeout(60)
+    tok <- Sys.getenv("ODIN_TOKEN", unset = "")
+    if (nzchar(tok)) req <- httr2::req_headers(req, Authorization = paste("Bearer", tok))
+    spec <- jsonlite::fromJSON(httr2::resp_body_string(httr2::req_perform(req)))
+    nm <- names(spec$paths)
+    sort(sub("^/", "", nm[nzchar(sub("^/", "", nm))]))
+  }, error = function(e) {
+    message("Could not read the table list (", conditionMessage(e), ").")
+    character(0)
+  })
+  if (length(out) == 0) message("No tables listed; check ODIN_API_ROOT and the token.")
+  out
+}
+
 odin_rbind_fill <- function(lst) {
   cols <- unique(unlist(lapply(lst, names)))
   lst <- lapply(lst, function(d) {
@@ -119,6 +149,12 @@ download_odin <- function(table,
                           id_col    = "id",
                           dedup_col = NULL,
                           prefix    = table,
+                          # what goes between the prefix and the year in a file
+                          # name. Taxi files are already called dsTaxi2025.csv
+                          # everywhere downstream, so its wrapper passes "" and the
+                          # download lands on the name the rest of the pipeline
+                          # already reads.
+                          sep       = "_",
                           base_url  = NULL,
                           force     = FALSE) {
 
@@ -295,7 +331,7 @@ download_odin <- function(table,
       message(sprintf("Year %d is in the future; skipped.", yr)); next
     }
     last_month <- if (yr == this_year) this_month else 12L
-    out_csv    <- file.path(out_dir, sprintf("%s_%d.csv", prefix, yr))
+    out_csv    <- file.path(out_dir, paste0(prefix, sep, yr, ".csv"))
 
     # months already held by a previously downloaded year file count as done, so
     # an existing <prefix>_<year>.csv is not downloaded all over again
@@ -311,7 +347,8 @@ download_odin <- function(table,
     message(sprintf("Year %d: months 01-%02d", yr, last_month))
 
     for (mo in seq_len(last_month)) {
-      part_csv <- file.path(parts_dir, sprintf("%s_%d-%02d.csv", prefix, yr, mo))
+      part_csv <- file.path(parts_dir,
+                            sprintf("%s%s%d-%02d.csv", prefix, sep, yr, mo))
       # month window [first day of month, first day of next month)
       from_date <- sprintf("%d-%02d-01", yr, mo)
       to_date   <- if (mo == 12L) sprintf("%d-01-01", yr + 1L)
@@ -352,7 +389,8 @@ download_odin <- function(table,
 
     # ---- merge the year's months into one file ------------------------------
     part_files <- list.files(parts_dir,
-                             pattern = sprintf("^%s_%d-[0-9]{2}\\.csv$", prefix, yr),
+                             pattern = sprintf("^%s%s%d-[0-9]{2}\\.csv$",
+                                               prefix, sep, yr),
                              full.names = TRUE)
     if (length(part_files) == 0) {
       message(sprintf("Year %d: nothing new to merge; %s left as is.", yr,
@@ -380,7 +418,6 @@ download_odin <- function(table,
     if (date_col %in% names(combined))
       combined <- combined[order(combined[[date_col]]), , drop = FALSE]
 
-    out_csv <- file.path(out_dir, sprintf("%s_%d.csv", prefix, yr))
     write_csv2(combined, out_csv)
     written <- c(written, out_csv)
     message(sprintf("Year %d: merged %d month(s) -> %d row(s), %d column(s) -> %s",

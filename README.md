@@ -187,6 +187,7 @@ wrapper per dataset supplying only what differs:
 | Dataset | Wrapper | Table | Date column | Unique key |
 | --- | --- | --- | --- | --- |
 | KPI08 (ASMA) | `KPI08/download_kpi08.R` | `kpi08` | `aldt` | `id` + `c` (the ASMA ring) |
+| Taxi time | `TAXI/download_taxi.R` | `TAXI_TABLE` (set it) | `TAXI_DATE_COL` (set it) | `id` |
 | TOTALBR | `TOTALBR/download_totalbr.R` | `total_brasil` | `dt_dia` | `pk` |
 
 The engine fetches **one month per request window**, saves each month as it arrives so an
@@ -214,6 +215,7 @@ percentile; it is the volume/denominator dataset.
 
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
+| `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dsTaxiYYYY.csv` | yes |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
@@ -243,6 +245,11 @@ never repairs, because which copy to keep is DECEA's decision.
 > thousands of rows share a timestamp. Offset pagination over a non-total order can return a
 > row on two pages or on none. The order now includes the unique id, so the pages partition
 > the window. Parts downloaded before this may carry duplicates of our own making.
+
+The taxi row deliberately has no defaults. Its table and date column are discovered, not
+guessed: `odin_tables()` lists what the API exposes and `odin_probe()` shows a table's
+columns, and `download_taxi()` refuses to run until both are named. A wrong table costs a
+download; a wrong date column returns the wrong months with no error at all.
 
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:
