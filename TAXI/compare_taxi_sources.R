@@ -225,6 +225,22 @@ taxi_field_diffs <- function(year, cols = TAXI_CMP_COLS, summary_only = TRUE,
   m[rowSums(flags) > 0][]
 }
 
+# ---- what a differing field actually looks like -----------------------------
+# A field that differs on ~100% of the movements is a spelling difference, not a
+# data difference (TRUE vs t, a date format, a padded code). This shows the value
+# pairs and how often each occurs, so the two vocabularies are visible at once.
+taxi_field_values <- function(year, field, n = 15,
+                              paths = taxi_source_paths(year)) {
+  d <- taxi_field_diffs(year, cols = field, summary_only = FALSE, paths = paths)
+  va <- d[[paste0(field, ".api")]]
+  vb <- d[[paste0(field, ".old")]]
+  if (grepl("^dh_", field)) { va <- taxi_norm_time(va); vb <- taxi_norm_time(vb) }
+  out <- as.data.frame(table(API = va, OLD = vb, useNA = "ifany"),
+                       stringsAsFactors = FALSE)
+  out <- out[out$Freq > 0, ]
+  utils::head(out[order(-out$Freq), ], n)
+}
+
 # ---- the full audit trail ---------------------------------------------------
 # Writes every unmatched movement, both directions, with SOURCE — so a flight can
 # be looked up in the file it came from and checked by hand.
