@@ -252,6 +252,27 @@ taxi_field_values <- function(year, field, n = 15,
   utils::head(out[order(-out$Freq), ], n)
 }
 
+# ---- one flight, side by side -----------------------------------------------
+# The decisive check when a movement is "missing" from one source: is it really
+# absent, or is it there with a slightly different stamp (a revision, a rounding,
+# a timezone)? Shows every row for a callsign, from both files, in time order.
+taxi_lookup <- function(year, callsign, day = NULL,
+                        paths = taxi_source_paths(year)) {
+  cols <- c("indicativo", "mov", "adpartida", "addestino",
+            "dh_bimtra", "dh_vra", "matricula", "box", "pista", "match_vra")
+  pick <- function(path, src) {
+    d <- taxi_read(path)
+    d <- d[taxi_norm(indicativo) == toupper(callsign)]
+    if (!is.null(day))
+      d <- d[substr(taxi_norm_time(dh_bimtra), 1, 10) == day]
+    keep <- intersect(cols, names(d))
+    d <- d[, ..keep]
+    d[, SOURCE := src][]
+  }
+  rbind(pick(paths$api, "API"), pick(paths$old, "OLD"),
+        fill = TRUE)[order(dh_bimtra)][]
+}
+
 # ---- the full audit trail ---------------------------------------------------
 # Writes every unmatched movement, both directions, with SOURCE — so a flight can
 # be looked up in the file it came from and checked by hand.
