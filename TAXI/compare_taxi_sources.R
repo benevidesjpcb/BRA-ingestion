@@ -69,6 +69,18 @@ taxi_norm <- function(x) {
   x[!nzchar(x)] <- NA_character_
   toupper(x)
 }
+# Columns whose two sources use different spellings for the same boolean: the API
+# returns TRUE/FALSE, the older export writes t/f. Kept as an explicit list, not
+# applied everywhere: "N" means FALSE here but "nacional" in vra_tipo_linha, and
+# folding it blindly would compare two different things as equal.
+TAXI_BOOL_COLS <- c("match_vra")
+
+taxi_norm_bool <- function(x) {
+  v <- taxi_norm(x)
+  ifelse(v %in% c("T", "TRUE", "1", "Y", "S", "SIM"),  "TRUE",
+  ifelse(v %in% c("F", "FALSE", "0", "N", "NAO", "NO"), "FALSE", v))
+}
+
 taxi_norm_time <- function(x) {
   x <- taxi_norm(x)
   # 2026-01-01T00:00:00 and 2026-01-01 00:00:00 are the same instant; seconds are
@@ -201,12 +213,11 @@ taxi_field_diffs <- function(year, cols = TAXI_CMP_COLS, summary_only = TRUE,
              by = "KEY", suffixes = c(".api", ".old"))
 
   diff_flag <- function(col) {
-    va <- taxi_norm(m[[paste0(col, ".api")]])
-    vb <- taxi_norm(m[[paste0(col, ".old")]])
-    if (grepl("^dh_", col)) {
-      va <- taxi_norm_time(m[[paste0(col, ".api")]])
-      vb <- taxi_norm_time(m[[paste0(col, ".old")]])
-    }
+    norm <- if (grepl("^dh_", col)) taxi_norm_time
+            else if (col %in% TAXI_BOOL_COLS) taxi_norm_bool
+            else taxi_norm
+    va <- norm(m[[paste0(col, ".api")]])
+    vb <- norm(m[[paste0(col, ".old")]])
     # NA on both sides is agreement, not a difference
     !(is.na(va) & is.na(vb)) & (is.na(va) | is.na(vb) | va != vb)
   }
@@ -234,7 +245,7 @@ taxi_field_values <- function(year, field, n = 15,
   d <- taxi_field_diffs(year, cols = field, summary_only = FALSE, paths = paths)
   va <- d[[paste0(field, ".api")]]
   vb <- d[[paste0(field, ".old")]]
-  if (grepl("^dh_", field)) { va <- taxi_norm_time(va); vb <- taxi_norm_time(vb) }
+  # shown RAW on purpose: the point of this function is to see the two spellings
   out <- as.data.frame(table(API = va, OLD = vb, useNA = "ifany"),
                        stringsAsFactors = FALSE)
   out <- out[out$Freq > 0, ]
