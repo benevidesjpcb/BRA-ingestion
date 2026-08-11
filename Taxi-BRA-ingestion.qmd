@@ -32,15 +32,10 @@ their files from `data-raw/` and do not care how they got there.
 Years you already hold as `dsTaxiYYYY.csv` stay where they are; the downloader inspects what
 each covers and fetches **only the missing months**.
 
-### Name the date column first
+### What the table looks like
 
 The table is **`dstaxi`** — the same ODIN API as KPI08 and TOTALBR with the table name
-swapped, confirmed by DECEA — so it is the default and needs no setting.
-
-The **date column is not guessed**, and the asymmetry is the reason: a wrong table announces
-itself with an HTTP error, while a wrong date column returns the **wrong months with no error
-at all**, surfacing much later as a coverage hole nobody can explain. One request settles it,
-so `download_taxi()` stops until it is named and shows the candidates:
+swapped, confirmed by DECEA. One request shows what it holds:
 
 ```{r}
 #| label: discover-bra-taxi-api
@@ -49,12 +44,30 @@ so `download_taxi()` stops until it is named and shows the candidates:
 source(here::here("TAXI", "download_taxi.R"))
 
 odin_probe("dstaxi")     # its columns, with the date-like ones flagged
-Sys.setenv(TAXI_DATE_COL = "<column>")
 ```
 
-Choose it deliberately: taxi time needs **both ends** of the movement, and a stamp that only
-exists for arrivals would drop every departure from the window it belongs to. Put it in
-`.Renviron` beside the token once confirmed.
+It returns 16 columns — `mov`, `matricula`, `indicativo`, `adpartida`, `addestino`,
+`tipovoo`, `vratipolinha`, `companhia`, `tipoaeronave`, `dhbimtra`, `dhvra`, `box`, `pista`,
+`matchvra`, `class`, `referencia` — and three of them decide how the download is configured.
+All three are already set in `TAXI/download_taxi.R`; nothing needs to be exported.
+
+**The month window filters on `dhbimtra`.** The preparation below maps `dh_bimtra` to
+`MVT_TIME`, the movement itself — landing for an arrival, take-off for a departure — and
+`dh_vra` to `BLOCK_TIME`. Anchoring on the movement puts both phases in the month they are
+reported in; anchoring on the block stamp would move a flight blocked off at 23:50 on the
+31st into the wrong month, and the taxi time is the gap between the two. A wrong table
+announces itself with an HTTP error, but a wrong date column returns the **wrong months with
+no error at all**, so this one is stated rather than guessed.
+
+**There is no `id` and no `pk`.** Offset pagination needs a total order, so the order is
+built from the columns that identify a movement: `dhbimtra`, `indicativo`, `mov`, `dhvra`.
+For the same reason nothing is de-duplicated on merge — with no unique key, an invented one
+would delete real movements, such as the two legs a callsign flies in a day.
+
+**The API names are not the file names.** The `dsTaxiYYYY.csv` files already in `data-raw/`
+carry `dh_bimtra`, `dh_vra` and `match_vra`; the API returns `dhbimtra`, `dhvra` and
+`matchvra`. They are renamed the moment a month arrives, so a downloaded year is read by
+exactly the same preparation code as a year that came from the zip.
 
 ### Download
 
@@ -69,7 +82,11 @@ downloaders, which means it carries the lessons those cost:
   closes;
 - pagination advances by the **rows actually returned**, and orders on a **total** key, so a
   server-side page cap cannot truncate the download and ties cannot make a row arrive twice
-  or not at all.
+  or not at all;
+- existing year files are inspected with `fill = TRUE`. `dsTaxi2024.csv` carries rows with
+  one field more than its header (the trailing payload field described below), and without
+  it the read stops at that line **with only a warning** — every later month would look
+  missing and be downloaded again.
 
 ```{r}
 #| label: download-bra-taxi-data

@@ -133,9 +133,19 @@ odin_rbind_fill <- function(lst) {
 #   years     : years to fetch, e.g. 2026 or 2024:2026 (default: current year)
 #   out_dir   : where the <prefix>_<year>.csv files live (created if missing)
 #   date_col  : the column the month windows filter on
-#   id_col    : the unique record id, used to de-duplicate on merge
+#   id_col    : the unique record id, used to de-duplicate on merge. NULL for a
+#               table that has no unique id — nothing is then de-duplicated, and
+#               `order_cols` must carry the total order instead.
 #   dedup_col : a second de-duplication key, for tables that repeat an id across
 #               rows; NULL when the id alone identifies a row
+#   order_cols: the columns pagination orders on. Defaults to the date, the id
+#               and the dedup key, which is a total order whenever an id exists.
+#               A table without one needs enough columns here to break every tie
+#               (see the comment at order_by below).
+#   rename_cols: named character vector, API name -> name written to disk, for a
+#               source whose established file header differs from the API's.
+#               Applied the moment a month arrives, so the parts, the year file
+#               and everything downstream all carry the on-disk names.
 #   prefix    : file-name prefix (defaults to the table name)
 #   base_url  : override the endpoint; by default ODIN_API_ROOT + "/" + table
 #   force     : TRUE re-downloads every month even if it is already on disk
@@ -148,6 +158,8 @@ download_odin <- function(table,
                           date_col  = "aldt",
                           id_col    = "id",
                           dedup_col = NULL,
+                          order_cols  = NULL,
+                          rename_cols = NULL,
                           prefix    = table,
                           # what goes between the prefix and the year in a file
                           # name. Taxi files are already called dsTaxi2025.csv
@@ -186,8 +198,32 @@ download_odin <- function(table,
   # can be returned on two consecutive pages, or on neither. Adding the unique id
   # (and the second de-duplication key, where the id repeats) breaks every tie, so
   # the pages partition the window instead of overlapping it.
-  order_by <- paste0(
-    unique(c(date_col, id_col, ring_col)), ".asc", collapse = ",")
+  #
+  # A table with no unique id (dstaxi has none) cannot rely on that, so its
+  # wrapper passes `order_cols` explicitly: enough columns that two rows sharing
+  # all of them would be indistinguishable anyway.
+  if (is.null(order_cols) || length(order_cols) == 0)
+    order_cols <- c(date_col, id_col, ring_col)
+  order_by <- paste0(unique(order_cols), ".asc", collapse = ",")
+
+  # ---- API names vs the names written to disk -------------------------------
+  # Everything after the download works on the on-disk names: the parts, the year
+  # file, the month coverage read back from them, and the merge. Only the request
+  # itself speaks the API's names.
+  rename_part <- function(d) {
+    if (is.null(rename_cols) || is.null(d) || !is.data.frame(d)) return(d)
+    i  <- match(names(rename_cols), names(d))
+    ok <- !is.na(i)
+    names(d)[i[ok]] <- unname(rename_cols)[ok]
+    d
+  }
+  disk_name <- function(x) {
+    if (is.null(x) || is.null(rename_cols) || !(x %in% names(rename_cols))) x
+    else unname(rename_cols[[x]])
+  }
+  date_col_disk <- disk_name(date_col)
+  id_col_disk   <- disk_name(id_col)
+  ring_col_disk <- disk_name(ring_col)
 
   # ---- one page of the API --------------------------------------------------
   fetch_page <- function(extra_filters, offset) {
@@ -264,11 +300,16 @@ download_odin <- function(table,
   # fread(path) treats its first argument as `input`, which on a path holding
   # spaces (OneDrive folders do) is read as a literal string instead of a file.
   # Passing file = is the only form that is unambiguous.
+  # fill = TRUE: some existing year files carry rows with one field more than the
+  # header (dsTaxi2024.csv does, from line 377601). Without it fread STOPS THERE
+  # AND ONLY WARNS, so the rest of the year silently disappears from whatever is
+  # read next — which, below, is the month coverage this function decides against.
   read_csv2 <- function(path) {
     if (requireNamespace("data.table", quietly = TRUE))
       as.data.frame(data.table::fread(file = path, sep = ";",
                                       colClasses = "character",
-                                      na.strings = "", showProgress = FALSE))
+                                      na.strings = "", showProgress = FALSE,
+                                      fill = TRUE))
     else
       utils::read.csv(path, sep = ";", colClasses = "character",
                       check.names = FALSE, na.strings = "")
@@ -296,12 +337,15 @@ download_odin <- function(table,
   read_date_col <- function(path) {
     tryCatch({
       if (requireNamespace("data.table", quietly = TRUE))
-        data.table::fread(file = path, sep = ";", select = date_col,
+        # fill = TRUE for the same reason as read_csv2: a ragged row must not
+        # truncate the file, or the months after it look missing and get
+        # re-downloaded on every run.
+        data.table::fread(file = path, sep = ";", select = date_col_disk,
                           colClasses = "character", na.strings = "",
-                          showProgress = FALSE)[[1]]
+                          showProgress = FALSE, fill = TRUE)[[1]]
       else
         utils::read.csv(path, sep = ";", colClasses = "character",
-                        na.strings = "")[[date_col]]
+                        na.strings = "")[[date_col_disk]]
     }, error = function(e) NULL)
   }
 
@@ -375,7 +419,7 @@ download_odin <- function(table,
 
       message(sprintf("  %d-%02d  downloading %s ...", yr, mo,
                       if (is_open) "(open month, refreshing)" else ""))
-      part <- download_window(from_date, to_date)
+      part <- rename_part(download_window(from_date, to_date))
 
       if (is.null(part)) {
         message(sprintf("  %d-%02d  no rows", yr, mo))
@@ -410,13 +454,16 @@ download_odin <- function(table,
     combined <- odin_rbind_fill(parts)
     # De-duplicate on the id AND the ASMA ring: each arrival appears once per ring
     # (c = 40 / 100), so keying on the id alone would drop one ring per flight.
-    if (id_col %in% names(combined)) {
-      key <- if (!is.null(ring_col) && ring_col %in% names(combined))
-               paste(combined[[id_col]], combined[[ring_col]]) else combined[[id_col]]
+    # A table with no id (id_col = NULL) is left alone: dropping rows on a key
+    # that does not identify a record would delete real movements.
+    if (!is.null(id_col_disk) && id_col_disk %in% names(combined)) {
+      key <- if (!is.null(ring_col_disk) && ring_col_disk %in% names(combined))
+               paste(combined[[id_col_disk]], combined[[ring_col_disk]])
+             else combined[[id_col_disk]]
       combined <- combined[!duplicated(key, fromLast = TRUE), , drop = FALSE]
     }
-    if (date_col %in% names(combined))
-      combined <- combined[order(combined[[date_col]]), , drop = FALSE]
+    if (date_col_disk %in% names(combined))
+      combined <- combined[order(combined[[date_col_disk]]), , drop = FALSE]
 
     write_csv2(combined, out_csv)
     written <- c(written, out_csv)

@@ -19,19 +19,31 @@
 #
 # ---------------------------------------------------------------------------
 # The table is `dstaxi` — the same ODIN API as KPI08 and TOTALBR, with the table
-# name swapped. Confirmed by DECEA, so it is the default here.
+# name swapped. Confirmed by DECEA. `odin_probe("dstaxi")` returns 16 columns:
 #
-# THE DATE COLUMN IS STILL NOT GUESSED. A wrong table announces itself with an
-# HTTP error; a wrong date column returns the WRONG MONTHS with no error at all,
-# and the mistake surfaces much later as a coverage hole nobody can explain. One
-# request settles it:
+#   mov, matricula, indicativo, adpartida, addestino, tipovoo, vratipolinha,
+#   companhia, tipoaeronave, dhbimtra, dhvra, box, pista, matchvra, class,
+#   referencia
 #
-#   odin_probe("dstaxi")                        # the columns, date-like flagged
-#   Sys.setenv(TAXI_DATE_COL = "<column>")      # or put it in .Renviron
+# Three consequences, each handled below.
 #
-# Taxi time needs both ends of the movement, so the column that anchors a flight
-# to a month has to be chosen deliberately — an arrival-only stamp would drop
-# every departure from the window it belongs to.
+# 1. THE DATE COLUMN IS dhbimtra. The preparation chunk maps dh_bimtra to
+#    MVT_TIME — the movement itself, landing for an arrival and take-off for a
+#    departure — and dh_vra to BLOCK_TIME. Anchoring the month window on the
+#    movement therefore places both phases in the month they are reported in.
+#    (dhvra would put a flight blocked off at 23:50 on the 31st into the wrong
+#    month, and the taxi time is computed as the gap between the two.)
+#
+# 2. THERE IS NO `id` AND NO `pk`. Offset pagination needs a total order, so the
+#    order is built from the columns that identify a movement: the movement
+#    stamp, the callsign, the phase and the block stamp. Nothing is de-duplicated
+#    on merge (id_col = NULL) — with no unique key, any key we invented would
+#    delete real movements, e.g. the two legs a callsign flies in one day.
+#
+# 3. THE API NAMES ARE NOT THE FILE NAMES. The dsTaxiYYYY.csv files already in
+#    data-raw/ have dh_bimtra, dh_vra and match_vra; the API returns dhbimtra,
+#    dhvra and matchvra. They are renamed on arrival, so a downloaded year is
+#    read by exactly the same preparation code as a year that came from the zip.
 # ---------------------------------------------------------------------------
 # =============================================================================
 
@@ -43,30 +55,26 @@ download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
                           # confirmed by DECEA: the same ODIN API as the other
                           # datasets, with `dstaxi` in place of `total_brasil`
                           table    = Sys.getenv("TAXI_TABLE", unset = "dstaxi"),
-                          date_col = Sys.getenv("TAXI_DATE_COL", unset = ""),
-                          id_col   = Sys.getenv("TAXI_ID_COL",   unset = "id"),
-                          dedup_col = {
-                            x <- Sys.getenv("TAXI_DEDUP_COL", unset = "")
-                            if (nzchar(x)) x else NULL
-                          },
+                          # the movement stamp; see note 1 in the header
+                          date_col = Sys.getenv("TAXI_DATE_COL", unset = "dhbimtra"),
+                          # no unique id in this table; see note 2
+                          id_col   = NULL,
+                          # enough columns to break every tie in the pagination
+                          order_cols = c("dhbimtra", "indicativo", "mov", "dhvra"),
+                          # API name -> the name already used on disk; see note 3
+                          rename_cols = c(dhbimtra = "dh_bimtra",
+                                          dhvra    = "dh_vra",
+                                          matchvra = "match_vra"),
                           force    = FALSE) {
 
-  # ---- which date column? -------------------------------------------------
-  if (!nzchar(date_col)) {
-    message("TAXI_DATE_COL is not set. Columns in '", table, "':")
-    odin_probe(table)
-    stop("Pick the column the month windows should filter on and set it:\n",
-         "  Sys.setenv(TAXI_DATE_COL = \"<column>\")\n",
-         "  A wrong one returns the wrong months without any error.")
-  }
-
   download_odin(
-    table     = table,
-    years     = years,
-    out_dir   = out_dir,
-    date_col  = date_col,
-    id_col    = id_col,
-    dedup_col = dedup_col,
+    table       = table,
+    years       = years,
+    out_dir     = out_dir,
+    date_col    = date_col,
+    id_col      = id_col,
+    order_cols  = order_cols,
+    rename_cols = rename_cols,
     # dsTaxi2025.csv, not dsTaxi_2025.csv: the established name, so the existing
     # inventory regex and the preparation chunk keep working untouched
     prefix    = "dsTaxi",

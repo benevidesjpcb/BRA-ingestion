@@ -35,8 +35,8 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 1. **Clone** the repository and open the project (`BRA-ingestion.Rproj`).
 2. **Provide the source data**, in any of three ways:
    - download it: `source(here::here("TAXI", "download_taxi.R")); download_taxi(dsTaxi_years)`
-     — one file per year into `data-raw/`, resuming whatever is already there. Set
-     `TAXI_DATE_COL` first; `odin_probe("dstaxi")` shows the candidates, **or**
+     — one file per year into `data-raw/`, resuming whatever is already there. Nothing to
+     configure: the table, the date column and the column renaming are already set, **or**
    - copy `dsTaxi2023.csv`, `dsTaxi2024.csv`, `dsTaxi2025.csv` into `data-raw/`, **or**
    - set the environment variable `BRA_TAXI_ZIP` to a zip archive that contains them.
 3. **Run the preparation.** The `prepare-bra-taxi-data` chunk is `eval: false`
@@ -56,7 +56,7 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 | --- | --- | --- |
 | `BRA_TAXI_ZIP` | Path to a zip archive holding the `dsTaxiYYYY.csv` files | unset → read from `data-raw/` |
 | `TAXI_TABLE` | The ODIN table holding the taxi source | `dstaxi` |
-| `TAXI_DATE_COL` | The column the month windows filter on. No default: a wrong one returns the wrong months with no error | unset → `download_taxi()` shows the columns and stops |
+| `TAXI_DATE_COL` | The column the month windows filter on — the movement stamp, so both arrivals and departures fall in the month they are reported in | `dhbimtra` |
 | `BRA_REPORT_DATA` | Data directory of the sibling report project that receives the combined analytic CSVs | this project's `data/` |
 
 ## Configuration
@@ -191,7 +191,7 @@ wrapper per dataset supplying only what differs:
 | Dataset | Wrapper | Table | Date column | Unique key |
 | --- | --- | --- | --- | --- |
 | KPI08 (ASMA) | `KPI08/download_kpi08.R` | `kpi08` | `aldt` | `id` + `c` (the ASMA ring) |
-| Taxi time | `TAXI/download_taxi.R` | `dstaxi` | `TAXI_DATE_COL` (set it) | `id` |
+| Taxi time | `TAXI/download_taxi.R` | `dstaxi` | `dhbimtra` | none — see below |
 | TOTALBR | `TOTALBR/download_totalbr.R` | `total_brasil` | `dt_dia` | `pk` |
 
 The engine fetches **one month per request window**, saves each month as it arrives so an
@@ -209,6 +209,13 @@ shorter `totalbr_<year>.csv`.
 > TOTALBR's unique key is `pk`, not `id`: `id` is the callsign plus the airport pair, so it
 > repeats on every flight of that route. De-duplicating on it would delete almost
 > everything.
+
+> `dstaxi` has no unique key at all. Its wrapper therefore passes `id_col = NULL` — nothing
+> is de-duplicated on merge — and gives the engine an explicit `order_cols`
+> (`dhbimtra`, `indicativo`, `mov`, `dhvra`) so offset pagination still runs over a total
+> order. It also passes `rename_cols`, because the established files use `dh_bimtra`,
+> `dh_vra` and `match_vra` while the API returns `dhbimtra`, `dhvra` and `matchvra`; the
+> rename happens on arrival, so a downloaded year reads exactly like one from the zip.
 
 `TOTALBR-BRA-ingestion.qmd` documents that dataset end to end, the same way
 `Taxi-BRA-ingestion.qmd` and `ASMA-BRA-ingestion.qmd` do their own: probe the endpoint,
