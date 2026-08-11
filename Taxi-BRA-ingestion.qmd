@@ -199,6 +199,57 @@ if (nrow(inventory) == 0) {
 The source files use semicolon-separated fields and include Brazilian airport movements beyond the Brazil-Europe study scope.
 The harmonised parquet extracts retain only the airports defined in `_chapter-setup.R`.
 
+### Days the source has no rows for
+
+A day with no movements at all does not exist in this dataset: every day of 2025 carries
+between 8,000 and 10,000 records. A day missing from a year file is therefore a **gap in the
+source**, and it is reported rather than filled.
+
+**2025-10-31 is absent from the ODIN `dstaxi` table.** Not from the download — the API
+itself returns zero rows for that day, confirmed with
+`odin_count("dstaxi", "dhbimtra", "2025-10-31", "2025-11-01")`, while 2025-10-30 returns
+9,387 and the month returns exactly the 269,440 rows downloaded. An older export of the same
+data (the SharePoint zip) does have ~9,291 movements for that day, so the two sources
+disagree about a day that one of them lost.
+
+**It is deliberately not patched.** Copying those rows in from the zip would make one year
+file half API and half zip, with `class` and `referencia` empty for that day only — a
+mixture nobody would remember a year from now. The day is left missing and stated here; the
+metric for 2025 rests on 364 days.
+
+The table below is computed from whatever is on disk, so it stays true as years are added:
+
+```{r}
+#| label: tbl-bra-taxi-missing-days
+#| tbl-cap: "Days with no records in the raw source files"
+
+gaps <- purrr::map(bra_taxi_files(), function(file) {
+  year <- as.integer(stringr::str_extract(basename(file), "\\d{4}"))
+  if (!(year %in% dsTaxi_years)) return(NULL)
+
+  d <- data.table::fread(file = file, sep = ";", select = "dh_bimtra",
+                         colClasses = "character", na.strings = "",
+                         fill = Inf, header = TRUE, showProgress = FALSE)[[1]]
+  have <- unique(substr(d[!is.na(d)], 1, 10))
+  # only days that have already happened can be missing
+  last <- min(as.Date(sprintf("%d-12-31", year)), Sys.Date() - 1)
+  if (as.Date(sprintf("%d-01-01", year)) > last) return(NULL)
+  want <- format(seq(as.Date(sprintf("%d-01-01", year)), last, by = "day"))
+  miss <- setdiff(want, have)
+  if (length(miss) == 0) return(NULL)
+
+  tibble::tibble(Year = year, `Missing days` = length(miss),
+                 Days = paste(miss, collapse = ", "))
+}) |>
+  purrr::list_rbind()
+
+if (nrow(gaps) == 0) {
+  knitr::kable(tibble::tibble(note = "No missing days in the years on disk."))
+} else {
+  knitr::kable(gaps)
+}
+```
+
 ## Harmonisation
 
 The payload columns are mapped to the APDF-like fields required by the taxi-time pipeline.
