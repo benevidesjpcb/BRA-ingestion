@@ -83,10 +83,14 @@ downloaders, which means it carries the lessons those cost:
 - pagination advances by the **rows actually returned**, and orders on a **total** key, so a
   server-side page cap cannot truncate the download and ties cannot make a row arrive twice
   or not at all;
-- existing year files are inspected with `fill = TRUE`. `dsTaxi2024.csv` carries rows with
+- existing year files are inspected with `fill = Inf`. `dsTaxi2024.csv` carries rows with
   one field more than its header (the trailing payload field described below), and without
   it the read stops at that line **with only a warning** — every later month would look
-  missing and be downloaded again.
+  missing and be downloaded again. `fill = TRUE` is not enough: it pads rows that are
+  short and still stops on a row that is long;
+- when a month **is** re-fetched, the downloaded month replaces that month in the year file
+  instead of being appended to it. Without a unique key there is nothing to de-duplicate on
+  afterwards, so the old copy is dropped before the merge.
 
 ```{r}
 #| label: download-bra-taxi-data

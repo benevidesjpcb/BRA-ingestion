@@ -300,16 +300,23 @@ download_odin <- function(table,
   # fread(path) treats its first argument as `input`, which on a path holding
   # spaces (OneDrive folders do) is read as a literal string instead of a file.
   # Passing file = is the only form that is unambiguous.
-  # fill = TRUE: some existing year files carry rows with one field more than the
-  # header (dsTaxi2024.csv does, from line 377601). Without it fread STOPS THERE
-  # AND ONLY WARNS, so the rest of the year silently disappears from whatever is
-  # read next — which, below, is the month coverage this function decides against.
+  # Some existing year files carry rows with MORE fields than the header
+  # (dsTaxi2024.csv does, from line 377601). fread then STOPS THERE AND ONLY
+  # WARNS, so the rest of the year silently disappears from whatever is read
+  # next — which, below, is the month coverage this decides against.
+  #
+  # fill = TRUE is NOT enough: it pads rows that are short, and still stops on a
+  # row that is long. Only fill = Inf makes fread scan the file first and size
+  # the table to the widest row. It is a number, so older data.table (which only
+  # accepts TRUE/FALSE) needs the fallback.
+  fill_all <- if (requireNamespace("data.table", quietly = TRUE) &&
+                  utils::packageVersion("data.table") >= "1.15.0") Inf else TRUE
   read_csv2 <- function(path) {
     if (requireNamespace("data.table", quietly = TRUE))
       as.data.frame(data.table::fread(file = path, sep = ";",
                                       colClasses = "character",
                                       na.strings = "", showProgress = FALSE,
-                                      fill = TRUE))
+                                      fill = fill_all))
     else
       utils::read.csv(path, sep = ";", colClasses = "character",
                       check.names = FALSE, na.strings = "")
@@ -337,12 +344,12 @@ download_odin <- function(table,
   read_date_col <- function(path) {
     tryCatch({
       if (requireNamespace("data.table", quietly = TRUE))
-        # fill = TRUE for the same reason as read_csv2: a ragged row must not
-        # truncate the file, or the months after it look missing and get
-        # re-downloaded on every run.
+        # fill for the same reason as read_csv2: a ragged row must not truncate
+        # the file, or the months after it look missing and get re-downloaded on
+        # every run.
         data.table::fread(file = path, sep = ";", select = date_col_disk,
                           colClasses = "character", na.strings = "",
-                          showProgress = FALSE, fill = TRUE)[[1]]
+                          showProgress = FALSE, fill = fill_all)[[1]]
       else
         utils::read.csv(path, sep = ";", colClasses = "character",
                         na.strings = "")[[date_col_disk]]
@@ -443,9 +450,30 @@ download_odin <- function(table,
       next
     }
     parts <- lapply(part_files, read_csv2)
-    # the existing year file is just another part, so months it already holds
-    # are preserved instead of being overwritten by the newly fetched ones
-    if (file.exists(out_csv)) parts <- c(list(read_csv2(out_csv)), parts)
+    # The existing year file is just another part, so months it already holds are
+    # preserved instead of being overwritten by the newly fetched ones — EXCEPT
+    # for the months that were re-fetched. For those the freshly downloaded part
+    # is the truth, and the old copy of the same month has to go: keeping both
+    # would duplicate every one of its rows in a table that has no unique key to
+    # de-duplicate on afterwards.
+    fetched_months <- as.integer(sub(".*-([0-9]{2})\\.csv$", "\\1",
+                                     basename(part_files)))
+    if (file.exists(out_csv)) {
+      old <- read_csv2(out_csv)
+      if (!is.null(old) && nrow(old) > 0 && date_col_disk %in% names(old)) {
+        old_mo <- suppressWarnings(as.integer(substr(old[[date_col_disk]], 6, 7)))
+        drop   <- !is.na(old_mo) & old_mo %in% fetched_months
+        if (any(drop)) {
+          message(sprintf("  replacing %d row(s) of month(s) %s already in %s",
+                          sum(drop),
+                          paste(sprintf("%02d", sort(unique(old_mo[drop]))),
+                                collapse = ", "),
+                          basename(out_csv)))
+          old <- old[!drop, , drop = FALSE]
+        }
+      }
+      parts <- c(list(old), parts)
+    }
     parts <- Filter(function(d) !is.null(d) && nrow(d) > 0, parts)
     if (length(parts) == 0) {
       message(sprintf("Year %d: no rows in any month; nothing written.", yr)); next
