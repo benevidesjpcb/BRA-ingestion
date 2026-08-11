@@ -309,6 +309,13 @@ download_odin <- function(table,
   # row that is long. Only fill = Inf makes fread scan the file first and size
   # the table to the widest row. It is a number, so older data.table (which only
   # accepts TRUE/FALSE) needs the fallback.
+  #
+  # header = TRUE goes with it, and is not optional. fread decides on its own
+  # whether row 1 is a header, and a header of 14 names above rows of 15 fields
+  # looks to it like a short data row: it demotes the names to data and calls
+  # every column V1..V15. The date column then "does not exist" in a file that
+  # plainly has it. Our files are always written with a header, so there is no
+  # ambiguity worth preserving.
   fill_all <- if (requireNamespace("data.table", quietly = TRUE) &&
                   utils::packageVersion("data.table") >= "1.15.0") Inf else TRUE
   read_csv2 <- function(path) {
@@ -316,7 +323,7 @@ download_odin <- function(table,
       as.data.frame(data.table::fread(file = path, sep = ";",
                                       colClasses = "character",
                                       na.strings = "", showProgress = FALSE,
-                                      fill = fill_all))
+                                      fill = fill_all, header = TRUE))
     else
       utils::read.csv(path, sep = ";", colClasses = "character",
                       check.names = FALSE, na.strings = "")
@@ -348,8 +355,9 @@ download_odin <- function(table,
   # really has no such column.
   file_date_col <- function(path) {
     hdr <- tryCatch(
-      names(data.table::fread(file = path, sep = ";", nrows = 0L,
-                              showProgress = FALSE)),
+      names(data.table::fread(file = path, sep = ";", nrows = 1L,
+                              showProgress = FALSE, fill = fill_all,
+                              header = TRUE)),
       error = function(e) character(0))
     if (length(hdr) == 0) return(NA_character_)
     if (date_col_disk %in% hdr) return(date_col_disk)
@@ -366,8 +374,9 @@ download_odin <- function(table,
       warning("No date column in ", basename(path), ": looked for '",
               date_col_disk, "'. Its columns are read as: ",
               paste(utils::head(tryCatch(
-                names(data.table::fread(file = path, sep = ";", nrows = 0L,
-                                        showProgress = FALSE)),
+                names(data.table::fread(file = path, sep = ";", nrows = 1L,
+                                        showProgress = FALSE, fill = fill_all,
+                                        header = TRUE)),
                 error = function(e) "unreadable"), 20), collapse = ", "),
               ".\nThe file cannot be checked for coverage, so its months will be ",
               "downloaded again.", call. = FALSE, immediate. = TRUE)
@@ -380,7 +389,8 @@ download_odin <- function(table,
         # every run.
         data.table::fread(file = path, sep = ";", select = col,
                           colClasses = "character", na.strings = "",
-                          showProgress = FALSE, fill = fill_all)[[1]]
+                          showProgress = FALSE, fill = fill_all,
+                          header = TRUE)[[1]]
       else
         utils::read.csv(path, sep = ";", colClasses = "character",
                         na.strings = "")[[col]]
