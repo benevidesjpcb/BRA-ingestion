@@ -19,15 +19,20 @@ The project paths and analysis parameters are defined once in `_chapter-setup.R`
 
 ::: {.callout-important}
 ## Prerequisites to run this document
-The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Get them with the `download-bra-taxi-data` chunk below (ODIN API), or place your own in `data-raw/`, or set `BRA_TAXI_ZIP` to an archive holding them. Then run the `prepare-bra-taxi-data` chunk once to generate the analytic outputs. Until then, the tables below render with a short notice instead of failing. See `README.md` for the full setup.
+The raw `dsTaxiYYYY.csv` files are **not** shipped with the repository. Get them with the `download-bra-taxi-data` chunk below (ODIN API), or place your own in `data-raw/dstaxi/`, or set `BRA_TAXI_ZIP` to an archive holding them. Then run the `prepare-bra-taxi-data` chunk once to generate the analytic outputs. Until then, the tables below render with a short notice instead of failing. See `README.md` for the full setup.
 :::
 
 ## Getting the Source Data
 
-The taxi source comes from the ICEA/DECEA **ODIN** API, one file per year in `data-raw/`,
-named `dsTaxiYYYY.csv` — the same name the rest of this document already reads. Nothing
-downstream changes: the inventory, the preparation, the validation and the dashboard take
-their files from `data-raw/` and do not care how they got there.
+The taxi source comes from the ICEA/DECEA **ODIN** API, one file per year in
+`data-raw/dstaxi/`, named `dsTaxiYYYY.csv`, with the monthly downloads under
+`data-raw/dstaxi/parts/` — the same layout as `data-raw/kpi08/` and `data-raw/totalbr/`.
+Both folders are created on the first run.
+
+The file **name** is unchanged, so nothing downstream changes: the inventory, the
+preparation, the validation and the dashboard find their files through `bra_taxi_file()`
+and `bra_taxi_files()` (defined in `_chapter-setup.R`), which look in `data-raw/dstaxi/`
+first and still accept a file left directly in `data-raw/` from before the folder existed.
 
 Years you already hold as `dsTaxiYYYY.csv` stay where they are; the downloader inspects what
 each covers and fetches **only the missing months**.
@@ -64,7 +69,7 @@ built from the columns that identify a movement: `dhbimtra`, `indicativo`, `mov`
 For the same reason nothing is de-duplicated on merge — with no unique key, an invented one
 would delete real movements, such as the two legs a callsign flies in a day.
 
-**The API names are not the file names.** The `dsTaxiYYYY.csv` files already in `data-raw/`
+**The API names are not the file names.** The existing `dsTaxiYYYY.csv` files
 carry `dh_bimtra`, `dh_vra`, `match_vra` and `vra_tipo_linha`; the API returns the same
 columns without the underscores (`dhbimtra`, `dhvra`, `matchvra`, `vratipolinha`). They are
 renamed the moment a month arrives, so a downloaded year is read by exactly the same
@@ -106,8 +111,9 @@ downloaders, which means it carries the lessons those cost:
 
 source(here::here("TAXI", "download_taxi.R"))
 
-# the study period; drop to the current year for the routine refresh
-download_taxi(dsTaxi_years, out_dir = bra_raw_data_dir)
+# the study period; drop to the current year for the routine refresh.
+# out_dir defaults to data-raw/dstaxi, so it is only passed here for clarity.
+download_taxi(dsTaxi_years, out_dir = bra_taxi_raw_dir)
 ```
 
 The zip route still works and needs no API: set `BRA_TAXI_ZIP` to an archive holding the
@@ -117,21 +123,24 @@ anything into the project tree.
 ```{r}
 #| label: check-bra-taxi-data
 
-# what is on disk right now, and what to do if nothing is
-have_files <- list.files(bra_raw_data_dir, pattern = "^dsTaxi20\\d{2}\\.csv$")
+# what is on disk right now, and what to do if nothing is. bra_taxi_files() looks
+# in data-raw/dstaxi/ first and still finds a file left directly in data-raw/.
+have_files <- bra_taxi_files()
 have_zip   <- Sys.getenv("BRA_TAXI_ZIP", unset = "")
 
 status <- if (length(have_files) > 0) {
   tibble::tibble(
-    source = paste0(length(have_files), " file(s) in ", bra_raw_data_dir),
-    years  = paste(sort(stringr::str_extract(have_files, "\\d{4}")), collapse = ", ")
+    source = paste(sort(unique(dirname(have_files))), collapse = ", "),
+    years  = paste(sort(stringr::str_extract(basename(have_files), "\\d{4}")),
+                   collapse = ", ")
   )
 } else if (nzchar(have_zip) && file.exists(have_zip)) {
   tibble::tibble(source = paste0("zip archive: ", basename(have_zip)), years = "read on demand")
 } else {
   tibble::tibble(
     source = "no source data yet",
-    years  = paste0("copy dsTaxiYYYY.csv into ", bra_raw_data_dir,
+    years  = paste0("run the download chunk, copy dsTaxiYYYY.csv into ",
+                    bra_taxi_raw_dir,
                     ", or set BRA_TAXI_ZIP to an archive holding them")
   )
 }
@@ -144,11 +153,7 @@ knitr::kable(status)
 #| label: tbl-bra-source-inventory
 #| tbl-cap: "Inventory of the raw taxi-time source files (dsTaxi)"
 
-files <- list.files(
-  bra_raw_data_dir,
-  pattern = "^dsTaxi20\\d{2}\\.csv$",
-  full.names = TRUE
-)
+files <- bra_taxi_files()
 
 inventory <- purrr::map(files, function(file) {
 
@@ -181,7 +186,7 @@ inventory <- purrr::map(files, function(file) {
 
 if (nrow(inventory) == 0) {
   knitr::kable(tibble::tibble(
-    note = paste0("No source files found in ", bra_raw_data_dir,
+    note = paste0("No source files found in ", bra_taxi_raw_dir,
                   ". Place dsTaxiYYYY.csv there (or set BRA_TAXI_ZIP).")
   ))
 } else {
@@ -226,7 +231,7 @@ It is not evaluated during normal rendering because it reads the large transient
 The taxi-time metric (GANP 20th-percentile reference and daily additional time) is computed in-chunk with base tidyverse, so the script no longer depends on the private PBWG package and runs from the project root on any machine.
 Every machine-specific location is read from an environment variable with a project-relative fallback:
 
-- `BRA_TAXI_ZIP` — path to the source zip archive (optional; when unset, the extracted `dsTaxiYYYY.csv` files in `data-raw/` are used as the source).
+- `BRA_TAXI_ZIP` — path to the source zip archive (optional; when unset, the `dsTaxiYYYY.csv` files in `data-raw/dstaxi/` are used as the source).
 - `BRA_REPORT_DATA` — data directory of the sibling report project that receives the combined analytic CSVs (defaults to this project's `data/`).
 
 ```{r}
@@ -242,7 +247,7 @@ source(here::here("_chapter-setup.R"))
 
 # ---- source/report locations (override with environment variables) ----------
 # Optional transient source archive (zip). When empty, the extracted
-# dsTaxiYYYY.csv files in data-raw/ are used as the source instead.
+# dsTaxiYYYY.csv files in data-raw/dstaxi/ are used as the source instead.
 zip_path        <- Sys.getenv("BRA_TAXI_ZIP", unset = "")
 # Report project data dir that receives the combined analytic CSVs; defaults to
 # this project's data/ folder (override for a sibling report project).
@@ -265,14 +270,18 @@ parse_bra_datetime <- function(x) {
 
 read_bra_taxi_year <- function(year) {
   member   <- paste0("dsTaxi", year, ".csv")
-  csv_path <- path(bra_raw_data_dir, member)
+  # data-raw/dstaxi/ first, then data-raw/ for a file that predates that folder
+  csv_path <- bra_taxi_file(year)
 
   if (file.exists(csv_path)) {
     message("Reading ", csv_path)
     raw <- fread(
-      csv_path,
+      file = csv_path,
       sep = ";",
       fill = 15,
+      # 14 names above 15-field rows look to fread like a short data row, and it
+      # then demotes the header to data and names everything V1..V15
+      header = TRUE,
       colClasses = "character",
       showProgress = FALSE
     )
@@ -282,6 +291,7 @@ read_bra_taxi_year <- function(year) {
       cmd = sprintf("unzip -p %s %s", shQuote(zip_path), shQuote(member)),
       sep = ";",
       fill = 15,
+      header = TRUE,
       colClasses = "character",
       showProgress = FALSE
     )

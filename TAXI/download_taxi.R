@@ -11,11 +11,15 @@
 #   source(here::here("TAXI", "download_taxi.R"))
 #   download_taxi(2024:2026)
 #
-# Output: <out_dir>/dsTaxi<year>.csv — the name the rest of the pipeline already
-# reads. Nothing downstream changes: the inventory, the preparation, the
-# validation and the dashboard all take their files from data-raw/ and do not
-# care how they got there. Years already held as dsTaxiYYYY.csv are inspected and
-# only the missing months are fetched.
+# Output: data-raw/dstaxi/dsTaxi<year>.csv, with the monthly downloads under
+# data-raw/dstaxi/parts/ — the same layout as data-raw/kpi08 and
+# data-raw/totalbr. Both folders are created if missing.
+#
+# The FILE NAME is unchanged, so the inventory, the preparation, the validation
+# and the dashboard keep reading dsTaxiYYYY.csv; they find it through
+# bra_taxi_file()/bra_taxi_files() in _chapter-setup.R, which look in
+# data-raw/dstaxi/ first and still accept a file left directly in data-raw/.
+# Years already held are inspected and only the missing months are fetched.
 #
 # ---------------------------------------------------------------------------
 # The table is `dstaxi` — the same ODIN API as KPI08 and TOTALBR, with the table
@@ -58,7 +62,9 @@
 source(here::here("ODIN", "download_odin.R"))
 
 download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
-                          out_dir  = here::here("data-raw"),
+                          # its own folder, like data-raw/kpi08 and
+                          # data-raw/totalbr; the months land in dstaxi/parts/
+                          out_dir  = here::here("data-raw", "dstaxi"),
                           # confirmed by DECEA: the same ODIN API as the other
                           # datasets, with `dstaxi` in place of `total_brasil`
                           table    = Sys.getenv("TAXI_TABLE", unset = "dstaxi"),

@@ -50,6 +50,26 @@ bra_apdf_dir     <- here::here("data", "apdf")
 bra_output_dir   <- here::here("outputs")
 bra_report_data  <- here::here("data")
 bra_raw_data_dir <- here::here("data-raw")
+# The taxi year files live in their own folder, the same shape as kpi08/ and
+# totalbr/: data-raw/dstaxi/dsTaxiYYYY.csv, with the monthly downloads under
+# data-raw/dstaxi/parts/. The downloader creates both.
+bra_taxi_raw_dir <- here::here("data-raw", "dstaxi")
+
+# Where a taxi year file actually is. Files left directly in data-raw/ from
+# before that folder existed are still read, so a machine that has not moved
+# them yet keeps working; when both exist, the one in dstaxi/ wins.
+bra_taxi_files <- function(dirs = c(bra_taxi_raw_dir, bra_raw_data_dir)) {
+  f <- unlist(lapply(dirs, function(d)
+    list.files(d, pattern = "^dsTaxi20\\d{2}\\.csv$", full.names = TRUE)))
+  f[!duplicated(basename(f))]
+}
+bra_taxi_file <- function(year) {
+  member <- paste0("dsTaxi", year, ".csv")
+  hit    <- bra_taxi_files()
+  hit    <- hit[basename(hit) == member]
+  # the path it WOULD have when absent, so the caller can report it
+  if (length(hit) > 0) hit[1] else file.path(bra_taxi_raw_dir, member)
+}
 
 # taxi-time ingestion: analysis parameters ====================================
 variant    <- "icao_ganp_p20"                     # reference variant (GANP p20)

@@ -16,7 +16,7 @@ and daily additional time) is computed in this repository with base tidyverse, s
 
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
-| `data-raw/` | **Input** — put the raw `dsTaxiYYYY.csv` files here | no (only `.gitkeep`) |
+| `data-raw/dstaxi/` | **Input** — the raw `dsTaxiYYYY.csv` files (and `parts/` month files) | no (git-ignored) |
 | `data/` | Analytic CSVs + coverage summary — consumed by the report **and the dashboard** | **yes** (the `.csv` files) |
 | `data/apdf/` | Generated harmonised parquet extracts | no |
 | `outputs/` | Generated per-year daily outputs | no (only `.gitkeep`) |
@@ -35,9 +35,9 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 1. **Clone** the repository and open the project (`BRA-ingestion.Rproj`).
 2. **Provide the source data**, in any of three ways:
    - download it: `source(here::here("TAXI", "download_taxi.R")); download_taxi(dsTaxi_years)`
-     — one file per year into `data-raw/`, resuming whatever is already there. Nothing to
+     — one file per year into `data-raw/dstaxi/`, resuming whatever is already there. Nothing to
      configure: the table, the date column and the column renaming are already set, **or**
-   - copy `dsTaxi2023.csv`, `dsTaxi2024.csv`, `dsTaxi2025.csv` into `data-raw/`, **or**
+   - copy `dsTaxi2023.csv`, `dsTaxi2024.csv`, `dsTaxi2025.csv` into `data-raw/dstaxi/`, **or**
    - set the environment variable `BRA_TAXI_ZIP` to a zip archive that contains them.
 3. **Run the preparation.** The `prepare-bra-taxi-data` chunk is `eval: false`
    (it is not executed on render), so run it manually once. It writes:
@@ -54,7 +54,7 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `BRA_TAXI_ZIP` | Path to a zip archive holding the `dsTaxiYYYY.csv` files | unset → read from `data-raw/` |
+| `BRA_TAXI_ZIP` | Path to a zip archive holding the `dsTaxiYYYY.csv` files | unset → read from `data-raw/dstaxi/` |
 | `TAXI_TABLE` | The ODIN table holding the taxi source | `dstaxi` |
 | `TAXI_DATE_COL` | The column the month windows filter on — the movement stamp, so both arrivals and departures fall in the month they are reported in | `dhbimtra` |
 | `BRA_REPORT_DATA` | Data directory of the sibling report project that receives the combined analytic CSVs | this project's `data/` |
@@ -200,7 +200,11 @@ interrupted run keeps its progress, judges a month downloaded by the **days it c
 advances pagination by the **rows actually returned** rather than the requested limit, and
 collapses JSON array columns to pipe-separated strings so they survive the CSV.
 
-Earlier years already held as files go straight into the dataset's `data-raw/` folder with
+Every dataset has its own folder under `data-raw/`, with the months in a `parts/`
+sub-folder: `data-raw/kpi08/`, `data-raw/dstaxi/`, `data-raw/totalbr/`. Both are created on
+the first run, so there is nothing to prepare by hand.
+
+Earlier years already held as files go straight into the dataset's folder with
 the same naming (`<prefix>_<year>.csv`, e.g. `data-raw/totalbr/totalbr_2019.csv`); the
 downloader inspects what each covers and only fetches what is missing. The endpoint table
 and the local file prefix are separate, so TOTALBR reads `total_brasil` but writes the
@@ -226,7 +230,7 @@ percentile; it is the volume/denominator dataset.
 
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
-| `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dsTaxiYYYY.csv` | yes |
+| `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dstaxi/dsTaxiYYYY.csv` | yes |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
