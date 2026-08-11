@@ -33,8 +33,11 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 ## How to run anywhere
 
 1. **Clone** the repository and open the project (`BRA-ingestion.Rproj`).
-2. **Provide the source data.** An API for the taxi source is planned but not available
-   yet, so for now either:
+2. **Provide the source data**, in any of three ways:
+   - download it: `source(here::here("TAXI", "download_taxi.R")); download_taxi(dsTaxi_years)`
+     — one file per year into `data-raw/`, resuming whatever is already there. Set
+     `TAXI_TABLE` and `TAXI_DATE_COL` first; `odin_tables()` and `odin_probe()` find them,
+     **or**
    - copy `dsTaxi2023.csv`, `dsTaxi2024.csv`, `dsTaxi2025.csv` into `data-raw/`, **or**
    - set the environment variable `BRA_TAXI_ZIP` to a zip archive that contains them.
 3. **Run the preparation.** The `prepare-bra-taxi-data` chunk is `eval: false`
@@ -53,6 +56,8 @@ The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CS
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `BRA_TAXI_ZIP` | Path to a zip archive holding the `dsTaxiYYYY.csv` files | unset → read from `data-raw/` |
+| `TAXI_TABLE` | The ODIN table holding the taxi source. No default: a wrong guess costs a download | unset → `download_taxi()` lists the tables and stops |
+| `TAXI_DATE_COL` | The column the month windows filter on. No default: a wrong one returns the wrong months with no error | unset → `download_taxi()` shows the columns and stops |
 | `BRA_REPORT_DATA` | Data directory of the sibling report project that receives the combined analytic CSVs | this project's `data/` |
 
 ## Configuration
