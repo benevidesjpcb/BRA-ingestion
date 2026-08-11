@@ -40,10 +40,17 @@
 #    on merge (id_col = NULL) — with no unique key, any key we invented would
 #    delete real movements, e.g. the two legs a callsign flies in one day.
 #
-# 3. THE API NAMES ARE NOT THE FILE NAMES. The dsTaxiYYYY.csv files already in
-#    data-raw/ have dh_bimtra, dh_vra and match_vra; the API returns dhbimtra,
-#    dhvra and matchvra. They are renamed on arrival, so a downloaded year is
-#    read by exactly the same preparation code as a year that came from the zip.
+# 3. THE API NAMES ARE NOT THE FILE NAMES. The header of the existing files is
+#
+#      mov, matricula, indicativo, adpartida, addestino, tipovoo,
+#      vra_tipo_linha, companhia, tipoaeronave, dh_bimtra, dh_vra, box, pista,
+#      match_vra                     (+ an unnamed 15th payload field, read as V15)
+#
+#    Four of those are spelled without the underscores by the API, and they are
+#    renamed on arrival, so a downloaded year is read by exactly the same
+#    preparation code as a year that came from the zip. The API's two extra
+#    columns (class, referencia) simply travel along; the merge fills them with
+#    NA for the years that predate them.
 # ---------------------------------------------------------------------------
 # =============================================================================
 
@@ -62,9 +69,10 @@ download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
                           # enough columns to break every tie in the pagination
                           order_cols = c("dhbimtra", "indicativo", "mov", "dhvra"),
                           # API name -> the name already used on disk; see note 3
-                          rename_cols = c(dhbimtra = "dh_bimtra",
-                                          dhvra    = "dh_vra",
-                                          matchvra = "match_vra"),
+                          rename_cols = c(dhbimtra     = "dh_bimtra",
+                                          dhvra        = "dh_vra",
+                                          matchvra     = "match_vra",
+                                          vratipolinha = "vra_tipo_linha"),
                           force    = FALSE) {
 
   download_odin(

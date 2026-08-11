@@ -65,9 +65,17 @@ For the same reason nothing is de-duplicated on merge — with no unique key, an
 would delete real movements, such as the two legs a callsign flies in a day.
 
 **The API names are not the file names.** The `dsTaxiYYYY.csv` files already in `data-raw/`
-carry `dh_bimtra`, `dh_vra` and `match_vra`; the API returns `dhbimtra`, `dhvra` and
-`matchvra`. They are renamed the moment a month arrives, so a downloaded year is read by
-exactly the same preparation code as a year that came from the zip.
+carry `dh_bimtra`, `dh_vra`, `match_vra` and `vra_tipo_linha`; the API returns the same
+columns without the underscores (`dhbimtra`, `dhvra`, `matchvra`, `vratipolinha`). They are
+renamed the moment a month arrives, so a downloaded year is read by exactly the same
+preparation code as a year that came from the zip. The API's two extra columns (`class`,
+`referencia`) travel along and are `NA` for the years that predate them.
+
+Those files also have a **15th field with no name in the header**, read as `V15` — the
+trailing payload described further below. It is the reason every read here passes
+`header = TRUE`: left to itself, `fread` sees 14 names above 15-field rows, concludes row 1
+cannot be a header, and demotes the names to data — making `dh_bimtra` "missing" from a file
+that plainly has it.
 
 ### Download
 
