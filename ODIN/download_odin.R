@@ -341,18 +341,49 @@ download_odin <- function(table,
     as.integer(nxt - first)
   }
 
+  # Which column in THIS file holds the date? A file that came from an older
+  # export can spell it differently from both the API and today's convention
+  # (dh_bimtra / dhbimtra / DH_BIMTRA are the same column). Match on the header,
+  # ignoring case and underscores, instead of failing. Returns NA when the file
+  # really has no such column.
+  file_date_col <- function(path) {
+    hdr <- tryCatch(
+      names(data.table::fread(file = path, sep = ";", nrows = 0L,
+                              showProgress = FALSE)),
+      error = function(e) character(0))
+    if (length(hdr) == 0) return(NA_character_)
+    if (date_col_disk %in% hdr) return(date_col_disk)
+    flat <- function(x) tolower(gsub("[^a-z0-9]", "", tolower(x)))
+    hit  <- hdr[flat(hdr) %in% flat(c(date_col_disk, date_col))]
+    if (length(hit) > 0) hit[1] else NA_character_
+  }
+
   read_date_col <- function(path) {
+    col <- file_date_col(path)
+    if (is.na(col)) {
+      # Loudly: silence here reads as "this year is empty", and the whole year is
+      # then downloaded again on top of a file that was fine.
+      warning("No date column in ", basename(path), ": looked for '",
+              date_col_disk, "'. Its columns are read as: ",
+              paste(utils::head(tryCatch(
+                names(data.table::fread(file = path, sep = ";", nrows = 0L,
+                                        showProgress = FALSE)),
+                error = function(e) "unreadable"), 20), collapse = ", "),
+              ".\nThe file cannot be checked for coverage, so its months will be ",
+              "downloaded again.", call. = FALSE, immediate. = TRUE)
+      return(NULL)
+    }
     tryCatch({
       if (requireNamespace("data.table", quietly = TRUE))
         # fill for the same reason as read_csv2: a ragged row must not truncate
         # the file, or the months after it look missing and get re-downloaded on
         # every run.
-        data.table::fread(file = path, sep = ";", select = date_col_disk,
+        data.table::fread(file = path, sep = ";", select = col,
                           colClasses = "character", na.strings = "",
                           showProgress = FALSE, fill = fill_all)[[1]]
       else
         utils::read.csv(path, sep = ";", colClasses = "character",
-                        na.strings = "")[[date_col_disk]]
+                        na.strings = "")[[col]]
     }, error = function(e) NULL)
   }
 
@@ -460,8 +491,15 @@ download_odin <- function(table,
                                      basename(part_files)))
     if (file.exists(out_csv)) {
       old <- read_csv2(out_csv)
-      if (!is.null(old) && nrow(old) > 0 && date_col_disk %in% names(old)) {
-        old_mo <- suppressWarnings(as.integer(substr(old[[date_col_disk]], 6, 7)))
+      # the existing file may spell the date column its own way; match it the
+      # same forgiving way the coverage check does
+      old_dc <- if (is.null(old)) NA_character_ else {
+        flat <- function(x) tolower(gsub("[^a-z0-9]", "", tolower(x)))
+        hit  <- names(old)[flat(names(old)) %in% flat(c(date_col_disk, date_col))]
+        if (length(hit) > 0) hit[1] else NA_character_
+      }
+      if (!is.null(old) && nrow(old) > 0 && !is.na(old_dc)) {
+        old_mo <- suppressWarnings(as.integer(substr(old[[old_dc]], 6, 7)))
         drop   <- !is.na(old_mo) & old_mo %in% fetched_months
         if (any(drop)) {
           message(sprintf("  replacing %d row(s) of month(s) %s already in %s",
