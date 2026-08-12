@@ -261,10 +261,36 @@ never repairs, because which copy to keep is DECEA's decision.
 > row on two pages or on none. The order now includes the unique id, so the pages partition
 > the window. Parts downloaded before this may carry duplicates of our own making.
 
-The taxi row deliberately has no default date column. A wrong table announces itself with an
-HTTP error, but a wrong date column returns the wrong months with **no error at all**, so
-`download_taxi()` stops until it is named and shows the candidates via `odin_probe()`.
-`odin_tables()` lists everything the API exposes, for when a new dataset appears.
+`odin_tables()` lists everything the API exposes, for when a new dataset appears, and
+`odin_count(table, date_col, from, to)` asks how many rows a window HAS without downloading
+them — the cheapest way to tell a download gap from a source gap.
+
+## TATIC (CGNA API)
+
+TATIC is a different API and a different shape. It is the CGNA movement feed, and it carries
+the **milestones** of a movement — EOBT, push, taxi, holding, runway, departure, arrival —
+where the taxi source carries only the movement and block times.
+
+| Path | Role | Tracked in git? |
+| --- | --- | --- |
+| `API_TATIC/download_tatic.R` | Downloads TATIC day by day into monthly parts, merged per year | yes |
+| `API_TATIC/ingest_tatic.R` | Flattens TATIC `*.json` exports dropped in by hand | yes |
+| `TATIC-BRA-ingestion.qmd` | Documented TATIC ingestion pipeline | yes |
+| `data-raw/tatic/` | `tatic_<year>.csv` and `parts/tatic_<year>-<month>.csv` | no (git-ignored) |
+
+> **One day per call.** A wide window is ignored: `datai=20250101&dataf=20250130` returns
+> only the first day, with no error. The downloader therefore walks the period one day at a
+> time and accumulates the days into the month file — the day is the unit of fetching, the
+> month the unit of storage. Requests are serial by default because the API queues
+> concurrent ones until they time out.
+
+The day is recorded in an added column, `TATIC_DAY`: the day *requested*, not a date read
+from the record, because the record's own date fields describe the event and can fall on a
+different day. A day the source has no records for is stored as a placeholder row, so it is
+not requested again on every run, and the placeholders are dropped when the year is merged.
+
+`TATIC_TOKEN` goes in `.Renviron` (git-ignored) — never in a script, never in the
+repository.
 
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:

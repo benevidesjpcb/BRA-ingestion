@@ -153,6 +153,14 @@ totalbr_date_col   <- "dt_dia"             # the column the month windows filter
 totalbr_list_cols  <- c("li_orgaos", "li_tipovoo", "li_regravoo",
                         "li_prnav", "li_rvsm")
 
+# TATIC (CGNA API) ingestion ==================================================
+# TATIC is the CGNA movement feed: one record per movement with the full set of
+# milestones (EOBT, push, taxi, holding, runway, departure/arrival), which the
+# taxi source does not carry. Its API serves ONE DAY per call, so the day is the
+# unit of fetching and the month the unit of storage.
+tatic_years       <- 2025:2026             # <- CHANGE THE STUDY PERIOD HERE
+bra_tatic_raw_dir <- here::here("data-raw", "tatic")   # tatic_<year>.csv + parts/
+
 bra_totalbr_raw_dir  <- here::here("data-raw", "totalbr")   # raw CSVs (ODIN)
 bra_totalbr_apdf_dir <- here::here("data", "totalbr")       # harmonised extracts
 

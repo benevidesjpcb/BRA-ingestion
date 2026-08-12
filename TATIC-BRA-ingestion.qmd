@@ -1,0 +1,274 @@
+# Brazil TATIC Data Ingestion
+
+```{r}
+#| label: setup
+#| include: false
+
+# Libraries, project paths and analysis parameters. `include: false` keeps the
+# rendered document free of the package startup banners and "built under R
+# version" warnings that loading the tidyverse emits.
+source(here::here("_chapter-setup.R"))
+```
+
+This note documents the ingestion of **TATIC**, the CGNA/DECEA movement feed, for the
+Brazil–Europe operational-efficiency study.
+
+TATIC is not another copy of the taxi source. It carries the **milestones of a movement** —
+EOBT, push-back request and clearance, taxi request and start, holding, runway entry,
+departure and arrival — where `dstaxi` carries only the movement time and the block time.
+What `dstaxi` gives as a single taxi duration, TATIC can decompose into waiting for push,
+taxiing, and holding short of the runway.
+
+::: {.callout-important}
+## Prerequisites to run this document
+The raw TATIC files are **not** shipped with the repository, and the API needs a token.
+Put it in `.Renviron` (git-ignored) as `TATIC_TOKEN=...` and restart R, then run the
+`download-bra-tatic-data` chunk. Until data exists, the tables below render with a short
+notice instead of failing. See `README.md` for the full setup.
+:::
+
+## Getting the Source Data
+
+The source is the CGNA API at `https://portal.cgna.decea.mil.br/apiv1/tatic`, and the files
+land in the same shape as every other dataset here:
+
+```
+data-raw/tatic/parts/tatic_2025-01.csv   one file per MONTH
+data-raw/tatic/tatic_2025.csv            the months merged into one YEAR
+```
+
+### One day per call
+
+This API is not the ODIN API, and the difference decides the whole design: **a wide window
+is ignored**. Asking for `datai=20250101&dataf=20250130` returns *only the first day*, with
+no error and no warning — the sort of thing that produces a year file with 12 days in it and
+no sign anything went wrong.
+
+So the period is walked one day at a time (`datai=d`, `dataf=d+1`), and the days are
+accumulated into the month file. **The day is the unit of fetching; the month is the unit of
+storage.**
+
+### What resumability means here
+
+Each day is written into its month file as it arrives, and a re-run reads the days already
+stored and asks only for what is missing. An interruption costs at most one day, never a
+month — which matters, because a single day is 6–7 MB and the API is slow.
+
+The day is recorded in an added column, **`TATIC_DAY`**: the day *we asked for*. It is not
+inferred from the record's own date fields, because those describe the **event**, and a
+movement can be reported on a day other than the one it is filed under. Resuming on a field
+that means something else is how gaps appear.
+
+A day the source has **no records** for is stored as a placeholder row carrying only
+`TATIC_DAY`. That is deliberate: without it, an empty day would be requested again on every
+single run, forever. The placeholders are dropped when the months are merged into the year,
+so they never reach the analysis.
+
+### Requests are serial
+
+The API queues concurrent requests until they time out — with three at once, one day
+completed and the other two returned a few bytes before the timeout. `TATIC_CONCURRENCY`
+exists, but raising it usually costs time rather than saving it.
+
+```{r}
+#| label: download-bra-tatic-data
+#| eval: false
+
+source(here::here("API_TATIC", "download_tatic.R"))
+
+# a whole year, resuming whatever is already on disk
+download_tatic(tatic_years)
+
+# or a slice, for a first test — one day is enough to see what comes back
+download_tatic(2025, from = "20250101", to = "20250101")
+```
+
+```{r}
+#| label: check-bra-tatic-data
+
+# what is on disk right now, and what to do if nothing is
+year_files <- list.files(bra_tatic_raw_dir, pattern = "^tatic_\\d{4}\\.csv$",
+                         full.names = TRUE)
+part_files <- list.files(file.path(bra_tatic_raw_dir, "parts"),
+                         pattern = "^tatic_\\d{4}-\\d{2}\\.csv$", full.names = TRUE)
+
+status <- if (length(year_files) > 0 || length(part_files) > 0) {
+  tibble::tibble(
+    source = bra_tatic_raw_dir,
+    years  = paste(sort(stringr::str_extract(basename(year_files), "\\d{4}")),
+                   collapse = ", "),
+    months = length(part_files)
+  )
+} else {
+  tibble::tibble(
+    source = "no source data yet",
+    years  = "set TATIC_TOKEN in .Renviron and run the download chunk above",
+    months = 0L
+  )
+}
+knitr::kable(status)
+```
+
+## Source Inventory
+
+```{r}
+#| label: tbl-bra-tatic-inventory
+#| tbl-cap: "Inventory of the TATIC year files"
+
+inventory <- purrr::map(year_files, function(file) {
+  year <- as.integer(stringr::str_extract(basename(file), "\\d{4}"))
+  days <- data.table::fread(file = file, sep = ";", select = "TATIC_DAY",
+                            colClasses = "character", showProgress = FALSE,
+                            fill = Inf, header = TRUE)[[1]]
+  tibble::tibble(
+    Year          = year,
+    File          = basename(file),
+    `First day`   = min(days, na.rm = TRUE),
+    `Last day`    = max(days, na.rm = TRUE),
+    `Days`        = dplyr::n_distinct(days),
+    Records       = scales::comma(length(days)),
+    `Size (MB)`   = round(file.info(file)$size / 1024^2, 1)
+  )
+}) |>
+  purrr::list_rbind()
+
+if (length(year_files) == 0) {
+  knitr::kable(tibble::tibble(
+    note = paste0("No TATIC year files in ", bra_tatic_raw_dir, " yet.")))
+} else {
+  inventory |> dplyr::arrange(Year) |> knitr::kable()
+}
+```
+
+## Coverage: days present, days missing
+
+A day with no movements does not exist in a national movement feed, so a day missing from a
+year file is a **gap** — either never downloaded, or downloaded and empty at the source.
+Those two are different problems with different fixes, and they are counted separately.
+
+This check exists because of what it caught elsewhere: the ODIN `dstaxi` table returns zero
+rows for 2025-10-31 while another export of the same data has ~9,300 movements for it. The
+downloader tolerated one missing day per month silently, and the hole stayed invisible for
+as long as nobody counted.
+
+```{r}
+#| label: tbl-bra-tatic-coverage
+#| tbl-cap: "TATIC daily coverage by year"
+
+coverage <- purrr::map(year_files, function(file) {
+  year <- as.integer(stringr::str_extract(basename(file), "\\d{4}"))
+  days <- unique(data.table::fread(file = file, sep = ";", select = "TATIC_DAY",
+                                   colClasses = "character", showProgress = FALSE,
+                                   fill = Inf, header = TRUE)[[1]])
+  last <- min(as.Date(sprintf("%d-12-31", year)), Sys.Date() - 1)
+  want <- format(seq(as.Date(sprintf("%d-01-01", year)), last, by = "day"))
+  miss <- setdiff(want, days)
+
+  tibble::tibble(
+    Year              = year,
+    `Days expected`   = length(want),
+    `Days present`    = length(intersect(want, days)),
+    `Days missing`    = length(miss),
+    `Missing (first)` = if (length(miss) == 0) "-"
+                        else paste(utils::head(miss, 8), collapse = ", ")
+  )
+}) |>
+  purrr::list_rbind()
+
+if (length(year_files) == 0) {
+  knitr::kable(tibble::tibble(note = "Nothing to check yet."))
+} else {
+  knitr::kable(coverage)
+}
+```
+
+## What the Records Contain
+
+The fields the pipeline expects are declared in `API_TATIC/ingest_tatic.R` and checked on
+every ingestion, so a change in the source layout surfaces immediately instead of three
+steps later.
+
+| Group | Fields |
+| --- | --- |
+| Identity and context | `Callsign`, `EventType`, `AcftType`, `FlightType`, `RV`, `Adep`, `Ades`, `Locality`, `Runway`, `Transponder`, `Equipment` |
+| Event date parts | `NR_ANO_EVENTO`, `NR_MES_EVENTO`, `NR_DIA_EVENTO` |
+| Milestones (UTC) | `EOBT`, `wPush`, `cPush`, `wTaxi`, `Taxi`, `Hold`, `cRwy`, `cDep`, `Dep`, `Arr`, `ETA`, `cPos` |
+| Added by the download | `TATIC_DAY` — the day requested from the API |
+
+Each milestone has a `*_BSB` twin in Brasília local time. **Use the UTC ones.** Mixing the
+two is not a hypothetical risk: in the TOTALBR work, a timestamp column carrying a spurious
+`Europe/Paris` label produced a 50-minute offset that took several rounds to unwind, and a
+one-hour local-time difference is far easier to mistake for real data than an obvious error.
+
+```{r}
+#| label: tbl-bra-tatic-fields
+#| tbl-cap: "Fields actually present in the downloaded data"
+
+if (length(year_files) == 0) {
+  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
+} else {
+  hdr <- names(data.table::fread(file = year_files[1], sep = ";", nrows = 1L,
+                                 showProgress = FALSE, fill = Inf, header = TRUE))
+  source(here::here("API_TATIC", "ingest_tatic.R"))
+  knitr::kable(tibble::tibble(
+    Field   = TATIC_KEY_FIELDS,
+    Present = ifelse(TATIC_KEY_FIELDS %in% hdr, "yes", "MISSING")
+  ))
+}
+```
+
+## Milestones, and What They Allow
+
+`dstaxi` gives one duration per movement: the gap between the block time and the movement
+time. TATIC gives the sequence, so the same duration can be split into its parts — waiting
+for a push-back clearance, the push itself, taxiing, and holding short of the runway.
+
+That decomposition is the reason this dataset is here. It is **not** built in this document:
+what the milestones mean operationally has to be agreed with CGNA before any metric rests on
+them, and a plausible-looking difference of two timestamps is exactly the kind of thing that
+survives review while being wrong. This document ends where the raw data is complete and
+verified.
+
+```{r}
+#| label: tbl-bra-tatic-milestones
+#| tbl-cap: "How often each milestone is populated"
+
+if (length(year_files) == 0) {
+  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
+} else {
+  d <- data.table::fread(file = year_files[1], sep = ";", colClasses = "character",
+                         showProgress = FALSE, fill = Inf, header = TRUE)
+  ms <- intersect(TATIC_MILESTONES, names(d))
+  knitr::kable(tibble::tibble(
+    Milestone = ms,
+    Populated = vapply(ms, function(x) sum(!is.na(d[[x]]) & nzchar(d[[x]])), integer(1)),
+    Records   = nrow(d)
+  ) |>
+    dplyr::mutate(`%` = round(100 * Populated / pmax(Records, 1), 1)) |>
+    dplyr::arrange(dplyr::desc(Populated)))
+}
+```
+
+## The Pipeline End to End
+
+1. **Token** — `TATIC_TOKEN` in `.Renviron`, never in a script, never in the repository.
+2. **Download** — `download_tatic(tatic_years)`. Day by day, month by month, resumable;
+   re-running it only fetches what is missing.
+3. **Verify** — the coverage table above. Days missing are reported, not tolerated.
+4. **Read** — `data-raw/tatic/tatic_<year>.csv`, one row per movement, `TATIC_DAY` for the
+   day it was requested under.
+
+`API_TATIC/ingest_tatic.R` remains for a different input: TATIC exported as `*.json` files
+and dropped into `data-raw/tatic/` by hand. It flattens them into a single
+`tatic-movements.csv`. The API route above does not need it — it writes CSV directly.
+
+## Open Points
+
+- **The milestone semantics** are not yet confirmed with CGNA: which clock each one is
+  stamped on, and what a missing value means (not applicable, or not recorded).
+- **The relationship to `dstaxi`** is unmeasured. Both describe the same movements at the
+  same aerodromes; whether they agree, and where they do not, is the same comparison already
+  built for taxi (`TAXI/compare_taxi_sources.R`) and is worth repeating here.
+- **The study-airport filter** is not applied. The download keeps everything, exactly as
+  TOTALBR does; narrowing to the twelve airports is a decision for the analysis, not the
+  ingestion.
