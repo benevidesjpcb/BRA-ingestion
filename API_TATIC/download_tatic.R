@@ -3,23 +3,30 @@
 # download_tatic.R
 #
 # Incrementally downloads TATIC movement data from the CGNA/DECEA API into
-# data-raw/tatic/, then flattens everything to CSV (via ingest_tatic.R).
+# data-raw/tatic/, one JSON file per day, then flattens everything to CSV
+# (via ingest_tatic.R).
 #
-# IMPORTANT: the TATIC API serves ONE DAY per call. Passing a wide window (e.g.
-# datai=20260101 dataf=20260130) returns only the first day, not the range.
-# So this script walks the period ONE DAY AT A TIME: for each day d it requests
-# datai=d, dataf=d+1 (the exclusive next day, exactly like the API example).
+#   source(here::here("API_TATIC", "download_tatic.R"))
+#   download_tatic()                              # Jan 1 of this year -> today
+#   download_tatic("20250101")                    # from a date -> today
+#   download_tatic("20250101", "20250630")        # an explicit range
 #
-# It fills [start .. today]. On any PC it looks at what is already in
-# data-raw/tatic/ and only downloads the days it is still missing; the current
-# day is always refreshed because it can still receive new movements.
+# or as a script:
 #
-#   Rscript download_tatic.R                 # from Jan 1 of this year to today
-#   Rscript download_tatic.R 20250101        # from a given start date to today
-#   Rscript download_tatic.R 20250101 20250630   # an explicit start/end range
+#   Rscript API_TATIC/download_tatic.R 20250101 20250630
 #
-# The token is read from the environment (never hardcoded):
-#   export TATIC_TOKEN="your-token"        (or put it in .Renviron)
+# ONE DAY PER CALL. Passing a wide window (datai=20260101 dataf=20260130)
+# returns only the first day, not the range — so the period is walked one day at
+# a time: for each day d it requests datai=d, dataf=d+1 (the exclusive next day,
+# exactly like the API example).
+#
+# RESUMABLE. It looks at what is already in data-raw/tatic/ and only fetches the
+# days still missing; the current day is always refreshed, because it can still
+# receive new movements. Each day is written the moment it arrives, so an
+# interrupted run keeps everything already fetched.
+#
+# The token is read from the environment, never hardcoded:
+#   TATIC_TOKEN="..."      in .Renviron (git-ignored), or the shell environment
 #
 # API (GET, per day):
 #   https://portal.cgna.decea.mil.br/apiv1/tatic?token=...&datai=YYYYMMDD&dataf=YYYYMMDD
@@ -32,122 +39,152 @@ suppressPackageStartupMessages({
     stop("Package 'jsonlite' is required. Install it with install.packages('jsonlite').")
 })
 
-# ---- configuration ----------------------------------------------------------
-base_url <- Sys.getenv("TATIC_URL", unset = "https://portal.cgna.decea.mil.br/apiv1/tatic")
-token    <- Sys.getenv("TATIC_TOKEN", unset = "")
-if (!nzchar(token)) {
-  stop("TATIC_TOKEN is not set. Run:  export TATIC_TOKEN=\"your-token\"  ",
-       "(or put it in .Renviron) before this script.")
-}
+# =============================================================================
+# download_tatic(from, to, out_dir, ...)
+#
+#   from    : first day, "YYYYMMDD" or a Date (default: Jan 1 of the current year)
+#   to      : last day, inclusive (default: today)
+#   out_dir : where the per-day JSON goes (default: data-raw/tatic)
+#   ingest  : TRUE also rebuilds the combined CSV afterwards
+#   force   : TRUE re-fetches days already on disk
+#
+# Returns, invisibly, a list(downloaded, skipped, failed).
+# =============================================================================
+download_tatic <- function(from    = NULL,
+                           to      = NULL,
+                           out_dir = here::here("data-raw", "tatic"),
+                           ingest  = TRUE,
+                           force   = FALSE,
+                           base_url = Sys.getenv(
+                             "TATIC_URL",
+                             unset = "https://portal.cgna.decea.mil.br/apiv1/tatic")) {
 
-raw_dir <- file.path("data-raw", "tatic")
-dir.create(raw_dir, recursive = TRUE, showWarnings = FALSE)
+  token <- Sys.getenv("TATIC_TOKEN", unset = "")
+  if (!nzchar(token))
+    stop("TATIC_TOKEN is not set. Put it in .Renviron (git-ignored):\n",
+         "  TATIC_TOKEN=your-token\n",
+         "and restart R. Never write the token into a script.")
 
-today <- Sys.Date()
+  if (!dir.exists(out_dir)) {
+    dir.create(out_dir, recursive = TRUE)
+    message("Created ", out_dir)
+  }
 
-# ---- resolve the [start .. end] period --------------------------------------
-as_ymd <- function(s) as.Date(s, format = "%Y%m%d")
-fmt    <- function(d) format(as.Date(d), "%Y%m%d")
+  today <- Sys.Date()
+  as_ymd <- function(s) {
+    if (inherits(s, "Date")) return(s)
+    as.Date(as.character(s), format = "%Y%m%d")
+  }
+  fmt <- function(d) format(as.Date(d), "%Y%m%d")
 
-args  <- commandArgs(trailingOnly = TRUE)
-start <- if (length(args) >= 1) as_ymd(args[1]) else as.Date(format(today, "%Y-01-01"))
-end   <- if (length(args) >= 2) as_ymd(args[2]) else today
-if (is.na(start) || is.na(end)) stop("Dates must be YYYYMMDD, e.g. 20250101.")
-if (start > end) stop("start (", fmt(start), ") is after end (", fmt(end), ").")
+  start <- if (is.null(from)) as.Date(format(today, "%Y-01-01")) else as_ymd(from)
+  end   <- if (is.null(to))   today                              else as_ymd(to)
+  if (is.na(start) || is.na(end)) stop("Dates must be YYYYMMDD, e.g. 20250101.")
+  if (start > end) stop("from (", fmt(start), ") is after to (", fmt(end), ").")
 
-n_days <- as.integer(end - start) + 1L
-message(sprintf("TATIC period: %s -> %s  (%d day-by-day call(s))",
-                fmt(start), fmt(end), n_days))
+  message(sprintf("TATIC period: %s -> %s  (%d day-by-day call(s))",
+                  fmt(start), fmt(end), as.integer(end - start) + 1L))
 
-# ---- decide which days we still need ----------------------------------------
-# A past day already saved is skipped; today is always refreshed.
-all_days <- seq(start, end, by = "day")
-need <- Filter(function(d) {
-  out_json <- file.path(raw_dir, sprintf("tatic-%s.json", fmt(d)))
-  have_it  <- file.exists(out_json) && file.info(out_json)$size > 0
-  !(have_it && d < today)                     # keep only days we must fetch
-}, all_days)
-skipped <- length(all_days) - length(need)
+  # ---- which days do we still need? ---------------------------------------
+  # A past day already saved is skipped; today is always refreshed.
+  day_file <- function(d) file.path(out_dir, sprintf("tatic-%s.json", fmt(d)))
+  all_days <- seq(start, end, by = "day")
+  need <- Filter(function(d) {
+    if (force) return(TRUE)
+    have <- file.exists(day_file(d)) && file.info(day_file(d))$size > 0
+    !(have && d < today)
+  }, all_days)
+  skipped <- length(all_days) - length(need)
 
-# ---- fetch the needed days in small parallel batches ------------------------
-# The API serves ONE request at a time: a day fetched alone downloads fine, but
-# concurrent requests sit in the server's queue and time out (observed: with 3
-# at once, one day completed and the other two got 0 - few bytes before the
-# timeout). So the default is SEQUENTIAL (concurrency = 1). Each day is still
-# saved immediately, so progress persists across interrupts and a re-run resumes
-# from the first missing day. You can try raising TATIC_CONCURRENCY, but the
-# server is effectively serial, so it usually just causes timeouts.
-concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "1"))
-downloaded  <- 0L
-failed      <- character(0)
+  # ---- fetch ---------------------------------------------------------------
+  # The API is effectively SERIAL: a day fetched alone downloads fine, but
+  # concurrent requests sit in the server's queue and time out (observed: with 3
+  # at once, one day completed and the other two returned a few bytes before the
+  # timeout). Hence concurrency 1 by default. Raising TATIC_CONCURRENCY usually
+  # just produces timeouts.
+  concurrency <- as.integer(Sys.getenv("TATIC_CONCURRENCY", unset = "1"))
+  downloaded  <- 0L
+  failed      <- character(0)
 
-fetch_batch <- function(days_batch) {
-  reqs <- lapply(days_batch, function(d) {
-    httr2::request(base_url) |>
-      httr2::req_url_query(token = token, datai = fmt(d), dataf = fmt(d + 1)) |>
-      httr2::req_user_agent("BRA-ingestion/tatic") |>
-      httr2::req_timeout(300) |>                   # generous: a full 6-7 MB day is slow
-      httr2::req_throttle(rate = concurrency) |>
-      httr2::req_retry(max_tries = 4)
-  })
-  tmp   <- vapply(days_batch, function(d) tempfile(fileext = ".json"), character(1))
-  final <- vapply(days_batch, function(d)
-    file.path(raw_dir, sprintf("tatic-%s.json", fmt(d))), character(1))
+  fetch_batch <- function(days_batch) {
+    reqs <- lapply(days_batch, function(d) {
+      httr2::request(base_url) |>
+        httr2::req_url_query(token = token, datai = fmt(d), dataf = fmt(d + 1)) |>
+        httr2::req_user_agent("BRA-ingestion/tatic") |>
+        httr2::req_timeout(300) |>          # generous: a full 6-7 MB day is slow
+        httr2::req_throttle(rate = concurrency) |>
+        httr2::req_retry(max_tries = 4)
+    })
+    tmp   <- vapply(days_batch, function(d) tempfile(fileext = ".json"), character(1))
+    final <- vapply(days_batch, day_file, character(1))
 
-  resps <- httr2::req_perform_parallel(
-    reqs, paths = tmp, on_error = "continue",
-    max_active = concurrency, progress = FALSE
-  )
+    resps <- httr2::req_perform_parallel(
+      reqs, paths = tmp, on_error = "continue",
+      max_active = concurrency, progress = FALSE
+    )
 
-  for (i in seq_along(resps)) {
-    r <- resps[[i]]
-    http_ok <- inherits(r, "httr2_response") &&
-      httr2::resp_status(r) == 200 &&
-      file.exists(tmp[i]) && file.info(tmp[i])$size > 0
-    parsed <- if (http_ok)
-      tryCatch(jsonlite::fromJSON(tmp[i], simplifyVector = FALSE),
-               error = function(e) NULL) else NULL
+    for (i in seq_along(resps)) {
+      r <- resps[[i]]
+      http_ok <- inherits(r, "httr2_response") &&
+        httr2::resp_status(r) == 200 &&
+        file.exists(tmp[i]) && file.info(tmp[i])$size > 0
+      parsed <- if (http_ok)
+        tryCatch(jsonlite::fromJSON(tmp[i], simplifyVector = FALSE),
+                 error = function(e) NULL) else NULL
 
-    if (!is.null(parsed)) {
-      file.copy(tmp[i], final[i], overwrite = TRUE)   # persist immediately
-      message(sprintf("  ok     %s  (%d record(s))",
-                      basename(final[i]), length(parsed)))
-      downloaded <<- downloaded + 1L
-    } else {
-      why <- if (inherits(r, "httr2_response") && httr2::resp_status(r) != 200)
-               paste0("HTTP ", httr2::resp_status(r))
-             else if (inherits(r, "condition")) conditionMessage(r)
-             else "timeout/invalid JSON"
-      message(sprintf("  FAILED %s  (%s)", basename(final[i]), why))
-      failed <<- c(failed, fmt(days_batch[[i]]))
+      if (!is.null(parsed)) {
+        file.copy(tmp[i], final[i], overwrite = TRUE)   # persist immediately
+        message(sprintf("  ok     %s  (%d record(s))",
+                        basename(final[i]), length(parsed)))
+        downloaded <<- downloaded + 1L
+      } else {
+        why <- if (inherits(r, "httr2_response") && httr2::resp_status(r) != 200)
+                 paste0("HTTP ", httr2::resp_status(r))
+               else if (inherits(r, "condition")) conditionMessage(r)
+               else "timeout/invalid JSON"
+        message(sprintf("  FAILED %s  (%s)", basename(final[i]), why))
+        failed <<- c(failed, fmt(days_batch[[i]]))
+      }
+      unlink(tmp[i])
     }
-    unlink(tmp[i])
   }
+
+  if (length(need) > 0) {
+    batches <- split(need, ceiling(seq_along(need) / concurrency))
+    message(sprintf("Fetching %d day(s) in %d batch(es) of up to %d ...",
+                    length(need), length(batches), concurrency))
+    for (b in seq_along(batches)) {
+      fetch_batch(batches[[b]])
+      if (concurrency > 1 || b %% 10 == 0)
+        message(sprintf("  ...%d/%d done  (saved: %d, failed: %d)",
+                        min(b * concurrency, length(need)), length(need),
+                        downloaded, length(failed)))
+    }
+  }
+
+  message(sprintf("Done: %d day(s) downloaded/refreshed, %d already present, %d failed.",
+                  downloaded, skipped, length(failed)))
+  if (length(failed) > 0)
+    message("Failed day(s): ", paste(failed, collapse = ", "),
+            "\n  -> re-run download_tatic() to retry only these.")
+
+  if (ingest) {
+    ing <- here::here("API_TATIC", "ingest_tatic.R")
+    if (file.exists(ing)) {
+      message("Flattening to CSV via ingest_tatic.R ...")
+      source(ing)
+      ingest_tatic(raw_dir = out_dir)
+    } else {
+      message("Raw JSON saved. Run ingest_tatic() to build the CSV.")
+    }
+  }
+
+  invisible(list(downloaded = downloaded, skipped = skipped, failed = failed))
 }
 
-if (length(need) > 0) {
-  batches <- split(need, ceiling(seq_along(need) / concurrency))
-  message(sprintf("Fetching %d day(s) in %d batch(es) of up to %d ...",
-                  length(need), length(batches), concurrency))
-  for (b in seq_along(batches)) {
-    fetch_batch(batches[[b]])
-    # progress line: every batch when parallel, every 10 days when sequential
-    if (concurrency > 1 || b %% 10 == 0)
-      message(sprintf("  ...%d/%d done  (saved: %d, failed: %d)",
-                      b * concurrency, length(need), downloaded, length(failed)))
-  }
-}
-
-message(sprintf("Done: %d day(s) downloaded/refreshed, %d already present, %d failed.",
-                downloaded, skipped, length(failed)))
-if (length(failed) > 0)
-  message("Failed day(s): ", paste(failed, collapse = ", "),
-          "\n  -> just re-run  Rscript download_tatic.R  to retry only these.")
-
-# ---- flatten everything in data-raw/tatic/ to CSV ---------------------------
-if (file.exists("ingest_tatic.R")) {
-  message("Flattening to CSV via ingest_tatic.R ...")
-  source("ingest_tatic.R")
-} else {
-  message("Raw JSON saved. Run  Rscript ingest_tatic.R  to build the CSV.")
+# ---- run only when executed as a script (not when sourced) ------------------
+if (sys.nframe() == 0L) {
+  args <- commandArgs(trailingOnly = TRUE)
+  download_tatic(from = if (length(args) >= 1) args[1] else NULL,
+                 to   = if (length(args) >= 2) args[2] else NULL)
 }
