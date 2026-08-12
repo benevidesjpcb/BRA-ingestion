@@ -292,6 +292,27 @@ not requested again on every run, and the placeholders are dropped when the year
 `TATIC_TOKEN` goes in `.Renviron` (git-ignored) — never in a script, never in the
 repository.
 
+### Setting up `.Renviron` on a new machine
+
+`.Renviron` is the one file the clone cannot bring you, because it holds the token. A script
+writes it for you, leaving only the token to paste:
+
+```r
+source(here::here("setup_renviron.R"))
+setup_renviron()    # writes .Renviron with every variable this repo reads
+set_token()         # prompts for the TATIC token; it is not echoed or stored elsewhere
+env_status()        # what is set right now (tokens shown only as a character count)
+```
+
+`setup_renviron()` never overwrites an entry that already exists — run it as often as you
+like; it only adds what is missing (`overwrite = TRUE` rewrites, after backing the file up).
+`set_token()` is interactive on purpose: a token typed at a prompt does not land in
+`.Rhistory`, a script, or a commit, which is exactly what happens when it is assigned in
+code.
+
+> R reads `.Renviron` **once, at startup**. Restart R after editing it, or
+> `Sys.getenv("TATIC_TOKEN")` will still be empty.
+
 Before a first download of a table, check the endpoint with a single small request instead
 of discovering a wrong column name hours in:
 
