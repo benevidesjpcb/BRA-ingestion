@@ -52,6 +52,50 @@ flatten_list_cols <- function(df) {
 }
 
 # =============================================================================
+# odin_proxy(req) — corporate proxy settings, applied to every request
+#
+# On a corporate network the request never reaches the API: the proxy answers
+# first, and without credentials it answers
+#
+#   CONNECT tunnel failed, response 407
+#
+# curl already honours the standard `https_proxy` / `http_proxy` environment
+# variables, so a proxy that needs no authentication works with nothing set
+# here. 407 means it does need authentication, and that is what these add:
+#
+#   ODIN_PROXY         proxy URL, e.g. http://proxy.example.int:8080
+#                      (only needed when https_proxy is not already set)
+#   ODIN_PROXY_AUTH    basic | digest | negotiate | ntlm | any
+#   ODIN_PROXY_USERPWD "user:password", or ":" on Windows to authenticate as the
+#                      logged-in account without storing a password anywhere
+#
+# ":" with ntlm/negotiate is the one worth trying first on a Windows domain
+# machine: curl then uses the current session's credentials through SSPI, so no
+# password is written into .Renviron, into a script, or into the shell history.
+# =============================================================================
+odin_proxy <- function(req) {
+  px   <- Sys.getenv("ODIN_PROXY",         unset = "")
+  auth <- tolower(Sys.getenv("ODIN_PROXY_AUTH", unset = ""))
+  pwd  <- Sys.getenv("ODIN_PROXY_USERPWD", unset = "")
+  if (!nzchar(px) && !nzchar(auth) && !nzchar(pwd)) return(req)
+
+  opts <- list()
+  if (nzchar(px))  opts$proxy         <- px
+  if (nzchar(pwd)) opts$proxyuserpwd  <- pwd
+  # CURLAUTH_* bit values, as libcurl defines them
+  code <- switch(auth,
+                 basic     = 1L,
+                 digest    = 2L,
+                 negotiate = 4L,
+                 ntlm      = 8L,
+                 any       = -1L,     # let curl pick whatever the proxy offers
+                 NULL)
+  if (!is.null(code)) opts$proxyauth <- code
+  if (length(opts) == 0) return(req)
+  do.call(httr2::req_options, c(list(req), opts))
+}
+
+# =============================================================================
 # odin_probe(table, n)
 #
 # One small request against a table, to confirm an endpoint and its column names
@@ -67,7 +111,8 @@ odin_probe <- function(table, n = 5L) {
   req <- httr2::request(paste0(api_root, "/", table)) |>
     httr2::req_url_query(limit = n) |>
     httr2::req_user_agent(paste0("BRA-ingestion/", table)) |>
-    httr2::req_timeout(120)
+    httr2::req_timeout(120) |>
+    odin_proxy()
   token <- Sys.getenv("ODIN_TOKEN", unset = "")
   if (nzchar(token))
     req <- httr2::req_headers(req, Authorization = paste("Bearer", token))
@@ -103,7 +148,8 @@ odin_tables <- function() {
     req <- httr2::request(api_root) |>
       httr2::req_headers(Accept = "application/openapi+json") |>
       httr2::req_user_agent("BRA-ingestion/tables") |>
-      httr2::req_timeout(60)
+      httr2::req_timeout(60) |>
+      odin_proxy()
     tok <- Sys.getenv("ODIN_TOKEN", unset = "")
     if (nzchar(tok)) req <- httr2::req_headers(req, Authorization = paste("Bearer", tok))
     spec <- jsonlite::fromJSON(httr2::resp_body_string(httr2::req_perform(req)))
@@ -143,7 +189,8 @@ odin_count <- function(table, date_col, from, to, base_url = NULL) {
     # ask for the count and for as little data as possible
     httr2::req_headers(Prefer = "count=exact") |>
     httr2::req_user_agent(paste0("BRA-ingestion/count/", table)) |>
-    httr2::req_timeout(120)
+    httr2::req_timeout(120) |>
+    odin_proxy()
   tok <- Sys.getenv("ODIN_TOKEN", unset = "")
   if (nzchar(tok)) req <- httr2::req_headers(req, Authorization = paste("Bearer", tok))
 
@@ -277,7 +324,8 @@ download_odin <- function(table,
                            offset = offset) |>
       httr2::req_user_agent(paste0("BRA-ingestion/", table)) |>
       httr2::req_timeout(180) |>
-      httr2::req_retry(max_tries = 4)
+      httr2::req_retry(max_tries = 4) |>
+      odin_proxy()
     if (nzchar(token))
       req <- httr2::req_headers(req, Authorization = paste("Bearer", token))
 
