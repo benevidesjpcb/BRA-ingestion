@@ -2,11 +2,12 @@
 # =============================================================================
 # merge_totalbr_duplicates.R
 #
-# COLLAPSES the duplicate rows of a flight into ONE row, instead of discarding
-# them. The two are different operations and both are legitimate:
+# COLLAPSES the duplicate rows of a flight into ONE row. This is how the
+# duplication is resolved; deletion applies to exactly one case:
 #
-#   totalbr_dedupe()             keeps one row, drops the other  (throws away)
-#   totalbr_merge_duplicates()   fuses them into a single row    (keeps everything)
+#   totalbr_drop_duplicate_pk()  drops a row whose pk was already seen - the
+#                                same row stored twice, so nothing is lost
+#   totalbr_merge_duplicates()   fuses the rows of one flight into a single row
 #
 #   source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
 #   pairs  <- totalbr_near_pairs(d, tol_min = TOTALBR_NEAR_MIN)

@@ -452,7 +452,7 @@ and "which source for which figure" does.
 And an earlier speculation of mine was wrong: I had said the archive holds no plan rows, so
 rule 1 could never fire on it. It holds 65,846 of them, and 9,352 are paired with their own
 movement. The rules may well apply — that remains DECEA's call, and the guard on
-`totalbr_dedupe(source = "parquet")` stays until they say so.
+the merge stays measured-but-unapplied on the archive until they say so.
 
 The gap in plan rows between the two files (170,808 against 65,846, about 105,000) is the
 right order of magnitude for the ~98,600 airline movements that looked download-only. That
@@ -872,55 +872,63 @@ totalbr_eet_check(raw_dir = bra_totalbr_raw_dir)
 `dh_eet` can be used there as an estimated arrival; low means it cannot, whatever the median
 says.
 
-### Removing it: the rules for which copy stays
+### Resolving it: one deletion, everything else merged
 
-Measuring is one thing; deciding which row of a pair represents the flight is another, and
-that decision is DECEA's. These are the rules they set, and `totalbr_dedupe()` is the one
-function in the pipeline that acts on the data rather than reporting on it:
+Two different operations, and confusing them loses data.
 
-| Rule | Condition | Action |
-| --- | --- | --- |
-| 1 | one row of the pair has `dh_fim` = `dh_inicio` | drop it, keep the row with a duration |
-| 2 | both have a duration, one carries **neither** `dh_eobt` nor `dh_eet` | drop that one |
-| tie | neither rule separates them | keep the earlier row, and count it separately |
+**Deletion applies to one case only: an identical `pk`.** `pk` is the row hash, so two rows
+carrying the same one are the same row stored twice. Dropping the repeat costs nothing and
+needs no rule.
 
-Rule 1 says the filed plan is not the movement. Rule 2 says a movement with no filed time
-behind it is the weaker record of the two. The tie is counted on its own because it is the
-case the rules do not really cover — if it turns out to be large, the rules need another
-clause rather than a coin toss.
+**Everything else is a merge.** A flight reported by two units — APPAN and APPBR, say —
+produces two rows, each covering the stretch that unit saw: one may carry the registration
+and the other not, one starts earlier and the other ends later. The same is true of a filed
+plan beside its movement. Picking a survivor there throws away information that is really
+there, so the rows are **fused into one flight** instead:
+
+| Field | Value in the merged row |
+| --- | --- |
+| `dh_inicio`, `dt_dia` | from the **earliest** row of the group |
+| `dh_fim` | from the **latest** row |
+| `co_matricula`, aerodromes, everything else | the first value actually filled in — a blank never overwrites a value |
+
+Rows flagged as pairs are treated as edges of a graph, so a flight reported three times
+collapses into one row rather than a merge plus a leftover. Three columns are added:
+`N_MERGED` (how many rows went in), `SPAN_MIN` (the merged duration) and `MERGED_PK` (every
+source `pk`, pipe-separated), so a merged row can always be traced back to what produced it.
 
 ```{r}
-#| label: dedupe-bra-totalbr
+#| label: merge-bra-totalbr
 #| eval: false
 
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
+source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
 
-# what would be removed, and by which rule
-clean <- totalbr_dedupe(2025, "csv", raw_dir = bra_totalbr_raw_dir)
+# a year, or any subset already in memory
+d <- totalbr_read_year(2026, source = "csv", raw_dir = bra_totalbr_raw_dir)
+d <- totalbr_normalise(d)
 
-# ... and written out as a usable dataset, all columns, semicolon-delimited
-totalbr_dedupe(2025, "csv", raw_dir = bra_totalbr_raw_dir,
-               out_file = file.path(bra_totalbr_raw_dir, "totalbr_2025_dedup.csv"))
+# 1. the only deletion: the same row stored twice
+d <- totalbr_drop_duplicate_pk(d)
+
+# 2. everything else: fuse the rows of one flight into one row
+pairs  <- totalbr_near_pairs(d, tol_min = TOTALBR_NEAR_MIN)
+merged <- totalbr_merge_duplicates(d, pairs)
+
+# check one flight before trusting the whole thing
+totalbr_merge_example(d, pairs, merged, "TAM3756")
 ```
 
-It reports `ROWS_IN`, `ROWS_OUT` and the count removed under each rule, so the effect on any
-figure derived from the table can be stated exactly rather than estimated. Identical `pk`
-rows are dropped first and need no rule — the rows are the same row.
-
-The output is written to a **new file**; nothing overwrites a download. A national movement
-table with rows removed is a derived product, and the raw file has to stay available for the
-next question that comes up about it.
+The check in the last line is the one that matters: the merged row must start no later than
+its earliest source row and end no earlier than its latest. Nothing is written to disk —
+the merge returns a dataset, and where it gets saved is a decision for the analysis.
 
 ::: {.callout-warning}
-## These rules are for the API download only
-They were read off the CSVs and describe how ODIN serves data today. The **parquet archive
-has not been analysed the same way** and may duplicate in a different shape — the plan rows
-that rule 1 exists for have not been found in it, so that rule could not even fire there.
-
-`totalbr_dedupe(source = "parquet")` therefore refuses to run, and says why. It can be
-overridden with `force_rules = TRUE`, but only once the archive has been looked at on its own
-terms. A reference file quietly edited by an unproven rule is worse than one left alone —
-and unlike a download, it cannot be fetched again.
+## The merge rules came from the API download
+They were read off the CSVs. The **parquet archive has not been analysed the same way** and
+may duplicate in a different shape — the plan rows have not been found in it. Measure it
+first with `totalbr_near_pairs()` before merging it, and keep the result in a new file: a
+reference archive cannot be downloaded again.
 :::
 
 ### One cause we removed on our side first
