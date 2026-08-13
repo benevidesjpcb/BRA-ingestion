@@ -89,7 +89,14 @@ totalbr_prepare <- function(years    = NULL,
     d[[date_col]] <- totalbr_parse_time(d[[date_col]])
 
   if (!is.null(month)) {
-    mth <- as.integer(format(d[[date_col]], "%m"))
+    # read the month off whatever the column is. format(x, "%m") only means
+    # "the month" for a POSIXct/Date; on a character vector "%m" lands in
+    # format()'s `trim` argument and errors. The stamps are ISO, so on text the
+    # month is simply characters 6-7 — no parsing, nothing to go wrong.
+    mth <- if (inherits(d[[date_col]], c("POSIXt", "Date")))
+             as.integer(format(d[[date_col]], "%m"))
+           else
+             suppressWarnings(as.integer(substr(as.character(d[[date_col]]), 6, 7)))
     keep <- !is.na(mth) & mth %in% as.integer(month)
     d <- d[keep, , drop = FALSE]
     say("    month filter: ", nrow(d), " row(s)")
