@@ -74,17 +74,23 @@ totalbr_prepare <- function(years    = NULL,
     return(tibble::tibble())
   }
   d <- dplyr::bind_rows(parts)
-
-  if (!is.null(month)) {
-    keep <- as.integer(format(d[[date_col]], "%m")) %in% as.integer(month)
-    d <- d[keep, , drop = FALSE]
-    say("    month filter: ", nrow(d), " row(s)")
-  }
   n_read <- nrow(d)
 
   # ---- 2. normalise --------------------------------------------------------
+  # BEFORE any date arithmetic: read from a CSV, dt_dia is still text, and
+  # format(x, "%m") on a character vector does not extract a month - it reads
+  # "%m" as format()'s `trim` argument and fails.
   say("2/4 normalising times and pk")
   d <- totalbr_normalise(d)
+
+  if (!is.null(month)) {
+    keep <- as.integer(format(d[[date_col]], "%m")) %in% as.integer(month)
+    keep[is.na(keep)] <- FALSE
+    d <- d[keep, , drop = FALSE]
+    say("    month filter: ", nrow(d), " row(s)")
+  }
+
+  n_kept <- nrow(d)
 
   # ---- 3. the only deletion ------------------------------------------------
   say("3/4 dropping rows whose pk was already seen")
@@ -96,8 +102,9 @@ totalbr_prepare <- function(years    = NULL,
   out <- totalbr_merge_flights(d, gap_min = gap_min)
 
   steps <- tibble::tibble(
-    STEP  = c("read", "same pk dropped", "records merged", "flights out"),
-    ROWS  = c(n_read, n_read - n_after_pk,
+    STEP  = c("read", "kept after month filter", "same pk dropped",
+              "records merged", "flights out"),
+    ROWS  = c(n_read, n_kept, n_kept - n_after_pk,
               n_after_pk - nrow(out), nrow(out))
   )
   if (!quiet) {
