@@ -22,10 +22,52 @@ taxiing, and holding short of the runway.
 ::: {.callout-important}
 ## Prerequisites to run this document
 The raw TATIC files are **not** shipped with the repository, and the API needs a token.
-Put it in `.Renviron` (git-ignored) as `TATIC_TOKEN=...` and restart R, then run the
+Create `.Renviron` with the chunk below, put the token in it, restart R, then run the
 `download-bra-tatic-data` chunk. Until data exists, the tables below render with a short
-notice instead of failing. See `README.md` for the full setup.
+notice instead of failing.
 :::
+
+## The token, and where it lives
+
+`.Renviron` is the one file a clone cannot bring you: it holds the token, so it is
+git-ignored and has to be created on each machine. This writes it, with every variable this
+repository reads and a comment explaining each:
+
+```{r}
+#| label: setup-bra-tatic-env
+#| eval: false
+
+source(here::here("setup_renviron.R"))
+
+setup_renviron()   # creates/updates .Renviron - only adds what is missing
+set_token()        # prompts for the TATIC token and writes it there
+env_status()       # what is set right now; tokens shown only as a character count
+```
+
+`set_token()` prompts at the console on purpose: a token typed at a prompt does not land in
+`.Rhistory`, in a script, or in a commit — which is exactly what happens when it is assigned
+in code. Never write the token into this document.
+
+Two things that catch people out. On macOS and Linux a file starting with a dot is **hidden**
+in Finder and in the RStudio Files pane, so `.Renviron` is there without being visible —
+check with `file.exists(renviron_path())` rather than by looking. And R reads `.Renviron`
+**once, at startup**: restart R after writing the token, or `Sys.getenv("TATIC_TOKEN")` will
+still be empty.
+
+```{r}
+#| label: check-bra-tatic-env
+
+# is this session able to download? (never prints the token itself)
+tibble::tibble(
+  `.Renviron`    = if (file.exists(here::here(".Renviron"))) "present" else "missing",
+  `TATIC_TOKEN`  = if (nzchar(Sys.getenv("TATIC_TOKEN")))
+                     paste0("set (", nchar(Sys.getenv("TATIC_TOKEN")), " chars)")
+                   else "not set in this session",
+  `proxy`        = if (nzchar(Sys.getenv("BRA_PROXY", unset = Sys.getenv("ODIN_PROXY"))))
+                     "configured" else "none (fine outside a corporate network)"
+) |>
+  knitr::kable()
+```
 
 ## Getting the Source Data
 

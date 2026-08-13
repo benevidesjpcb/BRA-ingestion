@@ -84,6 +84,27 @@ that plainly has it.
 
 ### Download
 
+::: {.callout-note}
+## On a corporate network
+If the API answers in a browser but R fails with `CONNECT tunnel failed, response 407` — or
+the vaguer `Failure when receiving data from the peer` — the proxy is refusing an
+unauthenticated request. The browser authenticates with the logged-in account and never says
+so; curl, under `httr2`, does not try unless told how. Write the settings once:
+
+```{r}
+#| label: setup-env-proxy
+#| eval: false
+
+source(here::here("setup_renviron.R"))
+setup_renviron()   # creates/updates .Renviron with BRA_PROXY, BRA_PROXY_AUTH, ...
+```
+
+and fill in, e.g. `BRA_PROXY=http://proxy.example.int:9512`, `BRA_PROXY_AUTH=ntlm`,
+`BRA_PROXY_USERPWD=:`. On Windows, `netsh winhttp show proxy` shows the address; the bare
+`:` authenticates as the logged-in account, so no password is stored anywhere. Restart R
+afterwards — `.Renviron` is read at startup only.
+:::
+
 `eval: false` — the download is slow, so it is not executed on render; run it when you need
 data. It is **incremental and resumable**, sharing its engine with the KPI08 and TOTALBR
 downloaders, which means it carries the lessons those cost:
