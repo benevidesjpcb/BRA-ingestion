@@ -880,22 +880,32 @@ Two different operations, and confusing them loses data.
 carrying the same one are the same row stored twice. Dropping the repeat costs nothing and
 needs no rule.
 
-**Everything else is a merge.** A flight reported by two units — APPAN and APPBR, say —
-produces two rows, each covering the stretch that unit saw: one may carry the registration
-and the other not, one starts earlier and the other ends later. The same is true of a filed
-plan beside its movement. Picking a survivor there throws away information that is really
-there, so the rows are **fused into one flight** instead:
+**Everything else is a merge.** A flight is recorded by **every unit that saw it** — APPSP,
+ACCCW, APPRJ, APPVT — and each record covers what that unit captured. A row where
+`dh_fim` equals `dh_inicio` is not a filed plan and not an intention: it is the flight seen
+at a single instant by one unit. So a flight has as many rows as units that tracked it, and
+picking one row throws away both the units and the extent of the flight.
+
+The rows of one flight are found by **key plus time chaining**:
+
+- same `co_indicativo`, `co_addep` and `co_addes`; **and**
+- the record starts within `gap_min` of the **latest end already in the group**.
+
+Chaining on the running end — not on the group's first record — is what matters. PRATC on
+2026-01-01 was captured by APPSP at 05:43 and tracked by ACCCW, APPRJ and APPVT from 06:07
+to 06:59: one flight, four records, joined because 05:43 and 06:07 are 24 minutes apart.
 
 | Field | Value in the merged row |
 | --- | --- |
-| `dh_inicio`, `dt_dia` | from the **earliest** row of the group |
-| `dh_fim` | from the **latest** row |
+| `dh_inicio`, `dt_dia` | from the **earliest** record |
+| `dh_fim` | from the **latest** record |
+| `li_orgaos` and the other `li_*` | the **union** of every record's values |
 | `co_matricula`, aerodromes, everything else | the first value actually filled in — a blank never overwrites a value |
 
-Rows flagged as pairs are treated as edges of a graph, so a flight reported three times
-collapses into one row rather than a merge plus a leftover. Three columns are added:
-`N_MERGED` (how many rows went in), `SPAN_MIN` (the merged duration) and `MERGED_PK` (every
-source `pk`, pipe-separated), so a merged row can always be traced back to what produced it.
+`li_orgaos` has to be the union: it is precisely what differs between the records, so
+keeping one value would erase the units whose reports justified merging. Three columns are
+added — `N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a
+merged row can always be traced back.
 
 ```{r}
 #| label: merge-bra-totalbr
@@ -904,30 +914,44 @@ source `pk`, pipe-separated), so a merged row can always be traced back to what 
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
 source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
 
-# a year, or any subset already in memory
-d <- totalbr_read_year(2026, source = "csv", raw_dir = bra_totalbr_raw_dir)
-d <- totalbr_normalise(d)
+d <- totalbr_normalise(totalbr_read_year(2026, source = "csv",
+                                         raw_dir = bra_totalbr_raw_dir))
 
 # 1. the only deletion: the same row stored twice
 d <- totalbr_drop_duplicate_pk(d)
 
-# 2. everything else: fuse the rows of one flight into one row
-pairs  <- totalbr_near_pairs(d, tol_min = TOTALBR_NEAR_MIN)
-merged <- totalbr_merge_duplicates(d, pairs)
+# 2. everything else: the records of one flight become one row
+merged <- totalbr_merge_flights(d, gap_min = 45)
 
-# check one flight before trusting the whole thing
-totalbr_merge_example(d, pairs, merged, "TAM3756")
+# check one aircraft end to end
+merged |>
+  dplyr::filter(co_indicativo == "PRATC") |>
+  dplyr::select(co_addep, co_addes, dh_inicio, dh_fim, SPAN_MIN, N_MERGED, li_orgaos)
 ```
 
-The check in the last line is the one that matters: the merged row must start no later than
-its earliest source row and end no earlier than its latest. Nothing is written to disk —
-the merge returns a dataset, and where it gets saved is a decision for the analysis.
+For PRATC in January 2026 that returns 13 flights, one row each — including the
+`SDIM`–`SBVT` leg as a single 05:43–06:59 row carrying all four units. Before the chaining
+it came out as two flights, because the earlier matching was one-to-one: one record answered
+for one partner, and the APPSP capture was left over as a phantom second flight.
+
+**Choosing `gap_min`.** It is the shortest turnaround that still separates two real flights
+of the same aircraft on the same route. Too wide and consecutive legs of a shuttle merge;
+too narrow and one flight splits. Read it off the data rather than assuming:
+
+```{r}
+#| label: cluster-profile-bra-totalbr
+#| eval: false
+
+totalbr_cluster_profile(d)   # flights, merges and span at 15 … 180 minutes
+```
+
+The tolerance to avoid is the one where the span starts climbing while the flight count
+barely moves: that is legs being swallowed, not records being joined.
 
 ::: {.callout-warning}
-## The merge rules came from the API download
-They were read off the CSVs. The **parquet archive has not been analysed the same way** and
-may duplicate in a different shape — the plan rows have not been found in it. Measure it
-first with `totalbr_near_pairs()` before merging it, and keep the result in a new file: a
+## Measured on the API download
+The rules were read off the CSVs. The **parquet archive has not been analysed the same way**
+and may record flights differently. Measure it first, and write the result to a new file: a
 reference archive cannot be downloaded again.
 :::
 
