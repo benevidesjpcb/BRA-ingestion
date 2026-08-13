@@ -32,10 +32,15 @@
 #
 #   li_orgaos and the other li_* arrays : the UNION of every row's values.
 #
-# That one is not a detail. li_orgaos is what differs between the rows — APPAN on
-# one, APPBR on the other — so keeping "the first filled value" would drop the
+# That last one is not a detail: li_orgaos is what differs between the rows —
+# APPAN on one, APPBR on the other — so "the first filled value" would drop the
 # very unit whose report justified merging. The merged row lists both,
 # pipe-separated.
+#
+# The extremes are taken over the REAL MOVEMENTS only. A filed plan carries an
+# intention, not an event, so it must not set the start of a flight that went
+# later; it still contributes dh_eobt, the registration and its unit. A group
+# with no movement at all falls back to its plans and is marked PLAN_ONLY.
 #
 # GROUPS, NOT PAIRS
 # A flight can appear three times (a plan and two unit reports). The pairs are
@@ -156,16 +161,30 @@ totalbr_merge_duplicates <- function(d, pairs,
          MERGED_PK = if ("pk" %in% names(grp)) paste(pk, collapse = "|") else NA_character_)
   ), by = GRP_ID, .SDcols = val_cols]
 
-  # the times are NOT "first filled": they are the extremes of the group, which
-  # is the whole point of merging two partial reports of one flight
-  ext <- grp[, list(
-    .START = suppressWarnings(min(get(start_col), na.rm = TRUE)),
-    .END   = suppressWarnings(max(get(end_col), na.rm = TRUE))
-  ), by = GRP_ID]
+  # The times are NOT "first filled": they are the extremes of the group, which is
+  # the whole point of merging two partial reports of one flight.
+  #
+  # BUT ONLY OVER THE REAL MOVEMENTS. A filed plan (dh_fim == dh_inicio) carries
+  # an INTENTION, not an event: PRATC on 2026-01-01 was filed for 05:43 and went
+  # at 06:07. Letting the plan set dh_inicio makes the flight "start" 24 minutes
+  # before it moved and inflates SPAN_MIN by the delay. The plan still joins the
+  # merge and still contributes dh_eobt, the registration and its unit — it just
+  # does not define when the flight happened.
+  #
+  # A group of plans only (no movement at all) falls back to the plans, because
+  # then there is nothing else to date it by.
+  ext <- grp[, {
+    real <- .SD[.IS_PLAN == 0L]
+    use  <- if (nrow(real) > 0) real else .SD
+    list(.START = suppressWarnings(min(use[[start_col]], na.rm = TRUE)),
+         .END   = suppressWarnings(max(use[[end_col]],   na.rm = TRUE)),
+         .PLAN_ONLY = nrow(real) == 0L)
+  }, by = GRP_ID, .SDcols = c(start_col, end_col, ".IS_PLAN")]
   # dt_dia follows the earliest row, not the group's own dt_dia values, so the
   # merged flight is dated by when it started
   if (day_col %in% names(grp)) {
-    first_day <- grp[order(GRP_ID, get(start_col)),
+    # same choice as the times: the day of the earliest real movement
+    first_day <- grp[order(GRP_ID, .IS_PLAN, get(start_col)),
                      list(.DAY = get(day_col)[1]), by = GRP_ID]
     ext <- merge(ext, first_day, by = "GRP_ID")
   }
@@ -175,7 +194,11 @@ totalbr_merge_duplicates <- function(d, pairs,
   merged[is.finite(.END), (end_col) := .END]
   if (day_col %in% names(merged) && ".DAY" %in% names(merged))
     merged[, (day_col) := .DAY]
-  merged[, c(".START", ".END", intersect(".DAY", names(merged))) := NULL]
+  # PLAN_ONLY marks a merged row dated by a filed plan because no movement was
+  # ever reported for it — worth knowing before treating its times as facts
+  merged[, PLAN_ONLY := .PLAN_ONLY]
+  merged[, c(".START", ".END", ".PLAN_ONLY",
+             intersect(".DAY", names(merged))) := NULL]
 
   # the union columns: every unit that reported the flight, not just the first
   ucols <- intersect(union_cols, names(grp))
@@ -201,6 +224,20 @@ totalbr_merge_duplicates <- function(d, pairs,
                   length(touched), nrow(merged), nrow(rest), nrow(out)))
   if (as_tibble && requireNamespace("tibble", quietly = TRUE))
     tibble::as_tibble(out) else out[]
+}
+
+# ---- how far apart are the paired rows? -------------------------------------
+# The number that sets the tolerance. A plan and its movement sit minutes apart;
+# a plan wrongly matched to the NEXT flight of the same aircraft sits hours
+# apart. Read the upper quantiles: where they jump is where the pairing stops
+# describing one flight. PRATC on 2026-01-01 was paired across 120 minutes,
+# SBVT to SBMT - two hours is another flight for a taxi operator, not a delay.
+totalbr_gap_profile <- function(pairs, probs = c(.5, .75, .9, .95, .99, 1)) {
+  g <- data.table::as.data.table(pairs)
+  out <- g[, c(list(N = .N),
+               as.list(round(stats::quantile(abs(GAP_MIN), probs, na.rm = TRUE), 1))),
+           by = KIND]
+  if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out[]
 }
 
 # ---- see one merge, source rows and result side by side ----------------------
