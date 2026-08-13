@@ -88,13 +88,18 @@ totalbr_pair_groups <- function(pairs, n) {
 totalbr_merge_duplicates <- function(d, pairs,
                                      start_col = "dh_inicio",
                                      end_col   = "dh_fim",
-                                     day_col   = "dt_dia") {
+                                     day_col   = "dt_dia",
+                                     # the work is done in data.table for speed;
+                                     # what comes back is a tibble, because that
+                                     # is what the rest of the analysis uses
+                                     as_tibble = TRUE) {
 
   dt <- data.table::as.data.table(d)
   n  <- nrow(dt)
   if (!nrow(pairs)) {
     dt[, `:=`(N_MERGED = 1L, MERGED_PK = if ("pk" %in% names(dt)) pk else NA_character_)]
-    return(dt[])
+    return(if (as_tibble && requireNamespace("tibble", quietly = TRUE))
+             tibble::as_tibble(dt) else dt[])
   }
   for (cl in c(start_col, end_col))
     if (!cl %in% names(dt)) stop("Column not found: ", cl)
@@ -161,7 +166,8 @@ totalbr_merge_duplicates <- function(d, pairs,
 
   message(sprintf("Merged %d row(s) into %d flight(s); %d row(s) untouched -> %d total.",
                   length(touched), nrow(merged), nrow(rest), nrow(out)))
-  out[]
+  if (as_tibble && requireNamespace("tibble", quietly = TRUE))
+    tibble::as_tibble(out) else out[]
 }
 
 # ---- see one merge, source rows and result side by side ----------------------
@@ -176,6 +182,9 @@ totalbr_merge_example <- function(d, pairs, merged, callsign,
   src <- src[, intersect(cols, names(src)), with = FALSE][, SOURCE := "original"]
   res <- data.table::as.data.table(merged)[co_indicativo == callsign]
   res <- res[, intersect(cols, names(res)), with = FALSE][, SOURCE := "merged"]
-  data.table::rbindlist(list(src, res), use.names = TRUE,
-                        fill = TRUE)[order(get(start_col))][]
+  out <- data.table::rbindlist(list(src, res), use.names = TRUE,
+                               fill = TRUE)[order(get(start_col))]
+  # returned as a tibble: this one is meant to be read on screen, and a
+  # data.table prints the whole thing rather than a readable head
+  if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out[]
 }
