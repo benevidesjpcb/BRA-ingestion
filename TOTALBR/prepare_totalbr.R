@@ -77,15 +77,20 @@ totalbr_prepare <- function(years    = NULL,
   n_read <- nrow(d)
 
   # ---- 2. normalise --------------------------------------------------------
-  # BEFORE any date arithmetic: read from a CSV, dt_dia is still text, and
-  # format(x, "%m") on a character vector does not extract a month - it reads
-  # "%m" as format()'s `trim` argument and fails.
+  # totalbr_normalise() parses dh_inicio, dh_fim, dh_eobt and dh_eet - but NOT
+  # dt_dia, which therefore arrives as text from a CSV and as POSIXct from the
+  # parquet. Parsed here so the prepared dataset has the same types whichever
+  # source it came from, and so date arithmetic below is safe: on a character
+  # vector, format(x, "%m") reads "%m" as format()'s `trim` argument and fails
+  # with "invalid 'trim' argument" instead of extracting a month.
   say("2/4 normalising times and pk")
   d <- totalbr_normalise(d)
+  if (date_col %in% names(d) && !inherits(d[[date_col]], "POSIXt"))
+    d[[date_col]] <- totalbr_parse_time(d[[date_col]])
 
   if (!is.null(month)) {
-    keep <- as.integer(format(d[[date_col]], "%m")) %in% as.integer(month)
-    keep[is.na(keep)] <- FALSE
+    mth <- as.integer(format(d[[date_col]], "%m"))
+    keep <- !is.na(mth) & mth %in% as.integer(month)
     d <- d[keep, , drop = FALSE]
     say("    month filter: ", nrow(d), " row(s)")
   }
