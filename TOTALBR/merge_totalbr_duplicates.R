@@ -30,6 +30,13 @@
 # So co_matricula comes from the row that has it, and the aerodrome pair likewise
 # — a blank never overwrites a value.
 #
+#   li_orgaos and the other li_* arrays : the UNION of every row's values.
+#
+# That one is not a detail. li_orgaos is what differs between the rows — APPAN on
+# one, APPBR on the other — so keeping "the first filled value" would drop the
+# very unit whose report justified merging. The merged row lists both,
+# pipe-separated.
+#
 # GROUPS, NOT PAIRS
 # A flight can appear three times (a plan and two unit reports). The pairs are
 # therefore treated as edges of a graph and every connected group is collapsed
@@ -75,6 +82,23 @@ totalbr_pair_groups <- function(pairs, n) {
   x[which(ok)[1]]
 }
 
+# ---- columns that must be UNIONED, not picked --------------------------------
+# li_orgaos is the reason the rows differ: one says APPAN, the other APPBR. Taking
+# "the first filled value" there keeps one unit and silently drops the other,
+# erasing exactly what the merge exists to preserve. The same holds for the other
+# li_* arrays, which the download stores pipe-separated.
+TOTALBR_UNION_COLS <- c("li_orgaos", "li_tipovoo", "li_regravoo",
+                        "li_prnav", "li_rvsm")
+
+.union_values <- function(x) {
+  v <- if (is.list(x)) unlist(x) else as.character(x)
+  v <- unlist(strsplit(v[!is.na(v)], "|", fixed = TRUE))
+  v <- unique(trimws(v))
+  v <- v[nzchar(v)]
+  if (length(v) == 0) return(NA_character_)
+  paste(sort(v), collapse = "|")
+}
+
 # =============================================================================
 # totalbr_merge_duplicates(d, pairs, time_cols)
 #
@@ -89,6 +113,7 @@ totalbr_merge_duplicates <- function(d, pairs,
                                      start_col = "dh_inicio",
                                      end_col   = "dh_fim",
                                      day_col   = "dt_dia",
+                                     union_cols = TOTALBR_UNION_COLS,
                                      # the work is done in data.table for speed;
                                      # what comes back is a tibble, because that
                                      # is what the rest of the analysis uses
@@ -151,6 +176,14 @@ totalbr_merge_duplicates <- function(d, pairs,
   if (day_col %in% names(merged) && ".DAY" %in% names(merged))
     merged[, (day_col) := .DAY]
   merged[, c(".START", ".END", intersect(".DAY", names(merged))) := NULL]
+
+  # the union columns: every unit that reported the flight, not just the first
+  ucols <- intersect(union_cols, names(grp))
+  if (length(ucols) > 0) {
+    uni <- grp[, lapply(.SD, .union_values), by = GRP_ID, .SDcols = ucols]
+    merged <- merge(merged[, setdiff(names(merged), ucols), with = FALSE],
+                    uni, by = "GRP_ID")
+  }
 
   rest[, `:=`(N_MERGED = 1L,
               MERGED_PK = if ("pk" %in% names(rest)) pk else NA_character_)]
