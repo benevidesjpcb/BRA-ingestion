@@ -95,7 +95,14 @@ Years you already hold as files go straight into `data-raw/totalbr/` with the sa
 source(here::here("TOTALBR", "download_totalbr.R"))
 source(here::here("TOTALBR", "totalbr_sources.R"))
 
-# only the years the parquet archive does not already cover
+# What is already held, year by year, BEFORE deciding anything. Printing this is
+# the point: a year that is skipped and a year that was never looked at produce
+# the same silence otherwise, and "it did not download 2024" then reads as a
+# failure when it is the archive already covering it.
+cov <- totalbr_year_coverage(totalbr_data_years, raw_dir = bra_totalbr_raw_dir)
+print(cov, n = Inf)
+
+# only the years nothing on disk covers yet
 need <- totalbr_missing_years(totalbr_data_years, raw_dir = bra_totalbr_raw_dir)
 message("Years to fetch: ", if (length(need)) paste(need, collapse = ", ") else "none")
 
@@ -103,13 +110,30 @@ if (length(need) > 0)
   download_totalbr(need, out_dir = bra_totalbr_raw_dir)
 ```
 
-To fetch one year regardless of what is on disk — which is the right way to test the
-endpoint before trusting a long run — call the downloader directly:
+The coverage table printed first is what makes the decision auditable. `COVERED` is why a
+year is not fetched: 2024 and 2025 are in the **parquet archive**, so `need` comes back as
+2026 alone. That is the intended behaviour — the archive is the reference for the history,
+and re-downloading a year it already holds would spend hours to produce a second, competing
+copy of the same year.
+
+Read `DAYS_HELD` against `DAYS_POSSIBLE` in that table before trusting it. A year marked
+covered with noticeably fewer days than the calendar has is a hole in the archive, and the
+filter would keep hiding it — the same failure mode that kept 2025-10-31 invisible in the
+taxi source for as long as nobody counted days.
+
+To fetch a year **regardless** of what is on disk — to test the endpoint before trusting a
+long run, or to hold the API's own copy of a year beside the archive so the two can be
+compared — call the downloader directly:
 
 ```r
 source(here::here("TOTALBR", "download_totalbr.R"))
-download_totalbr(2026, out_dir = bra_totalbr_raw_dir)
+
+download_totalbr(2026, out_dir = bra_totalbr_raw_dir)        # one year
+download_totalbr(2024:2025, out_dir = bra_totalbr_raw_dir)   # beside the archive
 ```
+
+Nothing is overwritten: the download writes `totalbr_<year>.csv`, never the parquet. It is
+exactly how the archive-versus-API comparison further down was produced.
 
 A word on years that come back nearly empty. Asking for 2019 returns a few dozen rows
 (14 in March, 32 in May) and "no rows" for every other month. That is the API answering
