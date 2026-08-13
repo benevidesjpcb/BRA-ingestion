@@ -47,6 +47,11 @@ suppressPackageStartupMessages({
       stop("Package '", p, "' is required. install.packages('", p, "')")
 })
 
+# Corporate proxy, shared with the ODIN downloader: on a network where
+# everything external goes through a proxy, this API fails exactly like ODIN did
+# (407 on the CONNECT tunnel, surfacing as a transport error). See proxy.R.
+source(here::here("proxy.R"))
+
 TATIC_SEP <- ";"   # same delimiter as every other raw file in data-raw/
 
 # ---- JSON arrays -> one string ----------------------------------------------
@@ -74,7 +79,8 @@ tatic_fetch_day <- function(day, token, base_url, timeout = 300) {
     httr2::req_url_query(token = token, datai = fmt(day), dataf = fmt(day + 1)) |>
     httr2::req_user_agent("BRA-ingestion/tatic") |>
     httr2::req_timeout(timeout) |>
-    httr2::req_retry(max_tries = 4)
+    httr2::req_retry(max_tries = 4) |>
+    bra_proxy()
 
   resp <- tryCatch(httr2::req_perform(req), error = function(e) e)
   if (!inherits(resp, "httr2_response")) return(NULL)
