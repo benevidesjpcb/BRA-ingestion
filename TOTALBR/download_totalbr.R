@@ -40,9 +40,19 @@
 # the shared engine; sourcing only defines download_odin()
 source(here::here("ODIN", "download_odin.R"))
 
-download_totalbr <- function(years   = as.integer(format(Sys.Date(), "%Y")),
-                             out_dir = file.path("data-raw", "totalbr"),
+# The study period comes from _chapter-setup.R (totalbr_data_years) when that has
+# been sourced. Defaulting to the current year instead is what made a plain
+# download_totalbr() quietly skip 2024 and 2025 while the setup declared them.
+totalbr_default_years <- function() {
+  if (exists("totalbr_data_years", inherits = TRUE))
+    get("totalbr_data_years", inherits = TRUE)
+  else as.integer(format(Sys.Date(), "%Y"))
+}
+
+download_totalbr <- function(years   = totalbr_default_years(),
+                             out_dir = here::here("data-raw", "totalbr"),
                              force   = FALSE) {
+  message("TOTALBR years: ", paste(years, collapse = ", "))
   dedup <- Sys.getenv("TOTALBR_DEDUP_COL", unset = "")
   download_odin(
     # the ODIN table is total_brasil; the shorter `totalbr` names the files and
@@ -63,7 +73,7 @@ download_totalbr <- function(years   = as.integer(format(Sys.Date(), "%Y")),
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   args  <- commandArgs(trailingOnly = TRUE)
-  years <- if (length(args) == 0) as.integer(format(Sys.Date(), "%Y")) else args
+  years <- if (length(args) == 0) totalbr_default_years() else args
   download_totalbr(years)
   message("Done. If a month came back empty, confirm TOTALBR_DATE_COL (dt_dia).")
 }

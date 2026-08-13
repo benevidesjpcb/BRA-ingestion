@@ -146,7 +146,14 @@ tatic_days_in_part <- function(path) {
 #
 # Returns, invisibly, the year files written.
 # =============================================================================
-download_tatic <- function(years   = as.integer(format(Sys.Date(), "%Y")),
+# The study period comes from _chapter-setup.R (tatic_years) when that has been
+# sourced; only a session that never loaded it falls back to the current year.
+tatic_default_years <- function() {
+  if (exists("tatic_years", inherits = TRUE)) get("tatic_years", inherits = TRUE)
+  else as.integer(format(Sys.Date(), "%Y"))
+}
+
+download_tatic <- function(years   = tatic_default_years(),
                            from    = NULL,
                            to      = NULL,
                            out_dir = here::here("data-raw", "tatic"),
@@ -293,7 +300,7 @@ download_tatic <- function(years   = as.integer(format(Sys.Date(), "%Y")),
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) == 0) download_tatic()
+  if (length(args) == 0) download_tatic()   # tatic_years when the setup is loaded
   else download_tatic(years = as.integer(args[1]),
                       from  = if (length(args) >= 2) args[2] else NULL,
                       to    = if (length(args) >= 3) args[3] else NULL)

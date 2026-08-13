@@ -61,7 +61,14 @@
 # the shared engine; sourcing only defines download_odin(), odin_probe(), odin_tables()
 source(here::here("ODIN", "download_odin.R"))
 
-download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
+# The study period comes from _chapter-setup.R (dsTaxi_years) when that has been
+# sourced; only a session that never loaded it falls back to the current year.
+taxi_default_years <- function() {
+  if (exists("dsTaxi_years", inherits = TRUE)) get("dsTaxi_years", inherits = TRUE)
+  else as.integer(format(Sys.Date(), "%Y"))
+}
+
+download_taxi <- function(years    = taxi_default_years(),
                           # its own folder, like data-raw/kpi08 and
                           # data-raw/totalbr; the months land in dstaxi/parts/
                           out_dir  = here::here("data-raw", "dstaxi"),
@@ -100,6 +107,6 @@ download_taxi <- function(years    = as.integer(format(Sys.Date(), "%Y")),
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   args  <- commandArgs(trailingOnly = TRUE)
-  years <- if (length(args) == 0) as.integer(format(Sys.Date(), "%Y")) else args
+  years <- if (length(args) == 0) taxi_default_years() else args
   download_taxi(years)
 }
