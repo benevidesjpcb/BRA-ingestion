@@ -37,10 +37,12 @@
 # very unit whose report justified merging. The merged row lists both,
 # pipe-separated.
 #
-# The extremes are taken over the REAL MOVEMENTS only. A filed plan carries an
-# intention, not an event, so it must not set the start of a flight that went
-# later; it still contributes dh_eobt, the registration and its unit. A group
-# with no movement at all falls back to its plans and is marked PLAN_ONLY.
+# The extremes are taken over EVERY row of the group. A row with
+# dh_fim == dh_inicio is not a filed plan and not an intention — it is the flight
+# as one unit captured it on radar, at a single instant — so it dates the flight
+# just as much as a row with a span. A group where every row is a single instant
+# is marked ZERO_SPAN_ONLY: its SPAN_MIN of 0 describes the records, not the
+# flight.
 #
 # GROUPS, NOT PAIRS
 # A flight can appear three times (a plan and two unit reports). The pairs are
@@ -142,14 +144,15 @@ totalbr_merge_duplicates <- function(d, pairs,
   rest <- dt[!ROW_ID %in% touched]
 
   # Order inside each group decides which value wins for every non-time column:
-  # a row with a registration beats one without; an actual movement (a duration)
-  # beats a filed plan (dh_fim == dh_inicio); ties go to the earliest.
+  # a row with a registration beats one without; a row covering a span beats a
+  # single-instant capture (dh_fim == dh_inicio), because it saw more of the
+  # flight; ties go to the earliest.
   has_reg <- if ("co_matricula" %in% names(grp))
     !is.na(grp$co_matricula) & nzchar(trimws(as.character(grp$co_matricula))) else rep(FALSE, nrow(grp))
   is_plan <- !is.na(grp[[start_col]]) & !is.na(grp[[end_col]]) &
              grp[[start_col]] == grp[[end_col]]
   grp[, `:=`(.HAS_REG = as.integer(!has_reg),      # 0 first = has registration
-             .IS_PLAN = as.integer(is_plan))]      # 0 first = real movement
+             .IS_PLAN = as.integer(is_plan))]      # 0 first = row with a span
   data.table::setorderv(grp, c("GRP_ID", ".HAS_REG", ".IS_PLAN", start_col))
 
   val_cols <- setdiff(names(grp),
@@ -161,30 +164,25 @@ totalbr_merge_duplicates <- function(d, pairs,
          MERGED_PK = if ("pk" %in% names(grp)) paste(pk, collapse = "|") else NA_character_)
   ), by = GRP_ID, .SDcols = val_cols]
 
-  # The times are NOT "first filled": they are the extremes of the group, which is
-  # the whole point of merging two partial reports of one flight.
+  # The times are NOT "first filled": they are the EXTREMES of the group, over
+  # every row in it. That is the whole point of merging.
   #
-  # BUT ONLY OVER THE REAL MOVEMENTS. A filed plan (dh_fim == dh_inicio) carries
-  # an INTENTION, not an event: PRATC on 2026-01-01 was filed for 05:43 and went
-  # at 06:07. Letting the plan set dh_inicio makes the flight "start" 24 minutes
-  # before it moved and inflates SPAN_MIN by the delay. The plan still joins the
-  # merge and still contributes dh_eobt, the registration and its unit — it just
-  # does not define when the flight happened.
-  #
-  # A group of plans only (no movement at all) falls back to the plans, because
-  # then there is nothing else to date it by.
-  ext <- grp[, {
-    real <- .SD[.IS_PLAN == 0L]
-    use  <- if (nrow(real) > 0) real else .SD
-    list(.START = suppressWarnings(min(use[[start_col]], na.rm = TRUE)),
-         .END   = suppressWarnings(max(use[[end_col]],   na.rm = TRUE)),
-         .PLAN_ONLY = nrow(real) == 0L)
-  }, by = GRP_ID, .SDcols = c(start_col, end_col, ".IS_PLAN")]
+  # A row with dh_fim == dh_inicio is NOT a filed plan and not an intention: it is
+  # the flight as one unit captured it on radar, at a single instant. It dates the
+  # flight exactly as much as a row with a span does — so PRATC seen at 05:43 by
+  # one unit and tracked 06:07-06:59 by another is one flight from 05:43 to 06:59.
+  # (An earlier version of this file excluded those rows from the extremes. That
+  # was wrong about what the data is, and it shortened real flights.)
+  ext <- grp[, list(
+    .START = suppressWarnings(min(get(start_col), na.rm = TRUE)),
+    .END   = suppressWarnings(max(get(end_col),   na.rm = TRUE)),
+    .ZERO_ONLY = all(.IS_PLAN == 1L)
+  ), by = GRP_ID]
   # dt_dia follows the earliest row, not the group's own dt_dia values, so the
   # merged flight is dated by when it started
   if (day_col %in% names(grp)) {
-    # same choice as the times: the day of the earliest real movement
-    first_day <- grp[order(GRP_ID, .IS_PLAN, get(start_col)),
+    # dated by the earliest row, matching .START
+    first_day <- grp[order(GRP_ID, get(start_col)),
                      list(.DAY = get(day_col)[1]), by = GRP_ID]
     ext <- merge(ext, first_day, by = "GRP_ID")
   }
@@ -194,10 +192,11 @@ totalbr_merge_duplicates <- function(d, pairs,
   merged[is.finite(.END), (end_col) := .END]
   if (day_col %in% names(merged) && ".DAY" %in% names(merged))
     merged[, (day_col) := .DAY]
-  # PLAN_ONLY marks a merged row dated by a filed plan because no movement was
-  # ever reported for it — worth knowing before treating its times as facts
-  merged[, PLAN_ONLY := .PLAN_ONLY]
-  merged[, c(".START", ".END", ".PLAN_ONLY",
+  # every row of the group was a single-instant capture, so the merged row has no
+  # span of its own: SPAN_MIN will be 0 and that is a fact about the records, not
+  # about the flight
+  merged[, ZERO_SPAN_ONLY := .ZERO_ONLY]
+  merged[, c(".START", ".END", ".ZERO_ONLY",
              intersect(".DAY", names(merged))) := NULL]
 
   # the union columns: every unit that reported the flight, not just the first
