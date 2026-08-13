@@ -225,6 +225,104 @@ totalbr_merge_duplicates <- function(d, pairs,
     tibble::as_tibble(out) else out[]
 }
 
+# =============================================================================
+# totalbr_merge_flights(d, gap_min) — the whole job in one call
+#
+# Groups the records of ONE FLIGHT and merges them. Use this rather than pairing:
+#
+#   merged <- totalbr_merge_flights(d, gap_min = 45)
+#
+# WHY NOT PAIRS
+# totalbr_near_pairs() matches ONE record to ONE partner. That was built when the
+# zero-duration rows looked like filed plans — one plan, one movement. They are
+# not: each row is the flight as ONE UNIT captured it, so a flight has as many
+# records as units that saw it. PRATC SDIM->SBVT on 2026-01-01 has four: APPSP at
+# 05:43, then ACCCW, APPRJ and APPVT covering 06:07-06:59. One-to-one pairing
+# merged three and left APPSP standing alone as a second, phantom flight.
+#
+# HOW THE GROUPING WORKS
+# Records sharing callsign + departure + destination are sorted by start time.
+# A record joins the group being built when it starts within `gap_min` of the
+# LATEST END so far in that group; otherwise it opens a new flight. Chaining on
+# the running end, not on the first record, is what lets a 05:43 instant, a
+# 06:07-06:59 track and anything between them form one flight.
+#
+# CHOOSING gap_min
+# It is the shortest turnaround that still separates two real flights of the same
+# aircraft on the same route. Too large and a shuttle's consecutive legs merge;
+# too small and one flight splits into several. The gap between the records of
+# the same flight is minutes; a genuine next leg needs the aircraft to land, turn
+# around and depart again. 45 minutes is the default, and
+# totalbr_cluster_profile() shows what the data does around it.
+# =============================================================================
+totalbr_merge_flights <- function(d, gap_min = 45,
+                                  start_col = "dh_inicio",
+                                  end_col   = "dh_fim",
+                                  key_cols  = c("co_indicativo", "co_addep", "co_addes"),
+                                  ...) {
+  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols)
+  totalbr_merge_duplicates(d, edges, start_col = start_col, end_col = end_col, ...)
+}
+
+# The grouping, expressed as edges between consecutive records of one flight, so
+# the union-find in totalbr_merge_duplicates() rebuilds the groups. Returns the
+# same shape as totalbr_near_pairs(), which keeps every downstream tool working.
+totalbr_flight_edges <- function(d, gap_min = 45,
+                                 start_col = "dh_inicio",
+                                 end_col   = "dh_fim",
+                                 key_cols  = c("co_indicativo", "co_addep", "co_addes")) {
+  empty <- data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
+                                  GAP_MIN = numeric(), KIND = character())
+  dt <- data.table::as.data.table(d)
+  dt[, ROW_ID := .I]
+  key_cols <- intersect(key_cols, names(dt))
+  if (length(key_cols) == 0) stop("None of the key columns exist: ",
+                                  paste(key_cols, collapse = ", "))
+  dt[, .KEY := do.call(paste, c(as.list(dt[, key_cols, with = FALSE]), list(sep = "|")))]
+
+  # a record with no start time, or no callsign, is never grouped: there is
+  # nothing to place it by, and guessing would invent a flight
+  ok <- dt[!is.na(get(start_col)) & !is.na(.KEY) & nzchar(.KEY)]
+  if (nrow(ok) < 2) return(empty)
+
+  ok[, .S := as.numeric(get(start_col))]
+  ok[, .E := data.table::fifelse(is.na(get(end_col)), .S, as.numeric(get(end_col)))]
+  ok[.E < .S, .E := .S]          # an end before its own start must not extend the group
+  data.table::setorderv(ok, c(".KEY", ".S"))
+
+  # .RUN_END is the LATEST end among the records already in the group. Measuring
+  # the next record against it — rather than against the group's first record —
+  # is what chains a 05:43 instant to a 06:07-06:59 track into one flight.
+  ok[, .PREV    := data.table::shift(ROW_ID), by = .KEY]
+  ok[, .RUN_END := data.table::shift(cummax(.E)), by = .KEY]
+  ok[, .GAP     := (.S - .RUN_END) / 60]
+
+  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= gap_min,
+          list(ROW_ID, PARTNER_ID = .PREV, GAP_MIN = round(.GAP, 1),
+               KIND = "same flight")]
+  if (nrow(e) == 0) return(empty)
+  e[]
+}
+
+# ---- what the grouping does at different tolerances --------------------------
+# Run before trusting gap_min: how many flights each tolerance produces, and the
+# largest span it creates. A tolerance that starts swallowing consecutive legs
+# shows up as the span jumping while the flight count barely moves.
+totalbr_cluster_profile <- function(d, gaps = c(15, 30, 45, 60, 90, 120, 180),
+                                    start_col = "dh_inicio", end_col = "dh_fim") {
+  out <- lapply(gaps, function(g) {
+    e <- totalbr_flight_edges(d, g, start_col, end_col)
+    m <- totalbr_merge_duplicates(d, e, start_col = start_col, end_col = end_col,
+                                  as_tibble = FALSE)
+    data.frame(GAP_MIN = g, FLIGHTS = nrow(m),
+               MERGED = sum(m$N_MERGED > 1),
+               MAX_SPAN = suppressWarnings(max(m$SPAN_MIN, na.rm = TRUE)),
+               P99_SPAN = round(stats::quantile(m$SPAN_MIN, .99, na.rm = TRUE), 1))
+  })
+  out <- do.call(rbind, out)
+  if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out
+}
+
 # ---- how far apart are the paired rows? -------------------------------------
 # The number that sets the tolerance. A plan and its movement sit minutes apart;
 # a plan wrongly matched to the NEXT flight of the same aircraft sits hours
