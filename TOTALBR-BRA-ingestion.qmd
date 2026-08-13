@@ -907,8 +907,39 @@ keeping one value would erase the units whose reports justified merging. Three c
 added — `N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a
 merged row can always be traced back.
 
+The four steps are one call. Download, drop the repeated `pk`, merge each flight's records,
+and what comes back is the dataset to work on:
+
 ```{r}
 #| label: merge-bra-totalbr
+#| eval: false
+
+source(here::here("TOTALBR", "prepare_totalbr.R"))
+
+flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir)
+
+# a slice, while working something out
+jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir)
+
+# check one aircraft end to end
+flights |>
+  dplyr::filter(co_indicativo == "PRATC") |>
+  dplyr::select(co_addep, co_addes, dh_inicio, dh_fim, SPAN_MIN, N_MERGED, li_orgaos)
+```
+
+It prints what each step did — rows read, rows dropped as a repeated `pk`, records absorbed
+by merging, flights out — so the effect on any count is stated rather than guessed. The same
+table comes back as `attr(flights, "steps")`.
+
+Renaming columns, filtering to the study airports, deriving metrics: all of that happens
+**after** this, on the result. Nothing is written to disk unless `out_file` is given, and it
+refuses a raw download's file name — a download records what the API served and is not
+edited in place.
+
+The individual steps stay available for when something needs to be looked at on its own:
+
+```{r}
+#| label: merge-bra-totalbr-steps
 #| eval: false
 
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
@@ -916,17 +947,8 @@ source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
 
 d <- totalbr_normalise(totalbr_read_year(2026, source = "csv",
                                          raw_dir = bra_totalbr_raw_dir))
-
-# 1. the only deletion: the same row stored twice
 d <- totalbr_drop_duplicate_pk(d)
-
-# 2. everything else: the records of one flight become one row
 merged <- totalbr_merge_flights(d, gap_min = 45)
-
-# check one aircraft end to end
-merged |>
-  dplyr::filter(co_indicativo == "PRATC") |>
-  dplyr::select(co_addep, co_addes, dh_inicio, dh_fim, SPAN_MIN, N_MERGED, li_orgaos)
 ```
 
 For PRATC in January 2026 that returns 13 flights, one row each — including the

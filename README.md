@@ -234,6 +234,8 @@ percentile; it is the volume/denominator dataset.
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
+| `TOTALBR/merge_totalbr_duplicates.R` | Merges the records of one flight into one row | yes |
+| `TOTALBR/prepare_totalbr.R` | The whole cycle in one call: read, drop repeated `pk`, merge flights | yes |
 | `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs API download: what matches, what is one-sided, where they disagree | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
 | `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
