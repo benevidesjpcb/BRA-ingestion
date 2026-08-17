@@ -32,3 +32,4 @@ data/totalbr/
 # CSVs in data/ live, so the published dashboards lose nothing.
 kpi08-data.js
 index-data.js
+.positai

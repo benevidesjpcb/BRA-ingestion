@@ -153,8 +153,8 @@ download_totalbr(2026, out_dir = bra_totalbr_raw_dir)        # one year
 download_totalbr(2024:2025, out_dir = bra_totalbr_raw_dir)   # beside the archive
 ```
 
-Nothing is overwritten: the download writes `totalbr_<year>.csv`, never the parquet. It is
-exactly how the archive-versus-API comparison further down was produced.
+Nothing is overwritten: the download writes `totalbr_<year>.csv`, never the parquet, so a
+year can be held by both sources and each one still says what its own producer served.
 
 A word on years that come back nearly empty. Asking for 2019 returns a few dozen rows
 (14 in March, 32 in May) and "no rows" for every other month. That is the API answering
@@ -353,159 +353,58 @@ source(here::here("TOTALBR", "download_totalbr.R"))
 download_totalbr(<the offending years>, out_dir = bra_totalbr_raw_dir, force = TRUE)
 ```
 
-## Reconciling With the Official Figure
+## Two Validations, One Month at a Time
 
-Brazil publishes **2,109,588** controlled flights for 2025. The archive here counts
-**2,109,623** — 35 more. A gap that small is not a data difference; it is a boundary, and the
-question is which definition of "the year" the published number uses.
+Everything from here on works on **one month**. That is not a limitation to apologise for, it
+is the unit the checks are meant to run in: a month of the API download reads in about ten
+seconds and a month of the archive in about three, against minutes and a gigabyte of memory
+for a whole year. A check that takes ten minutes stops being run, and a check that is not run
+tells you nothing.
 
-There are four candidates, and they disagree by exactly the kind of margin seen here:
+Every function below therefore takes `month`, `totalbr_read_year()` included, so the filter
+happens while reading rather than after a year is in memory. Leave it out and it judges the
+whole year — worth doing once a year is closed, and not worth doing while working something
+out.
 
-| Definition | Why it differs |
-| --- | --- |
-| `dt_dia` in UTC | what this pipeline filters on today |
-| `dt_dia` in local time (UTC−3) | the first three hours of 1 January UTC are still 31 December in Brazil |
-| `dh_inicio` in UTC | the movement rather than the reference day |
-| `dh_inicio` in local time | both differences at once |
+The snippets below all start from **`d`**: the raw dataset. `totalbr_read_year()` returns the
+rows as the source served them and `totalbr_normalise()` only fixes types — timestamps parsed
+to POSIXct, `pk` to one case, because the archive writes it uppercase and the API lowercase.
+Nothing is filtered, nothing is aggregated, no column is added. It is the material both
+validations work on, and one month of it is about 180,000 rows against 1.2 million for the
+year.
 
-```{r}
-#| label: tbl-bra-totalbr-year-count
-#| eval: false
+Two validations, in this order, because the second only makes sense once the first is done:
 
-source(here::here("TOTALBR", "totalbr_sources.R"))
+| | Test | Verdict | What to do |
+| --- | --- | --- | --- |
+| **1** | the same `pk` twice | one movement, recorded twice with different payloads | **collapse** the copies into one |
+| **2** | several rows, one flight | each row is one unit's view of it | **merge** them into one |
 
-totalbr_year_count(2025, official = 2109588, raw_dir = bra_totalbr_raw_dir)
-totalbr_year_edges(2025, raw_dir = bra_totalbr_raw_dir)
-```
+Both end in a merge, and the difference is what has to be decided first. In validation 1 there
+is nothing to decide: `pk` already asserts the rows are one movement, and measurement confirms
+every identity column agrees. In validation 2 that is exactly what has to be established, from
+proximity in time, the units, and the route.
 
-`totalbr_year_count()` reports the row count under all four, with `DIFF` against the official
-figure; `totalbr_year_edges()` shows the days at the year boundaries, which is the population
-any change of definition can move.
+Nothing in this pipeline is deleted. An earlier version dropped the second copy of a repeated
+`pk` on the grounds that `pk` hashes the whole row — it does not, and the measurement is
+below.
 
-#### The archive is stamped in Paris time — and the label is wrong
+The functions, so the rest of this chapter can be read as a map:
 
-DECEA confirmed the stamps are **UTC**. The `Europe/Paris` label is an artefact of where the
-file was written, and that changes what every instant-based number means.
+| | Count them | See the rows | Resolve them |
+| --- | --- | --- | --- |
+| **1** | `check_totalbr_duplicates()` → `SAME_PK` | `totalbr_duplicate_examples(…, "pk")` | `totalbr_merge_duplicate_pk()` |
+| **2** | `check_totalbr_duplicates()` → `NEAR_DUP` | `totalbr_duplicate_examples(…, "near")` | `totalbr_merge_flights(d, gap_min =)` |
 
-Two readings were possible and they give opposite answers:
+In practice neither resolving function is called by hand: `totalbr_prepare()` runs
+`totalbr_clean_units()`, then both, in that order, and reports what each step did.
+`totalbr_drop_duplicate_pk()` still exists but is **not** the path — it is kept only to
+reproduce the old behaviour, and it is what loses the 162 `dh_eet` values measured below.
 
-| Reading | Consequence |
-| --- | --- |
-| the label is real | the stored instant is correct; `dh_inicio` differs by **+50 min**; a row showing `2026-01-01 00:59` Paris is 2025 |
-| the label is wrong | the **written clock** is correct; the real difference is 50 − 60 = **−10 min**; that row is 2026 |
+## Validation 1 — The Same `pk` Twice
 
-The second is the case. So:
-
-- the archive stamps `dh_inicio` about **ten minutes after** the API, not fifty before — which
-  is what the raw printout showed before it was "corrected" the wrong way;
-- a row written `2026-01-01 00:59:40` belongs to **2026**, and a 2025 filter that keeps it is
-  filtering on the wrong clock;
-- the operation everywhere is **`force_tz`** — keep the clock, replace the label — never
-  `with_tz`, which keeps the instant and moves the clock;
-- in arrow, `year()` on the field's own zone already reads the written clock, so it needs no
-  shift at all;
-- and bounds for filtering are built **in the zone the column claims**, because the instant
-  that reads as `2025-01-01 00:00` there is the one the written clock means.
-
-`TOTALBR_SHIFT_MIN` now carries the alignment (−10) instead of the 50 being spread through
-the matching code. Re-measure it with `compare_totalbr_time_shift()` before trusting any
-comparison built on it: every figure in this section that depended on the instant needs
-re-running.
-
-#### How the label was hiding
-
-```
-COLUMN     TYPE
-dt_dia     timestamp[us, tz=Europe/Paris]
-dh_inicio  timestamp[us, tz=Europe/Paris]
-dh_fim     timestamp[us, tz=Europe/Paris]
-```
-
-Every time column in the parquet carries **Europe/Paris**. That records where the file was
-written, not anything about Brazilian traffic — and it had been deciding results without
-appearing anywhere. arrow evaluates `lubridate::year()` in the field's own zone, so a scan
-that pushed the work down counted 2025 in Paris time while a scan that collected the column
-and formatted it in UTC counted it in UTC. Same file, same year, same column:
-
-| Zone the year was counted in | 2025 | vs official |
-| --- | --- | --- |
-| Europe/Paris (the file's own label) | 2,109,623 | **+35** |
-| UTC | 2,109,856 | +268 |
-| UTC−3 (Brazil) | 2,109,631 | +43 |
-
-The original 35-row gap came from the Paris reading — an accident of where the archive was
-produced, not a choice anyone made.
-
-Every derivation of a year or a day now names its zone explicitly (`TOTALBR_TZ`, UTC by
-default) and shifts the instant into it, instead of inheriting whatever the engine decided.
-Where an arrow build cannot shift zones, it says so rather than returning a number whose
-meaning is unstated.
-
-Thirty-five rows do not matter to a national total. The definition does: it applies to every
-year and every table built from them, and until it was named, two functions in this
-repository could disagree by 233 rows with nothing on screen to explain it.
-
-### Where the 35 went
-
-Once the written clock is read as written, 2025 counts **2,109,623** against the published
-**2,109,588** — the +35 the reconciliation started from, and the only figure that survived
-all the zone corrections.
-
-Twenty-three of them are the file repeating itself:
-
-| | Archive (parquet) | API (csv) |
-| --- | --- | --- |
-| Rows, 2025 | 2,109,623 | 2,108,473 |
-| Identical `pk` | **23** | 0 |
-| Plan + movement | 9,352 | 47,357 |
-| Outright repeats | 6,209 | 6,439 |
-| Duplication, total | **0.74%** | 2.55% |
-| Plan rows | 3.1% | 8.1% |
-
-2,109,623 − 23 = 2,109,600, twelve above the published figure. Twelve rows in 2.1 million is
-0.0006%, and chasing it further needs the official definition rather than more code.
-
-Two things worth keeping from that table. **The API duplicates more than the archive** — 2.55%
-against 0.74% — but the archive carries a fault the API does not: 23 rows repeated hash and
-all. Each source is wrong in its own way, which is why "which source is better" has no answer
-and "which source for which figure" does.
-
-And an earlier speculation of mine was wrong: I had said the archive holds no plan rows, so
-rule 1 could never fire on it. It holds 65,846 of them, and 9,352 are paired with their own
-movement. The rules may well apply — that remains DECEA's call, and the guard on
-the merge stays measured-but-unapplied on the archive until they say so.
-
-The gap in plan rows between the two files (170,808 against 65,846, about 105,000) is the
-right order of magnitude for the ~98,600 airline movements that looked download-only. That
-hypothesis now has a number on both sides instead of one.
-
-## Duplication Check
-
-ICEA/DECEA have reported duplication in the ODIN data. The check applies the operational
-definition, which is deliberately strict — two rows are the same movement only when they
-could not be two different flights:
-
-| Test | Rule | Why it is conclusive |
-| --- | --- | --- |
-| **same `pk`** | the same row hash twice | `pk` identifies the row; no judgement needed |
-| **near-duplicate** | same `co_matricula`, same aerodrome pair, and `dh_inicio` **or** `dh_fim` within a few minutes | one airframe cannot be in one place twice at once |
-
-Anything else with a different `pk` is **not** counted. Two rows sharing a callsign, a route
-and a day are two flights until the registration and the clock say otherwise: an aircraft
-can fly the same route several times a day, and a callsign can be reused by a different
-airframe on the same day.
-
-The tolerance is 10 minutes by default (`tol_min`). Both `dh_inicio` and `dh_fim` are tested
-because two records of one movement can agree on when it ended while differing on when it
-started.
-
-Two details that decide whether the numbers mean anything. The `pk` test reads the
-per-month parts in `data-raw/totalbr/parts/` as well, pooled together: the merge
-de-duplicates on `pk`, so the year file can no longer show whether the API repeated a row,
-and a `pk` repeated *across* two months — what an overlapping request window produces — is
-invisible to a per-file check. And `dh_inicio`/`dh_fim` values at the epoch (1970-01-01,
-which ODIN uses in place of an empty value) are read as missing, so they cannot pile up at
-the start of time and look like a thousand simultaneous movements.
+Nothing else: does a `pk` appear more than once? One number answers it, and no judgement is
+needed to *find* them. What to do with them turned out to need a rule — see below.
 
 ```{r}
 #| label: tbl-bra-totalbr-duplicates
@@ -513,399 +412,203 @@ the start of time and look like a thousand simultaneous movements.
 
 source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
 
-if (length(files) == 0) {
-  knitr::kable(tibble::tibble(note = "No source files yet — nothing to check."))
-} else {
-  # "all" here for the overview; read it per source before concluding anything
-  dups <- check_totalbr_duplicates(source   = "all",
-                                   raw_dir  = bra_totalbr_raw_dir,
-                                   date_col = totalbr_date_col)
-  if (nrow(dups) == 0) {
-    knitr::kable(tibble::tibble(result = "No duplication found."))
-  } else {
-    dups |>
-      dplyr::select(dplyr::any_of(c(
-        Year = "YEAR", Rows = "ROWS",
-        `Same pk (merged)` = "SAME_PK", `Same pk (parts)` = "SAME_PK_PARTS",
-        `Near-duplicates` = "NEAR_DUP", `Near %` = "NEAR_PCT",
-        `No registration` = "NO_REG", `No reg. %` = "NO_REG_PCT"))) |>
-      knitr::kable(format.args = list(big.mark = ","))
-  }
-}
+# one source at a time, one month at a time
+dup <- check_totalbr_duplicates(2026, "csv", month = 1, raw_dir = bra_totalbr_raw_dir)
+
+# this validation, and only this validation
+dup |> dplyr::select(YEAR, ROWS, SAME_PK, dplyr::any_of("SAME_PK_PARTS"))
+
+# the archive answers for itself
+#check_totalbr_duplicates(2025, "parquet", month = 1, raw_dir = bra_totalbr_raw_dir)
+
+# the whole year, when a year is closed and the wait is worth it
+#check_totalbr_duplicates(2026, "csv", raw_dir = bra_totalbr_raw_dir)
 ```
 
-This chunk is `eval: false`, unlike the coverage tables above. Those aggregate inside arrow
-and never bring the archive into memory; this one has to compare rows, so it pulls the
-whole 1 GB archive plus the ~500 MB year files into R — minutes, not seconds. A document
-that takes ten minutes to render stops being run, so this is a deliberate manual step.
+`check_totalbr_duplicates()` returns the columns for both validations in one table, because
+both are answered from one read and the read is the expensive part. Select what you are asking
+about, or the two get read as one figure. The rest of the columns belong to validation 2.
 
-Run it per source rather than with `"all"` unless you want the pooled figure: `"csv"` skips
-the archive entirely and is the fast path. The reads now announce themselves and report
-rows and elapsed seconds on finishing, so a long silence after `Reading totalbr.parquet ...`
-is a read in progress, not a hang.
+- **`SAME_PK`** — the surplus copies in the year file: every one after the first. A count, not
+  a verdict; what happens to them is the next subsection.
+- **`SAME_PK_PARTS`** — the same test on the per-month files in `data-raw/totalbr/parts/`,
+  pooled. The year file is built by de-duplicating on `pk`, so by the time it exists it can no
+  longer show whether the API served a row twice — and a `pk` repeated *across* two months,
+  which is what an overlapping request window produces, is invisible to a per-file check. This
+  is where an exact repeat actually shows up.
 
-The two tests do not overlap. An exact `pk` repeat trivially satisfies the second rule as
-well — same aircraft, same place, zero minutes apart — so the near test runs only on
-pk-unique rows. `NEAR_DUP` is therefore duplication **beyond** what `SAME_PK` reports, and
-the near examples show pairs with different `pk`, which is the case the rule exists to
-find. Before this, the examples came back full of pairs sharing one `pk`: true duplicates,
-but already counted, and useless as evidence of anything new.
+Always name a **source**. The archive and the API are different producers with different
+faults, and `"all"` pools them into a figure that describes neither. Each call is one pass over
+the file, so ask for the source and the month you actually want rather than reading the same
+file twice.
 
-`No registration` and `No time` are there so the near-duplicate figure is read for what it
-covers. Rows with an empty `co_matricula`, or with no time of day on either stamp, cannot
-be tested by this rule at all. A near-duplicate count of zero over a year that is 90%
-untestable says nothing, and `TESTED_PCT` is what makes that visible.
+The rows themselves, when the count is not zero:
 
 ```{r}
-#| label: examples-bra-totalbr-duplicates
+#| label: examples-bra-totalbr-pk
 #| eval: false
 
-# the near-duplicates: rows with DIFFERENT pk that the rule caught, next to the
-# rows they repeat, with the gap in minutes. Read the SOURCE column: the function
-# walks the sources and returns the first that has anything, so a result can come
-# from the parquet archive even when the year you asked about was downloaded.
-totalbr_duplicate_examples(2026, "near", raw_dir = bra_totalbr_raw_dir)
-
-# the exact repeats: the same pk twice
-totalbr_duplicate_examples(2026, "pk", raw_dir = bra_totalbr_raw_dir)
-
-# EVERY flagged row, all columns, from ONE source — the list to inspect or send
-dup26 <- totalbr_duplicate_rows(2026, "csv", raw_dir = bra_totalbr_raw_dir)
-
-# ... and written out, semicolon-delimited like the raw files
-totalbr_duplicate_rows(2026, "csv", raw_dir = bra_totalbr_raw_dir,
-                       out_file = here::here("outputs", "totalbr-2026-duplicates.csv"))
-
-# the API's own answer, with nothing from the archive mixed in
-check_totalbr_duplicates(2026, "csv", raw_dir = bra_totalbr_raw_dir)
-
-# widen or tighten what counts as "almost the same time"
-check_totalbr_duplicates(2026, "csv", tol_min = 5,  raw_dir = bra_totalbr_raw_dir)
-check_totalbr_duplicates(2026, "csv", tol_min = 30, raw_dir = bra_totalbr_raw_dir)
+totalbr_duplicate_examples(2026, "pk", month = 1, raw_dir = bra_totalbr_raw_dir)
 ```
 
-Run the examples before reporting anything. The gap in minutes is what turns a count into
-evidence, and it is what ICEA need in order to find the records on their side.
+It has no `source` argument: it walks the sources and returns the **first that has anything**,
+so **read the `SOURCE` column before concluding**. A month of the download with no repeats
+falls through to the archive, whose rows spill into 2026-01-01 — which is exactly how a clean
+2026 download once looked duplicated.
 
-`totalbr_duplicate_examples()` is a sample; `totalbr_duplicate_rows()` is the complete list
-with every column, and it takes a **source** so the answer is about one producer only:
+**One cause was ours, and it is fixed.** The downloader paginated with `order=dt_dia.asc`, and
+thousands of rows share a `dt_dia`; with ties, the order between pages is whatever the database
+happens to produce per request, so a row could come back on two consecutive pages, or on
+neither. The ordering now includes the unique id, which makes the sort total and the pages a
+genuine partition of the window. Re-downloading 2026 after the fix took the same-`pk` count in
+the parts from 194 to 134 and the year gained exactly 60 rows: sixty rows had been served
+twice, each in place of one never served at all. If your parts predate that fix, re-fetch a
+month with `force = TRUE` and compare.
 
-| `source` | Reads |
-| --- | --- |
-| `"csv"` | only the years downloaded from the API — the usual choice |
-| `"parquet"` | only the handed-over archive |
-| `"all"` | both |
+### The copies are not interchangeable
 
-That argument exists because mixing the two is how a clean 2026 download came to look
-duplicated. The rows flagged then were the archive's, spilled into 2026-01-01, and no
-amount of searching the downloaded file would have found them.
+The obvious thing to do with a repeated `pk` is keep one and drop the rest, on the grounds
+that `pk` is the row hash and the copies are therefore the same row. **That premise is false**,
+and the archive says so plainly. All 455 repeated `pk` there produce 910 rows, and all 910 stay
+distinct when every column is compared — two versions each, never identical.
 
-Each row comes back with `REASON` (`same pk` or `near`), a `PAIR` number shared by the rows
-that belong together, `ROLE` (`repeat` or `original`) and `GAP_MIN`. So a repeat is always
-next to the row it repeats, which is what makes the output usable as evidence rather than
-as a list of record ids.
-
-### What the duplication actually is: the plan and the movement
-
-Filtering the API download for a single callsign showed it plainly:
-
-```
-pk        co_indicativo  co_addep co_addes  dh_inicio            dh_fim               co_matricula
-6d3783f4  TAM3756        SBBR     SBGO      2025-01-02 00:14:00  2025-01-02 00:14:00  NA
-f12dd2b2  TAM3756        SBBR     SBGO      2025-01-02 00:20:30  2025-01-02 00:37:49  PTTPB
-875178b5  TAM3756        SBBR     SBGO      2025-01-05 00:15:00  2025-01-05 00:15:00  NA
-fa1dac77  TAM3756        SBBR     SBGO      2025-01-05 00:19:30  2025-01-05 00:35:46  PRMHG
-```
-
-Two rows per flight, minutes apart, and they are not alike. One has **`dh_fim` equal to
-`dh_inicio`** — no duration at all — no registration, and a round time. The other has a real
-duration, a registration, and seconds that are not round. The first is the **filed plan**;
-the second is the **movement**. ODIN serves both.
-
-That is the duplication ICEA reported, and it is in the API feed.
-
-::: {.callout-important}
-## The test was blind to exactly this
-The near-duplicate rule grouped on `co_matricula` and required it to be **equal** on both
-rows. The plan row has no registration, so it was filtered out before any comparison — the
-test discarded precisely the class of row that constitutes the problem, and reported 6,231
-near-duplicates for 2025 as if that were the answer.
-
-The rule now groups on the **flight** — callsign and aerodrome pair — and requires the
-registrations to be **compatible** rather than equal: equal, or missing on either side. Two
-rows naming different aircraft are still two flights; a row naming none cannot contradict its
-neighbour. Rows without a registration are no longer excluded, so `NO_REG` is context rather
-than an exclusion, and `PLAN_ROWS` counts the zero-duration rows directly.
-
-Each pair is now labelled `plan + movement`, `repeated movement` or `repeated plan`, because
-they need different answers: the first is a modelling decision about which row represents the
-flight, the others are faults.
-:::
-
-**And the shape is what identifies a plan, not a missing registration.** On 2025-01-04 both
-rows lack `co_matricula` and they are still a plan and a movement — the plan is the one with
-`dh_fim` equal to `dh_inicio`.
-
-**The two kinds also need different windows.** The plan holds the time the flight was *due*
-off blocks and the movement the time it actually went, so the gap between them is the delay:
+What never differs is the movement's **identity**: `id`, `dt_dia`, `dh_inicio`, `dh_fim`,
+`co_indicativo`, `co_addep`, `co_addes`. What differs is the **payload** — `li_orgaos` in 303
+of the 455 pairs, `dh_eet` in 291:
 
 ```
-2025-01-02   00:14:00 -> 00:20:30    6.5 min
-2025-01-04   01:20:00 -> 01:33:39   13.6 min
-2025-01-06   00:15:00 -> 00:33:06   18.1 min
+li_orgaos     dh_eet
+APPAN         NA
+APPAN,APPAN   2023-03-02 21:20:00
 ```
 
-A 10-minute tolerance would find the first and miss the other two. So plan-to-movement uses
-its own, much wider window (`plan_tol_min`, 180 minutes by default) while outright repeats
-keep the narrow one — there the two rows *are* meant to agree, and a real gap means two
-flights rather than one recorded twice.
+So `pk` hashes the movement, not the row, and "keep the first copy" discards a filled field at
+random. Measured over those 455 pairs:
 
-#### The measured result, 2025 API download
-
-| | Rows | % of file |
+| Column | Keeping the first copy | Collapsing the pair |
 | --- | --- | --- |
-| Plan rows (`dh_fim` = `dh_inicio`) | 170,808 | 8.1 |
-| **Plan paired with its movement** | **47,357** | **2.2** |
-| Outright repeats | 6,439 | 0.3 |
-| Repeated `pk` | 0 | — |
+| `dh_eet` filled | 291 | **453** |
+| `co_matricula` filled | 124 | **127** |
 
-Duplication in the API is **2.55%**, and most of it is a plan sitting beside its own movement.
-Note that of the 170,808 plan rows only 47,357 found a movement: the other 123,000 are flights
-filed with no separate movement row at all, which is a different thing and not duplication.
+162 estimated-arrival values, thrown away by an arbitrary choice of copy.
 
-#### And this is very likely the 98,578 too
-
-The archive-versus-API comparison left 188,482 rows that looked download-only, 98,578 of them
-airline movements at the hubs — the one figure with no benign explanation. Set it against the
-170,808 plan rows: that is **91%** of the residual. A plan row can never find a counterpart in
-a file that holds only movements, so it is reported as a missing flight when it is really a
-difference in what the two files contain.
-
-So the comparison functions now drop plan rows by default (`drop_plans = TRUE`), putting both
-sides on movements only:
+The rule is therefore the same one validation 2 uses, in its degenerate case — the identity is
+already equal, so there is nothing to chain and nothing to judge: **union the `li_*` columns,
+take the first filled value everywhere else**. Nothing is lost either way.
 
 ```{r}
-#| label: compare-bra-totalbr-noplans
+#| label: merge-pk-bra-totalbr
 #| eval: false
 
-# both sides on movements only — the honest comparison
-totalbr_match_flights(2025, raw_dir = bra_totalbr_raw_dir)
+# prepare_totalbr.R sources the other three in order, so one line is enough --
+# sourcing merge_totalbr_duplicates.R alone leaves totalbr_read_year() and
+# totalbr_normalise() undefined, or worse, at whatever version the session
+# already held
+source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# and with the plans left in, to see how much of the difference they were
-totalbr_match_flights(2025, drop_plans = FALSE, raw_dir = bra_totalbr_raw_dir)
+# d is the RAW dataset: the rows as downloaded, with times parsed and pk
+# case-normalised, nothing filtered and nothing aggregated
+d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
+                                         raw_dir = bra_totalbr_raw_dir))
+d <- totalbr_clean_units(d)          # canonical li_* lists, before any grouping
+d <- totalbr_merge_duplicate_pk(d)   # adds N_PK_MERGED; deletes nothing
+
+# the resolved month, written out — semicolon-delimited like the raw files.
+# NEVER over a raw download's name: that file records what the API served.
+data.table::fwrite(d, here::here("outputs", "totalbr-2026-01-pk-resolved.csv"),
+                   sep = ";", na = "", quote = TRUE)
 ```
 
-Run `check_totalbr_duplicates(2025, "parquet")` alongside: if the archive's `PLAN_ROWS` is
-near zero while the API's is 8.1%, the two files simply carry different things and the
-"missing airline movements" dissolve.
+`N_PK_MERGED` says how many source rows each row stands for, so the written file carries its
+own evidence: `N_PK_MERGED > 1` is exactly the set that had a repeated `pk`. Write it to
+`outputs/`, never over the raw download — that file is the record of what the API served and
+is not edited in place.
 
-### The T that hid every timestamp
+In practice you will not call this by hand: `totalbr_prepare()` runs it as step 3 and reports
+how many rows it collapsed, and its `out_file` writes the fully resolved dataset in one go. `totalbr_drop_duplicate_pk()` still exists for comparing against the old
+behaviour, and is no longer used by the pipeline.
 
-The first run of `check_totalbr_duplicates(2025, "csv")` came back with `NO_TIME_PCT` of
-**100** — every downloaded row supposedly without a time — while `totalbr_midnight_share()`
-put the same figure at 0.1%. Two measurements of one thing disagreeing by three orders of
-magnitude is a bug, not a finding.
+The API download shows `SAME_PK` of zero for every month tested, so this is an archive
+property so far. It is measured on the archive and applied to both, because a rule that keeps
+information cannot be wrong on a source that never triggers it.
 
-The CSVs store stamps as `2025-01-01T00:03:00`. `as.POSIXct()`'s default formats do **not**
-include the ISO `T` separator: it falls through to the date-only format and returns
-**midnight**, for every row, without an error or a warning. The midnight share was computed
-on the text and was right; the duplicate check parsed to POSIXct and was wrong.
+## Validation 2 — One Flight, Several Rows
 
-The consequence is that the near-duplicate test never compared anything on a downloaded
-file. Any earlier "no duplicates" for a CSV source was the test skipping every row as
-timeless, not a clean result. The parser now normalises the separator, and a file where
-more than 90% of rows have no usable time raises a warning instead of reporting a
-comfortable zero.
+Everything that is not an identical `pk` lands here, and here there **is** judgement to make.
+Two rows can be the same movement recorded twice, or one flight handed from sector to sector,
+or two genuine flights of the same service — and the answer is read off proximity in time,
+the units that saw them, and the route.
 
-Two lessons that outlive this bug: a silent fallback is worse than an error, and the reason
-this was caught at all is that the same quantity was measured twice by different routes. The
-`TESTED_PCT` column existed precisely to make an untestable file visible — it earned its
-place on the first run.
+A flight is recorded by **every unit that saw it** — APPSP, ACCCW, APPRJ, APPVT — and each
+record covers part of what those units captured. A row where `dh_fim` equals `dh_inicio` is not
+an intention and not a filed plan: it is the flight caught at a single instant.
 
-(It also showed `TESTED_PCT` of −41.5, which is impossible: the untestable classes overlap,
-a row can lack both a registration and a time, and adding them double-counts. It is now the
-union.)
+A record is **not** one unit's view, though it is tempting to read it that way. Only about a
+third of raw rows name a single unit; two thirds already name two to six, in both sources. So
+a record is a *partial* aggregation, and merging unions the partials — it does not assemble
+one row per unit.
 
-### Result for the 2026 API download
+What is a genuine fault is the **same** unit listed twice in one row, `APPAN,APPAN`: 1.1% of
+the API's rows and 2.7% of the archive's. Several *different* units in one row are normal and
+are all kept. The two sources do not even agree on the separator — comma in the archive, pipe
+in the download — so `totalbr_clean_units()` imposes one canonical form before anything is
+grouped: distinct, sorted, pipe-separated. `totalbr_prepare()` runs it as part of step 2, and
+after it no `li_*` value repeats a token, before or after merging.
 
-Re-run this after pulling the parser fix — the earlier "none" was the bug, not an answer.
+### Proximity: what the near test measures
 
+The near test is the strict part of this validation. Two rows are the same movement only when
+they could not be two different flights: same `co_indicativo`, same aerodrome pair, and
+`dh_inicio` **or** `dh_fim` within a few minutes. Anything else is two flights until the clock
+says otherwise — an aircraft can fly the same route several times a day.
 
+Both stamps are tested because two records of one movement can agree on when it ended while
+differing on when it started. Stamps at the epoch (1970-01-01, which ODIN uses in place of an
+empty value) are read as missing, so they cannot pile up at the start of time and look like a
+thousand simultaneous movements.
 
-What does stand independently of the parser: filtering the downloaded 2026 file by hand for
-the callsigns flagged earlier finds nothing — those records are the archive's, not the
-API's. The `pk` test is also unaffected, since it never touches a timestamp.
+These are the columns of the same table that answer it:
 
-Read any near-duplicate count next to `TESTED_PCT` from `check_totalbr_duplicates(2026, "csv")` before
-concluding anything. If most of 2026 has no `co_matricula`, or no time of day on either
-stamp, then "no duplicates" means "the rule could not be applied", not "there are none".
-The two statements look identical in a summary table and are not the same finding.
-
-So the duplication ICEA reported is in the handed-over archive, not in what the API serves
-today — which is a different message to send back, and a better one.
-
-### The two sources overlap at the year boundary
-
-The archive labelled 2023–2025 carries rows dated **2026-01-01** in the first hours UTC —
-the evening of 31 December in Brazil — so its extraction was cut at a local-time boundary
-and spilled into the next year. Those same rows are in the downloaded 2026 file. Anything
-reading both sources counts them twice.
-
-It surfaced by accident: the near-duplicate examples came back full of pairs sharing one
-`pk`, all stamped 2026-01-01 between 00:29 and 00:57, all long-haul international. The
-uppercase hashes gave away which source they came from.
-
-Which is the second half of the finding. **The row hash arrives uppercase from the archive
-and lowercase from the API.** Compared as they come, the same row from the two sources
-looks like two different rows, and no de-duplication on `pk` matches across them. Every
-comparison here now folds the case first.
+- **`NEAR_DUP`** — rows the rule caught, split into `PLAN_DUP` and `REPEAT_DUP`. The test runs
+  only on `pk`-unique rows, so this is duplication **beyond** validation 1, never the same
+  rows counted twice.
+- **`PLAN_DUP`** — a zero-duration row paired with a row of real duration, over a **wide**
+  window (`plan_tol_min`, 180 min). **`REPEAT_DUP`** — two rows of the same shape a few minutes
+  apart, narrow window (`tol_min`, 10 min); there the two records *are* meant to agree, so a
+  real gap means two flights.
+- **`PLAN_ROWS`** — every zero-duration row, paired or not.
+- **`NO_TIME_PCT` and `TESTED_PCT`** — how much of the month the rule could look at. A count of
+  zero over a month that is 90% untestable is not a result, and a `NO_TIME_PCT` near 100 is a
+  parsing fault rather than a property of the data; the function says so on screen.
 
 ```{r}
-#| label: tbl-bra-totalbr-overlap
+#| label: examples-bra-totalbr-near
 #| eval: false
 
-totalbr_source_overlap(raw_dir = bra_totalbr_raw_dir)
+dup |> dplyr::select(YEAR, ROWS, NEAR_DUP, PLAN_DUP, REPEAT_DUP, PLAN_ROWS, TESTED_PCT)
+
+# the rows, with the group each flagged row belongs to
+ex <- totalbr_duplicate_examples(2026, "near", month = 1, raw_dir = bra_totalbr_raw_dir)
+View(ex)                          # or: print(ex, n = Inf, width = Inf)
+
+# EVERY flagged row, all columns, from ONE named source — to inspect or to send
+totalbr_duplicate_rows(2026, "csv", month = 1, raw_dir = bra_totalbr_raw_dir,
+                       out_file = here::here("outputs", "totalbr-2026-01-duplicates.csv"))
 ```
 
-`IN_BOTH` above zero for a year means that year is held twice, and the movement counts for
-it are inflated by that much. The fix is a decision about precedence — for the overlapping
-window, keep the API rows or the archive rows, not both — and it belongs wherever the two
-sources are combined for analysis, not in the ingestion.
+`totalbr_duplicate_examples()` shows the whole group a flagged row belongs to, with `FLAGGED`
+marking the rows the rule actually caught and the others there to be compared against; `n` is
+the number of groups, not rows. It carries **`ds_rota` and `li_orgaos`**, because those are
+what the judgement rests on: two records of one flight name different units over the same
+route, two genuine flights do not.
 
-### Why the earlier, looser tests were dropped
+`totalbr_duplicate_rows()` is the complete list rather than a sample. Each row carries `REASON`
+(`same pk` or `near`), a `PAIR` number shared by the rows that belong together, `ROLE`
+(`repeat` or `original`) and `GAP_MIN`, so a repeat always sits next to the row it repeats —
+which is what makes it usable as evidence, and what ICEA need to find the records on their
+side.
 
-An earlier version of this check also counted rows sharing `id` + `dt_dia`, and rows sharing
-callsign + route + day. Those are not duplication and the numbers were misleading — nearly
-4% of the archive at one point. Two findings came out of chasing them, and both are about
-field quality rather than duplication:
-
-#### `dt_dia` does not resolve a movement
-
-Pulling the rows showed the shape of it. A group flagged by the old, looser test:
-
-```
-pk        id      dt_dia               dh_inicio             dh_fim
-6104BE1E… PPMFM…  2025-02-16 00:00:00  2025-02-16 20:56:03   2025-02-16 21:07:58
-E2F1E8D2… PPMFM…  2025-02-16 00:00:00  2025-02-16 18:12:15   2025-02-16 18:12:19
-82B9BD65… PPMFM…  2025-02-16 00:00:00  2025-02-16 18:46:24   2025-02-16 18:47:40
-…ten rows, dh_inicio spanning 13:55 to 21:53
-```
-
-Ten **different** flights by one aircraft (`ZZZZ` → `ZZZZ`, local flying) on one day, each
-with its own start and end, all sharing one `dt_dia`. Any key built on `dt_dia` collapses
-them into one. They are not duplicates, and the strict rule agrees: their `dh_inicio` are
-hours apart.
-
-How widespread that is needs measuring rather than eyeballing, and the first attempt at it
-was wrong. A histogram of `minute(dt_dia)` put 11% of rows at minute zero, which is **not**
-the same as midnight — 13:00:00 and 20:00:00 are minute zero too. Measured properly,
-`dt_dia` is a bare date on only about 0.1% of rows:
-
-| Year | `dt_dia` at midnight | of rows |
-| --- | --- | --- |
-| 2023 | 1,932 | 1,818,076 |
-| 2024 | 1,912 | 1,959,619 |
-| 2025 | 1,747 | 2,109,623 |
-| 2026 | 337 | 1,232,397 |
-
-So the bare-date rows are real but far too few to explain 3.6% of a year. What the minute
-histogram does show is a stamp **rounded to the hour** on a large share of rows, and a
-stamp that resolves only to the hour cannot separate two movements of one aircraft inside
-that hour any more than a bare date can separate them inside the day.
-
-`totalbr_midnight_share()` now reports both — bare dates and on-the-hour stamps — for all
-three time columns, and `totalbr_stamp_agreement()` answers the question underneath: how
-often `dt_dia` is the movement time at all.
-
-```{r}
-#| label: tbl-bra-totalbr-stamps
-#| eval: false
-
-totalbr_midnight_share(raw_dir = bra_totalbr_raw_dir)   # per column, per year
-totalbr_stamp_agreement(raw_dir = bra_totalbr_raw_dir)  # dt_dia vs dh_inicio
-```
-
-In the API payload `dt_dia` and `dh_inicio` are equal on every sampled row. Wherever they
-diverge, `dt_dia` is something else — a filing time, a rounded stamp, a bare date — and is
-not a movement time.
-
-**The rule for the pipeline:** `dt_dia` is safe for the monthly download windows, because
-even a bare date lands on the right day. It is not safe as a movement time, and neither
-`dh_inicio` nor `dh_fim` can be assumed to carry a time of day without checking — the near
-duplicate test excludes the rows where they do not and reports them as `NO_TIME`.
-
-**The fallback is not confined to `dt_dia`.** Running the near-duplicate check on 2026
-turned up rows where `dh_inicio` and `dh_fim` are also bare dates:
-
-```
-co_matricula co_indicativo co_addep co_addes dh_inicio            dh_fim               GAP_MIN
-00403A       UAF1225       GMMX     SBEG     2026-06-27 00:00:00  2026-06-27 00:00:00       NA
-00403A       UAF1225       GMMX     SBEG     2026-06-27 00:00:00  2026-06-27 00:00:00        0
-1002         GAF922        SBBR     EDDB     2026-07-03 00:00:00  2026-07-03 00:00:00        0
-```
-
-A `GAP_MIN` of 0 there is not two records of one movement — it is two empty stamps. Left
-alone, every such row of an aircraft on one day would be flagged as a duplicate of the
-others, and the check would measure the missing clock rather than the traffic. Those rows
-are excluded from the test and counted as `NO_TIME`; `TESTED_PCT` says what share of the
-year the rule could actually judge.
-
-Worth checking whether the zeroed rows are a particular class of traffic — the examples
-above are foreign and military (`UAF1225` GMMX→SBEG, `GAF922` SBBR→EDDB), which would
-suggest movements known to Brazil only as a flight plan, with no observed times. That would
-make the absence expected rather than a fault.
-
-#### `dh_eet`: correct in the API year, wrong in the 2019 sample
-
-Read as an estimated arrival time, `dh_eet` minus `dh_eobt` is the estimated elapsed time.
-In the 2026 download that comes out right. GLO2028, SBGL→SBFL:
-
-```
-dh_eobt              dh_fim               dh_eet
-2026-01-01 00:03:00  2026-01-01 01:13:41  2026-01-01 01:18:00
-```
-
-Seventy-five minutes Rio to Florianópolis, against an actual `dh_fim` of 01:13 — the field
-is doing exactly what its name says.
-
-In the 2019 API sample it does not. There the difference from `dh_eobt` equals the EOBT's
-**own time of day**, on every row sampled — 16:00 filed, 16h00 "elapsed"; 18:50 filed,
-18h50 "elapsed" — which is not a flight a light single makes.
-
-An earlier reading of this column concluded the field was broken outright, from a `summary()`
-whose quartiles were all zero. That was wrong, and the way it was wrong is worth keeping:
-rows where both stamps are a **bare date** give a difference of zero and pile up at the
-centre of the distribution, so the median said "zero" about the empty rows rather than about
-the field. A statistic over a column with a large timeless class describes the class, not
-the column.
-
-`totalbr_eet_check()` judges it the only way that means anything — by whether the implied
-duration is a flight — and excludes the timeless rows instead of averaging over them:
-
-```{r}
-#| label: tbl-bra-totalbr-eet
-#| eval: false
-
-totalbr_eet_check(raw_dir = bra_totalbr_raw_dir)
-```
-
-`PLAUSIBLE_PCT` is the share landing between zero and twenty hours. High for a source means
-`dh_eet` can be used there as an estimated arrival; low means it cannot, whatever the median
-says.
-
-### Resolving it: one deletion, everything else merged
-
-Two different operations, and confusing them loses data.
-
-**Deletion applies to one case only: an identical `pk`.** `pk` is the row hash, so two rows
-carrying the same one are the same row stored twice. Dropping the repeat costs nothing and
-needs no rule.
-
-**Everything else is a merge.** A flight is recorded by **every unit that saw it** — APPSP,
-ACCCW, APPRJ, APPVT — and each record covers what that unit captured. A row where
-`dh_fim` equals `dh_inicio` is not a filed plan and not an intention: it is the flight seen
-at a single instant by one unit. So a flight has as many rows as units that tracked it, and
-picking one row throws away both the units and the extent of the flight.
+### Rebuilding the flight
 
 The rows of one flight are found by **key plus time chaining**:
 
@@ -913,8 +616,12 @@ The rows of one flight are found by **key plus time chaining**:
 - the record starts within `gap_min` of the **latest end already in the group**.
 
 Chaining on the running end — not on the group's first record — is what matters. PRATC on
-2026-01-01 was captured by APPSP at 05:43 and tracked by ACCCW, APPRJ and APPVT from 06:07
-to 06:59: one flight, four records, joined because 05:43 and 06:07 are 24 minutes apart.
+2026-01-01 was captured by APPSP at 05:43 and tracked by ACCCW, APPRJ and APPVT from 06:07 to
+06:59: one flight, four records, joined because 05:43 and 06:07 are 24 minutes apart. Before
+the chaining it came out as two flights, because the earlier matching was one-to-one — one
+record answered for one partner, and the APPSP capture was left over as a phantom second
+flight.
+
 
 | Field | Value in the merged row |
 | --- | --- |
@@ -923,13 +630,13 @@ to 06:59: one flight, four records, joined because 05:43 and 06:07 are 24 minute
 | `li_orgaos` and the other `li_*` | the **union** of every record's values |
 | `co_matricula`, aerodromes, everything else | the first value actually filled in — a blank never overwrites a value |
 
-`li_orgaos` has to be the union: it is precisely what differs between the records, so
-keeping one value would erase the units whose reports justified merging. Three columns are
-added — `N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a
-merged row can always be traced back.
+`li_orgaos` has to be the union: it is precisely what differs between the records, so keeping
+one value would erase the units whose reports justified merging. Three columns are added —
+`N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a merged row
+can always be traced back.
 
-The four steps are one call. Download, drop the repeated `pk`, merge each flight's records,
-and what comes back is the dataset to work on:
+Both validations are one call. Read the month, drop the repeated `pk`, merge each flight's
+records, and what comes back is the dataset to work on:
 
 ```{r}
 #| label: merge-bra-totalbr
@@ -937,25 +644,32 @@ and what comes back is the dataset to work on:
 
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir)
-
-# a slice, while working something out
+# the working unit: one month
 jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir)
 
+# the whole year, when that is what is wanted
+#flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir)
+
+# both validations resolved, straight to a NEW file
+totalbr_prepare(2026, month = 1, gap_min = 60, raw_dir = bra_totalbr_raw_dir,
+                out_file = here::here("outputs", "totalbr-2026-01-flights.csv"))
+
 # check one aircraft end to end
-flights |>
-  dplyr::filter(co_indicativo == "PRATC") |>
-  dplyr::select(co_addep, co_addes, dh_inicio, dh_fim, SPAN_MIN, N_MERGED, li_orgaos)
+jan |>
+  dplyr::filter(co_indicativo == "CMP205") |>
+  dplyr::select(co_indicativo , co_addep, co_addes, dh_inicio, dh_fim, ds_rota , SPAN_MIN, N_MERGED, li_orgaos)
 ```
 
 It prints what each step did — rows read, rows dropped as a repeated `pk`, records absorbed
 by merging, flights out — so the effect on any count is stated rather than guessed. The same
-table comes back as `attr(flights, "steps")`.
+table comes back as `attr(jan, "steps")`. For PRATC in January 2026 it returns 13 flights,
+one row each, including the `SDIM`–`SBVT` leg as a single 05:43–06:59 row carrying all four
+units.
 
 Renaming columns, filtering to the study airports, deriving metrics: all of that happens
 **after** this, on the result. Nothing is written to disk unless `out_file` is given, and it
-refuses a raw download's file name — a download records what the API served and is not
-edited in place.
+refuses a raw download's file name — a download records what the API served and is not edited
+in place.
 
 The individual steps stay available for when something needs to be looked at on its own:
 
@@ -963,23 +677,24 @@ The individual steps stay available for when something needs to be looked at on 
 #| label: merge-bra-totalbr-steps
 #| eval: false
 
-source(here::here("TOTALBR", "check_totalbr_duplicates.R"))
-source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
+# prepare_totalbr.R sources the other three in order, so one line is enough --
+# sourcing merge_totalbr_duplicates.R alone leaves totalbr_read_year() and
+# totalbr_normalise() undefined, or worse, at whatever version the session
+# already held
+source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-d <- totalbr_normalise(totalbr_read_year(2026, source = "csv",
+# d is the RAW dataset: the rows as downloaded, with times parsed and pk
+# case-normalised, nothing filtered and nothing aggregated
+d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
                                          raw_dir = bra_totalbr_raw_dir))
-d <- totalbr_drop_duplicate_pk(d)
-merged <- totalbr_merge_flights(d, gap_min = 45)
+d <- totalbr_clean_units(d)                        # canonical li_* lists
+d <- totalbr_merge_duplicate_pk(d)                 # validation 1
+merged <- totalbr_merge_flights(d, gap_min = 60)   # validation 2
 ```
 
-For PRATC in January 2026 that returns 13 flights, one row each — including the
-`SDIM`–`SBVT` leg as a single 05:43–06:59 row carrying all four units. Before the chaining
-it came out as two flights, because the earlier matching was one-to-one: one record answered
-for one partner, and the APPSP capture was left over as a phantom second flight.
-
-**Choosing `gap_min`.** It is the shortest turnaround that still separates two real flights
-of the same aircraft on the same route. Too wide and consecutive legs of a shuttle merge;
-too narrow and one flight splits. Read it off the data rather than assuming:
+**Choosing `gap_min`.** It is the shortest turnaround that still separates two real flights of
+the same aircraft on the same route. Too wide and consecutive legs of a shuttle merge; too
+narrow and one flight splits. Read it off the data rather than assuming:
 
 ```{r}
 #| label: cluster-profile-bra-totalbr
@@ -988,8 +703,8 @@ too narrow and one flight splits. Read it off the data rather than assuming:
 totalbr_cluster_profile(d)   # flights, merges and span at 15 … 180 minutes
 ```
 
-The tolerance to avoid is the one where the span starts climbing while the flight count
-barely moves: that is legs being swallowed, not records being joined.
+The tolerance to avoid is the one where the span starts climbing while the flight count barely
+moves: that is legs being swallowed, not records being joined.
 
 ::: {.callout-warning}
 ## Measured on the API download
@@ -998,717 +713,99 @@ and may record flights differently. Measure it first, and write the result to a 
 reference archive cannot be downloaded again.
 :::
 
-### One cause we removed on our side first
+### What proximity cannot see
 
-Before measuring anyone else's duplication it was worth removing ours. The downloader
-paginated with `order=dt_dia.asc`, and thousands of rows share a `dt_dia` — with ties, the
-order between pages is whatever the database happens to produce per request, so a row can
-come back on two consecutive pages (or on neither). The ordering now includes the unique
-id, which makes the sort total and the pages a genuine partition of the window.
+Proximity and chaining are different relations, and it is worth being explicit about it
+because the two counts look comparable and are not.
 
-Re-downloading 2026 after the fix confirmed it: the same-`pk` count in the parts fell from
-194 to 134 and the year gained exactly 60 rows. Sixty rows had been served twice, each in
-place of one never served at all. What remains is the source's.
+`NEAR_DUP` looks for **simultaneity**: two records whose `dh_inicio` fall within `tol_min` of
+each other. That is the right shape for a record served twice. Fragmentation by unit is
+**sequential** — each record ends roughly where the next begins — so the fragments of one
+flight are never near each other in that sense, whatever the tolerance. No setting of
+`tol_min` reaches them. Only the merge does, because it chains a record's start against the
+group's running **end**.
 
-If your parts predate that fix, re-fetch a month with `force = TRUE` and compare.
+CMP486, MPTO→SBGL, as the API served it:
 
-## Archive vs API: What Differs
+```
+co_matricula  dh_inicio            dh_fim               li_orgaos
+HP9926        2026-01-01 02:15:00  2026-01-01 04:03:02  ACCAZ
+HP9928        2026-01-01 04:58:00  2026-01-01 06:32:00  ACCCW|ACCBS
+<NA>          2026-01-01 07:01:33  2026-01-01 07:01:33  APPRJ
+HP9922        2026-01-02 01:49:00  2026-01-02 06:35:00  ACCBS|APPRJ|ACCCW|ACCAZ
+```
 
-The parquet archive is the file used in the report — the golden — and the same years can now
-be pulled from the ODIN API. `TOTALBR/compare_totalbr_sources.R` puts them side by side:
-what matches, what exists on one side only, and where they disagree on rows they both hold.
+The first three rows are one flight. Two independent things say so: the span, 02:15 to
+07:01:33, is **4h46**, and the units are **disjoint** — ACCAZ, then ACCCW and ACCBS, then
+APPRJ, in the geographic order of the route. The fourth row is the control. It is the same
+daily service on the next day, arriving as a **single row** of 4h46 carrying exactly those
+four units. One flight, recorded two different ways on two consecutive days.
 
-### Match on what, exactly
+The near rule flagged only the third row, and not against the other two: rows one and two
+start **163 minutes** apart, sixteen times `tol_min`. They were never candidates.
 
-The comparison is only as good as the key, and the obvious key is the wrong one to trust
-blindly. If the two sources compute the row hash differently, **every row looks unique to
-its own side** and a comparison on `pk` reports "nothing in common" about data that is in
-fact identical. That is a fact about the identifier, not a difference in the traffic — and
-it would be read as a catastrophic mismatch.
+Two things follow.
 
-So there are three keys, and the first step is running all three:
+**`co_matricula` does not identify an airframe here.** The same daily service carries HP9926,
+HP9928, HP9922 and a blank across four records — the real Copa format is `HP-1717CMP`. The
+merge keys on `co_indicativo` plus the aerodrome pair and never consults the registration,
+which is what lets it work; but its first-value-filled rule then reports HP9926 for the merged
+flight and drops the rest silently. Do not read the registration of a merged row as fact.
 
-| `key` | Matches on | Use it to |
-| --- | --- | --- |
-| `"pk"` | the row hash, case-folded | see whether the hash is comparable across sources at all |
-| `"flight_day"` | callsign + aerodrome pair + the **calendar day** of `dh_inicio` | the working key |
-| `"eobt"` | callsign + aerodrome pair + the filed off-block time | an alternative when `dh_inicio` cannot be trusted |
+**The default `gap_min = 45` splits this flight.** Rows one and two are 55 minutes apart end
+to start. At 60 the three become one row spanning 286.6 minutes, matching the control exactly;
+at 45 they come out as two flights plus a fragment. `totalbr_cluster_profile()` does not settle
+it either way — the P99 span is flat from 45 to 120 — so the case, not the profile, is the
+argument for widening it.
+
+### Finding more of them
+
+The merged result is itself the search: a flight built from several records, over several
+units, is what to look at.
 
 ```{r}
-#| label: compare-bra-totalbr-sources
+#| label: fragmented-bra-totalbr
 #| eval: false
 
-source(here::here("TOTALBR", "compare_totalbr_sources.R"))
+source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# run all three before believing any of them
-for (k in c("flight_day", "eobt", "pk"))
-  print(compare_totalbr_sources(2023:2025, k, raw_dir = bra_totalbr_raw_dir))
+# d is the RAW dataset: the rows as downloaded, with times parsed and pk
+# case-normalised, nothing filtered and nothing aggregated
+d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
+                                         raw_dir = bra_totalbr_raw_dir))
+m <- totalbr_merge_flights(totalbr_merge_duplicate_pk(totalbr_clean_units(d)),
+                           gap_min = 60)
+
+frag <- m |>
+  dplyr::filter(N_MERGED > 1) |>
+  # disjoint units are the signature: one flight handed from sector to sector,
+  # not one record served twice
+  dplyr::mutate(N_ORGAOS = lengths(strsplit(li_orgaos, "|", fixed = TRUE))) |>
+  dplyr::arrange(dplyr::desc(N_ORGAOS), dplyr::desc(SPAN_MIN)) |>
+  dplyr::select(co_indicativo, co_addep, co_addes, dh_inicio, SPAN_MIN,
+                N_MERGED, N_ORGAOS, li_orgaos, MERGED_PK)
+
+View(frag)
 ```
 
-`MATCH_PCT` is the share of the archive's rows found in the download. Reading the result:
-
-- **`pk` low, `flight` high** — the hashes are source-specific. Drop `pk` as a cross-source
-  key and compare on `flight`; nothing is wrong with the data.
-- **`flight` low, `flight_day` high** — the two disagree on the *time*, not on the flights.
-  Almost certainly a timezone: the archive cut at Brazilian local time, as its spill into
-  2026-01-01 already suggested.
-- **both low** — then the sources genuinely hold different traffic, and the examples below
-  say which.
-
-### When nothing matches, suspect the key
-
-The first run said it plainly:
-
-| Year | key | archive | download | matched |
-| --- | --- | --- | --- | --- |
-| 2024 | `pk` | 1,959,619 | 1,948,449 | **0** |
-| 2024 | `flight` | 1,959,619 | 1,948,449 | **8** |
-| 2025 | `flight` | 2,109,623 | 2,108,473 | 16 |
-
-Row counts within 0.6% of each other and essentially nothing in common. Two files of the
-same traffic cannot disagree on every record, so the key is wrong, not the data. `pk` at
-zero was expected — the hash is computed per source. `flight` at eight is a different
-problem, and guessing which part of it fails is a waste of a run:
-
-```{r}
-#| label: compare-bra-totalbr-diagnose
-#| eval: false
-
-compare_totalbr_diagnose(2024, raw_dir = bra_totalbr_raw_dir)
-```
-
-It reports the overlap of each piece of the key on its own — callsign, departure,
-destination, calendar day — and then measures the clock difference directly: for every
-downloaded flight it finds the **nearest** archive record of the same callsign and route
-and reports how far apart they are. A rolling join, because a key built on time cannot
-discover its own offset.
-
-#### What it found
+January 2026 alone: **13,369** flights rebuilt from more than one record, **9,510** of them
+spanning three or more units and **1,017** spanning five or more. The heaviest are long-haul
+crossings of Brazilian airspace, which is what one would expect — the more sectors a flight
+transits, the more records it arrives in:
 
 ```
-PIECE                       OVERLAP_PCT
-co_indicativo                      89.5
-co_addep                           99.7
-co_addes                           99.7
-callsign + route                   95.5
-calendar day of dh_inicio          99.7
-callsign + route + day             93.2
-
-OFFSET_MIN        N
-        50  1779079     <- 91% of all matched rows
-        80     2271
-        51     2070
+co_indicativo  co_addep  co_addes  SPAN_MIN  N_MERGED  li_orgaos
+KLM701         EHAM      SAEZ         295.0         2  ACCAO|ACCAZ|ACCBS|ACCCW|ACCRE|APPAN|APPFI
+AFR411A        SAEZ      LFPG         274.9         2  ACCAO|ACCAZ|ACCBS|ACCCW|ACCRE|APPAN|APPFI
+PTOLW          SBTV      SBBI         270.5         2  ACCBS|ACCCW|ACCRE|APPCT|APPPS|APPRJ|APPSP
 ```
 
-The flights are the same: 93.2% share callsign, route and day. What differs is the clock,
-by **exactly 50 minutes on 91% of rows**.
+`MERGED_PK` carries every source `pk`, so any case found here can be traced back to the exact
+records — which is the form ICEA need it in.
 
-Fifty minutes is not a timezone — timezones are whole hours. A constant that clean, on
-nearly every row, is a **definition difference**: the two sources stamp different moments of
-the same flight in `dh_inicio`. In the API payload `dh_inicio` equals `dh_eobt` (the filed
-off-block time); in the archive it is evidently something else.
+Set against `NEAR_DUP` at 4,289 for the same month, these are not overlapping figures and must
+not be added or compared. They count different faults.
 
-That points at the way out. `dh_eobt` is copied from the flight plan rather than observed,
-so if the two sources agree there, it can carry the comparison:
-
-```{r}
-#| label: compare-bra-totalbr-eobt
-#| eval: false
-
-compare_totalbr_sources(2024, "eobt", raw_dir = bra_totalbr_raw_dir)
-compare_totalbr_fields(2024, key = "eobt", raw_dir = bra_totalbr_raw_dir)
-```
-
-`compare_totalbr_diagnose()` now measures the offset on `dh_eobt` as well as on
-`dh_inicio`, so one run says whether that key will work before you spend anything on it.
-
-Reading the offsets:
-
-- **one dominant value on the hour, e.g. −180** — a timezone. Nothing is missing; one side
-  needs shifting before any comparison.
-- **one dominant value NOT on the hour, as here (50)** — the two sources mean different
-  things by the field. Shifting would be a fudge; use a field they define the same way
-  (`key = "eobt"`) and treat `dh_inicio` as a column that *differs*, which is a finding in
-  its own right.
-- **zero dominant, but a spread of a few minutes** — the two sources record slightly
-  different moments for the same event. Match on `flight_day` and compare fields instead.
-- **no callsign+route in common at all** — then the identifiers differ, not the clock, and
-  the first table says which one.
-
-#### Seeing which values are missing
-
-An overlap of 89.5% on `co_indicativo` looks alarming and usually is not, because that is a
-share of **distinct values**, not of traffic. Most distinct callsigns in TOTALBR are
-general-aviation registrations flown a few times a year, so a tenth of the values can be a
-three-hundredth of the flights.
-
-```{r}
-#| label: compare-bra-totalbr-missing-values
-#| eval: false
-
-compare_totalbr_missing_values("co_indicativo", 2024, raw_dir = bra_totalbr_raw_dir)
-compare_totalbr_missing_values("co_addes", 2024, raw_dir = bra_totalbr_raw_dir)
-```
-
-It reports both shares — `VALUES_PCT` and `ROWS_PCT` — and then lists the one-sided values
-**sorted by rows**, so anything that carries real traffic is at the top. What to look for:
-
-- **`ROWS_PCT` near zero** — a long tail of rare callsigns. Ordinary, and no reason to
-  distrust either source.
-- **A scheduled airline callsign high in the list** — that is a real gap, and worth
-  isolating: check whether it is one month, one aerodrome, or the whole year.
-- **Values differing only in form** — trailing spaces, a zero-padded number, a different
-  case. That is a formatting difference masquerading as missing data, and it would also be
-  depressing every key built on the column.
-
-#### The result, and why there is no minute-level key
-
-| Year | key | archive | download | matched | only archive | only download |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2024 | `pk` | 1,959,619 | 1,948,449 | **0** | — | — |
-| 2024 | `flight_day` | 1,959,619 | 1,948,449 | **1,715,760** | 124,898 | 18,384 |
-| 2025 | `flight_day` | 2,109,623 | 2,108,473 | 1,839,992 | 130,054 | 21,019 |
-
-`flight_day` matches 93%. The minute-level key matched **eight rows in a year** and has been
-removed: with `dh_inicio` stamped ~50 minutes apart by the two sources, a key finer than a
-day cannot match, so it measured the offset rather than the traffic. The offset itself is
-still reported, by `compare_totalbr_diagnose()`, which is where it belongs.
-
-(2023 shows zero on the download side simply because that year has not been fetched from
-the API yet.)
-
-#### Zero pk matches: fact or bug?
-
-Two sources holding 93% of the same flights and **no** identical hash is either a property
-of the hash or a fault in this code, and no count can tell those apart. Look at the same
-flight from both sides:
-
-```{r}
-#| label: compare-bra-totalbr-pk
-#| eval: false
-
-compare_totalbr_pk_examples(2024, raw_dir = bra_totalbr_raw_dir)
-```
-
-It first reports the **shape** of `pk` on each side — length range and whether every
-character is hex — which catches a truncation or an encoding difference without reading a
-single example. Then it prints the two `pk` values for the same flight, matched via
-`flight_day`.
-
-- **Two different 32-character hex strings** — the hash is computed per source, over
-  different fields or with a different salt. Nothing to fix, and `pk` is simply not a
-  cross-source identifier. Worth asking ICEA what it is computed over.
-- **One truncated, padded, quoted, or empty** — that is a reading fault, and ours.
-
-The run settled it. Both sides are 32-character uppercase hex with no exceptions, and the
-same flight carries two different values:
-
-```
-co_indicativo co_addep co_addes  archive              download
-TAM3458       SBGR     SBLO      2024-01-01 01:00:00  2024-01-01 00:50:00
-AZU4061       SBCF     SBCT      2024-01-01 01:00:00  2024-01-01 00:50:00
-KAL274        SBKP     SCEL      2024-01-01 01:01:59  2024-01-01 00:51:59
-```
-
-Well-formed on both sides, so the hash is source-specific, not mangled in reading. `pk`
-cannot be used across sources and the zero match is expected, not a defect.
-
-#### Testing the obvious hypothesis first: match on `pk`
-
-The natural rule is "the same row is the same `pk`; where it does not match, look at the
-times". Whether that rule is available at all is a question about the files, and it is
-answered by a set intersection with no matching logic anywhere near it:
-
-```{r}
-#| label: compare-bra-totalbr-pk-overlap
-#| eval: false
-
-totalbr_pk_overlap(2025, raw_dir = bra_totalbr_raw_dir)
-```
-
-It reports the overlap raw, trimmed and case-folded, so a formatting difference cannot be
-mistaken for a real one — the archive writes the hash uppercase and the API lowercase, which
-on its own would show zero overlap for a trivial reason.
-
-If the case-folded overlap is zero while both sides are well-formed 32-character hex, the
-hash is computed per source: same flight, different value. The rule then collapses into
-"compare the times for every row", because there is no row that `pk` can match.
-
-#### Is the 50 minutes real, or a matching artefact?
-
-A cross-source measurement can always be the matching's own fault, so the shift is worth
-establishing **without comparing the sources at all**. Take the two rows from the lookup and
-read each one against itself:
-
-| | `dh_inicio` | its own `dh_eobt` | difference |
-| --- | --- | --- | --- |
-| download | 00:12:37 | 00:15:00 | −2 min |
-| archive | 23:25:00 | 00:23:00 (next day) | **−58 min** |
-
-No pairing, no key, no tolerance — just two columns of the same record. The download's window
-opens on top of the filed time; the archive's opens about an hour before it. That is not the
-same field with a different clock, it is a different definition of when the window starts.
-
-```{r}
-#| label: compare-bra-totalbr-window
-#| eval: false
-
-totalbr_window_shape(2025, raw_dir = bra_totalbr_raw_dir)
-```
-
-It reports the quartiles of `dh_inicio − dh_eobt` and `dh_fim − dh_eobt` for each source
-separately. If the archive's median sits near −50 and the download's near zero, the shift is
-a property of the files and every cross-source figure that depends on it stands. If both
-medians are near zero, the shift is my measurement's doing and the pairing has to be redone.
-
-#### The shift, measured on matched flights
-
-```{r}
-#| label: compare-bra-totalbr-shift
-#| eval: false
-
-compare_totalbr_time_shift(2024, raw_dir = bra_totalbr_raw_dir)
-```
-
-It pairs the flights first — on `flight_day`, the key that actually matches — and differences
-second, over the three time columns at once. The earlier rolling-join estimate looked for the
-*nearest* record instead, which silently pairs a different flight whenever one is missing;
-both routes happen to agree here, but only the matched-pair figure is safe to quote.
-
-Over the 1,715,760 flights both sources hold:
-
-| Column | mode (download − archive) | share | identical |
-| --- | --- | --- | --- |
-| `dh_inicio` | **+50 min** | 98.7% | 0% |
-| `dh_fim` | **−50 min** | 90.1% | 0% |
-| `dh_eobt` | 0 | 75.5% | **75.5%** |
-
-Read together these say something precise. The archive's window is **wider by 50 minutes at
-each end**: it starts 50 minutes before the download's `dh_inicio` and ends 50 minutes after
-its `dh_fim`. And the filed off-block time is **identical** on three quarters of flights.
-
-So the sources do not disagree about the clock — they agree exactly on the filed time and
-differ on what the observed window covers. `dh_inicio`/`dh_fim` mean different things in the
-two files, and shifting one side by 50 minutes would paper over a definition difference
-rather than fix a fault. What to ask ICEA is what the archive's window is measured between;
-`dh_eobt` is the field to build on meanwhile.
-
-::: {.callout-warning}
-## A printout that lied, and the fix
-An earlier reading of the example rows put this difference at **−10 minutes**, the opposite
-sign and a fifth of the size. The rows were right and the reading was wrong: the archive's
-timestamps arrive from arrow with no timezone attribute and print in the session's local
-zone, while the CSV's are parsed as UTC. A table showing `01:00:00` next to `00:50:00` was
-showing **two different clocks** with nothing to say so — CET against UTC.
-
-Every timestamp is now forced to display in UTC as it is read, so no output can compare two
-zones silently again. The rolling-join estimate of 50 minutes had been right all along.
-:::
-
-#### What the gaps turned out to be
-
-The two one-sided sets are different kinds of traffic, and that is the finding.
-
-**In the archive, absent from the API — 195,422 rows, 10%:**
-
-```
-co_addep      GAP_ROWS      co_indicativo   GAP_ROWS
-SBYS            13,907      PRMSI                945
-SBJD             9,278      PRSKT                902
-SBBH             8,081      PRFGM                897
-SBBI             6,496      PRSKV                870
-SBMT             5,793      PSLOM                823
-```
-
-Campo Fontenelle, Jundiaí, Pampulha, Bacacheri, Campo de Marte — general-aviation and
-training aerodromes. And the callsigns are **registrations** (`PR…`, `PS…`), which is what
-general aviation flies under. Spread evenly across the year at 8.5–11.7% per month, so it
-is not a truncated extraction: **the API does not serve this class of traffic.**
-
-**In the API, absent from the archive — 20,115 rows, 1%:**
-
-```
-co_addep      GAP_ROWS      co_indicativo   GAP_ROWS
-SBGR             2,234      TAM3756              127
-SBSP             2,071      GLO1766              105
-SBBR             2,044      ARG1141              103
-```
-
-The big hubs and scheduled airlines, also flat across the year.
-
-That second set has a candidate explanation that must be ruled out before it counts as a
-finding: **the 10-minute shift**. A flight at 00:05 in the archive is 23:55 of the previous
-day in the download, so `flight_day` cannot match it — and it appears one-sided on *both*
-sides. The profile now reports the **hour of day** and the **traffic class** so the artefact
-is visible rather than inferred:
-
-- a spike in hours `00` and `23` is the midnight artefact, not a gap;
-- flat across the hours means the difference is real.
-
-The traffic-class split (registration-style callsign versus airline-style) turns "look at
-the top ten" into a number: for the archive side it should be overwhelmingly general
-aviation, and for the API side overwhelmingly airline.
-
-If it holds, the conclusion for the study is concrete: **the API is not a substitute for the
-archive for national totals.** It is missing a tenth of the movements, and precisely the
-general-aviation tenth. For the twelve study airports the difference is likely far smaller —
-worth measuring separately before deciding which source feeds which figure.
-
-#### Which key, and what each one measures
-
-| Key | 2024 match | `ONLY_CSV` | What it is good for |
-| --- | --- | --- | --- |
-| `pk` | 0% | — | nothing across sources: the hash is computed per source |
-| `flight_day` | 93.2% | 18,384 | matches, but cannot see the first 50 minutes of any day |
-| `eobt_day` | 87.9% (2025) | — | drift-proof but day-level: hides a missing rotation |
-| `eobt_seq` | — | — | **the matching key**: per flight, and immune to the midnight drift |
-| `eobt` | 84.2% | 469,837 | measuring how far the filed times agree |
-
-`eobt` is the stricter key and matches nine points *worse*, which is the interesting part.
-The jump in `ONLY_CSV` — from 18 thousand to 470 thousand — is not missing data: those are
-flights both sources hold, under a **different filed off-block time**. Plans get re-filed,
-and the two extractions caught different versions. So `eobt` is a good corroborating field
-and a poor key; `flight_day` stays the key.
-
-### What the comparison establishes
-
-| Finding | Measured |
-| --- | --- |
-| The same flights, both sources | 93.2% match on `flight_day` (2024), 93.4% (2025) |
-| `pk` is source-specific | 0 matches; both sides well-formed 32-char hex |
-| The observed window differs by definition | `dh_inicio` +50 min, `dh_fim` −50 min, on ~90%+ of matched flights |
-| The filed time agrees | `dh_eobt` identical on 75.5% of matched flights |
-| The API omits general aviation | 10% of the archive absent, at GA and training aerodromes, registration-style callsigns, flat across the year |
-| The API adds airline flights the archive lacks | 1%, at the hubs, flat across the year |
-
-For the study, the operative one is the fifth. **The API is not a substitute for the archive
-in a national total** — it is short by a tenth, and specifically the general-aviation tenth,
-so a series that took some years from one source and some from the other would show a step
-that is not traffic. For the twelve study airports the shortfall is likely far smaller,
-because general aviation is a small share there; measure it before deciding, with the rows
-the profile returns:
-
-```{r}
-#| label: compare-bra-totalbr-study-apts-gap
-#| eval: false
-
-g <- compare_totalbr_gap_profile(2024, "only_parquet", raw_dir = bra_totalbr_raw_dir)
-sum(g$rows$co_addep %in% bra_apts | g$rows$co_addes %in% bra_apts)
-```
-
-### The unmatched rows, as a dataset
-
-The tables above summarise. This writes the records themselves, so a flight can be looked up
-by hand in the other file:
-
-```{r}
-#| label: compare-bra-totalbr-unmatched
-#| eval: false
-
-unm <- totalbr_unmatched(2024, raw_dir = bra_totalbr_raw_dir)
-
-# ... or straight to a file, semicolon-delimited like the raw data
-totalbr_unmatched(2024, raw_dir = bra_totalbr_raw_dir,
-                  out_file = here::here("outputs", "totalbr-2024-unmatched.csv"))
-```
-
-One row per record, with `YEAR`, `SOURCE`, `co_indicativo`, `co_addep`, `co_addes`,
-`dt_dia`, `dh_inicio`, `co_matricula`, `pk`, `id` — and **`MATCH_KEY`**.
-
-`MATCH_KEY` is in the file deliberately. It is the exact string the comparison used, and it
-is what decides whether two rows count as the same flight, so it should be checkable rather
-than taken on trust. Take a `MATCH_KEY` from the output, search for it in the other source,
-and one of two things is true: the flight really is absent, or the key is wrong. Both are
-worth finding out, and the second would be a fault in this code.
-
-`SOURCE` is `parquet` for the archive and `csv` for the API download — a row marked `csv`
-came from the download and its key was **not found** in the archive. Times are written in
-UTC, the same zone the comparison works in, so what is in the file is what was compared.
-
-#### The first run found a flaw in the key, not in the data
-
-Opening the output showed every early row landing between `00:00` and `00:16`:
-
-```
-SOURCE co_indicativo co_addep co_addes  dh_inicio
-csv    PRTSG         SJSG     SBRF      2025-01-01 00:00:00
-csv    TAM3164       SBSP     SBPA      2025-01-01 00:05:00
-csv    PSBVI         SBGO     SBMQ      2025-01-01 00:08:00
-```
-
-That is the 50-minute shift striking the key. A flight the download stamps at `00:05` sits
-at `23:15` of the **previous day** in the archive, so a key built on the calendar day of
-`dh_inicio` can never match the first 50 minutes of any day. Those rows appear one-sided on
-*both* sides while nothing at all is missing — and at a year boundary the counterpart is not
-even in the year being compared.
-
-The fix is to key on a field the two sources define identically. `dh_eobt` is that field, so
-`eobt_day` — callsign, aerodrome pair, and the **day of the filed time** — does not drift:
-
-```{r}
-#| label: compare-bra-totalbr-eobt-day
-#| eval: false
-
-compare_totalbr_sources(2024, "eobt_day", raw_dir = bra_totalbr_raw_dir)
-totalbr_unmatched(2024, "eobt_day", raw_dir = bra_totalbr_raw_dir,
-                  out_file = here::here("outputs", "totalbr-2024-unmatched.csv"))
-```
-
-#### But a day-level key is too coarse to answer this
-
-The first run with `eobt_day` exposed the next problem. The summary reported 199,968
-one-sided keys for 2025 while `totalbr_unmatched()` wrote 604,728 rows — because one counts
-distinct **keys** and the other counts **rows**, and a day-level key covers every rotation of
-a route that day.
-
-That multiplicity is not just a counting nuisance, it hides differences. If the archive holds
-three rotations of a route on a day and the download holds two, the key **matches** and the
-missing flight is never reported at all.
-
-So the default is now `eobt_seq`: the same callsign, aerodrome pair and filed day, plus the
-**rotation number within that day**, earliest first. The first flight matches the first, the
-second the second, and a surplus one is left unmatched — which is precisely what the question
-asks for. It is ordered on `dh_eobt` because that is the field the two sources agree on: a
-re-filed off-block time changes the value but rarely the running order.
-
-```{r}
-#| label: compare-bra-totalbr-eobt-seq
-#| eval: false
-
-compare_totalbr_sources(2025, "eobt_seq", raw_dir = bra_totalbr_raw_dir)
-totalbr_unmatched(2025, "eobt_seq", raw_dir = bra_totalbr_raw_dir,
-                  out_file = here::here("outputs", "totalbr-2025-unmatched.csv"))
-```
-
-The summary now reports `ONLY_PARQUET`/`ONLY_CSV` (distinct keys) **and**
-`ROWS_ONLY_PARQUET`/`ROWS_ONLY_CSV` (records) side by side, so it can no longer be read as
-disagreeing with the row-level output.
-
-#### Every exact key is brittle here, and the numbers proved it
-
-| Key (2025) | matched | rows only in archive | rows only in download |
-| --- | --- | --- | --- |
-| `flight_day` | 93.4% | ~130k keys | ~21k keys |
-| `eobt_day` | 87.9% | 604,728 rows | 532,626 rows |
-| `eobt_seq` | 71.3% | 604,811 rows | 603,661 rows |
-
-Set that against the fact the files differ by **1,150 rows in total** — 2,109,623 against
-2,108,473. No arrangement of the data makes 604,000 flights genuinely one-sided when the two
-sources are within a thousand rows of each other. **The unmatched counts are the method's
-own doing.**
-
-They have to be. Both stamps drift: `dh_inicio` by a constant 50 minutes, `dh_eobt` whenever
-a plan is re-filed. An exact key on either one manufactures differences, and `eobt_seq` made
-it worse because a shifted `dh_eobt` reorders the rotations and the sequence numbers stop
-lining up.
-
-#### Matching by nearness instead
-
-```{r}
-#| label: compare-bra-totalbr-nearest
-#| eval: false
-
-totalbr_match_flights(2025, raw_dir = bra_totalbr_raw_dir)
-
-# the leftovers, as a dataset to search
-totalbr_unmatched_nearest(2025, raw_dir = bra_totalbr_raw_dir,
-                          out_file = here::here("outputs",
-                                                "totalbr-2025-unmatched.csv"))
-```
-
-Within each callsign and aerodrome pair, the archive's clock is aligned by the measured 50
-minutes and each downloaded flight is paired with the **nearest remaining** archive flight
-inside a tolerance. The pairing is one-to-one: an archive row can be used once, so a genuine
-extra rotation stays unmatched rather than being absorbed by its neighbour.
-
-Nothing is exact-matched, so nothing breaks when a stamp moves by a few minutes. What is
-left over is the difference between the sources — and it should now be of the same order as
-the 1,150-row gap plus the general-aviation shortfall, not half a million.
-
-Vary the tolerance to see how sensitive the answer is:
-
-```{r}
-#| label: compare-bra-totalbr-nearest-tol
-#| eval: false
-
-for (tol in c(15, 30, 60, 120))
-  print(totalbr_match_flights(2025, tol_min = tol, raw_dir = bra_totalbr_raw_dir))
-```
-
-If the leftovers barely move between 30 and 120 minutes, they are real absences. If they
-shrink steadily, the tolerance is still absorbing timing differences and the true figure is
-the one at the wide end.
-
-#### The result, and what the leftovers are
-
-```
-TOL_MIN SHIFT_MIN ARCHIVE_ROWS DOWNLOAD_ROWS MATCHED ONLY_ARCHIVE ONLY_DOWNLOAD MED_DIFF_MIN
-    120        50      2109623       2108473 1918467       191156        190006            0
-```
-
-90.9% paired, and a **median difference of zero** once the 50 minutes are taken out — the
-shift is exactly 50 minutes, confirmed a second way.
-
-But the leftovers are **symmetric**: 191,156 and 190,006, differing by exactly the 1,150
-rows the two files differ by overall. That symmetry is the tell. The pairing groups on
-callsign + departure + destination, so if any one of the three disagrees, the same flight is
-left over on **both** sides at once. It is not a missing flight; it is a flight both sources
-hold with one field written differently — and `co_indicativo` already showed only 89.5%
-overlap.
-
-```{r}
-#| label: compare-bra-totalbr-leftovers
-#| eval: false
-
-totalbr_leftovers_explained(2025, raw_dir = bra_totalbr_raw_dir)
-```
-
-Each pass takes what is still unpaired and relaxes one part of the group, so the 190,000
-splits into causes that add up:
-
-| Pass | Recovers | Meaning |
-| --- | --- | --- |
-| route only | callsign ignored | the **callsign** differs between the sources |
-| callsign only | route ignored | an **aerodrome** differs |
-| 24-hour window | same group | only the **timing** differs |
-| residual | nothing | a genuinely one-sided flight |
-
-The residual is the answer to the original question, and it is reported split by traffic
-class — registration-style callsigns against airline ones — so the general-aviation shortfall
-can be read off directly rather than inferred from a top-ten list.
-
-#### What the residual turned out to be
-
-Nothing recovered it, and nothing about it is an artefact:
-
-```
-PASS                                PAIRED  LEFT_ARCHIVE  LEFT_DOWNLOAD
-callsign + route                   1918467        191156         190006
-route only (callsign differs)           60        191096         189946
-callsign only (aerodrome differs)     1317        189779         188629
-callsign + route, 24h window           147        189632         188482
-
-SIDE            RESIDUAL  NO_TIME  NO_CALLSIGN  UNTESTABLE_PCT
-only archive      189632        0            0               0
-only download     188482        0            0               0
-```
-
-Relaxing the callsign recovered 60. Relaxing the aerodromes recovered 1,317. Widening the
-window to 24 hours recovered 147 — which also rules out the pairing having lost anything to
-its own greediness, since a lost pair would sit in the same group and be found instantly.
-Nothing is untestable. And the residual is **flat across the months**, 15–18 thousand on each
-side, so it is not an extraction boundary either.
-
-| | Only in the archive | Only in the download |
-| --- | --- | --- |
-| Registration callsign (general aviation) | 134,765 | 84,367 |
-| Airline callsign | 11,585 | **98,578** |
-| Other | 43,282 | 5,537 |
-
-So each source holds about **9% that the other does not**, every month, and of different
-kinds. This is not one source being more complete than the other — it is two different
-coverages of the same airspace, and choosing between them stops being a technical detail and
-becomes a decision about the study.
-
-The strange half is the download's 98,578 airline flights. General aviation missing from an
-API has an obvious explanation; scheduled airline flights missing from the official archive
-does not.
-
-**The scope hypothesis does not hold.** Only 15.4% of the download's residual is
-international, and 0.3% of the archive's — nowhere near enough to explain 188,000 rows:
-
-```
-SIDE            ROWS  DOMESTIC  INTERNATIONAL  NO_AERODROME  INTERNATIONAL_PCT
-only archive  189632    181272            484          7876                0.3
-only download 188482    151251          28995          8236               15.4
-```
-
-The aerodromes say what it really is. The two residuals live at **different airports**:
-
-```
-only archive   SBYS 24480  SBJD 19733  SBBH 16937  SBNV 16207  SBJR 14905  SBBI 14365
-only download  SBGR 31449  SBGO 20244  SBBR 17750  SBSP 13401  SBKP 11653  SBMO 11204
-```
-
-General-aviation and training fields on one side, the commercial hubs on the other. That
-also explains why the relaxation passes recovered nothing: there was nothing to pair with at
-those aerodromes, whatever the callsign said.
-
-Which leaves 98,578 airline movements at the hubs — about 270 a day — that the API serves and
-the official archive does not. That figure has no benign explanation yet, and it should be
-checked outside this code before being reported anywhere.
-
-### Checking a single flight, without trusting any of this
-
-```{r}
-#| label: compare-bra-totalbr-lookup
-#| eval: false
-
-totalbr_lookup("TAM3756", "2025-03-14", raw_dir = bra_totalbr_raw_dir)
-```
-
-Every row from both sources for one callsign, with **the pairing this code actually made**:
-`PAIR` groups the rows treated as one flight, `GAP_MIN` is their separation after the shift,
-and `PAIR` of `NA` means the row was left unmatched. `T_ALIGNED` is the archive's clock moved
-by the measured 50 minutes — the value the comparison works on.
-
-The first version of this lookup filtered both sources to one calendar day and showed this:
-
-```
-SOURCE   co_indicativo  dh_inicio            co_matricula  co_modelo
-csv      TAM3756        2025-03-14 00:12:37  PRTYT         A320
-parquet  TAM3756        2025-03-14 23:25:00  PTXPI         A321
-```
-
-Two different rotations, different airframes, twenty-three hours apart — presented as though
-they were a comparison. They never were: the pairing groups on callsign and route with a
-120-minute tolerance, so it had not put those two together at all. The archive's `23:25`
-belongs to the download's rotation on the **15th** (23:25 + 50 min = 00:15 next day), and the
-download's `00:12` belongs to the archive's on the **13th**.
-
-The day filter was the fault, and it was the same mistake `flight_day` had already been
-retired for: filtering on a stamp that differs by 50 minutes between the sources cuts each
-flight's counterpart out of view. The lookup now spans ±1 day and reports the pairing, so what
-is on screen is what was compared.
-
-Take a flight the comparison called one-sided and look it up:
-
-- **`PAIR` filled on both rows** — they were matched; nothing is one-sided.
-- **`PAIR` empty and no counterpart in the window** — the difference is real.
-
-Given how many of the numbers in this section turned out to be artefacts of a method before
-the method was fixed, that check is not optional for anything that leaves the repository.
-
-#### One earlier figure was wrong, and why
-
-An earlier pass reported that only 1% of the download was absent from the archive (20,115
-rows for 2024, on `flight_day`). That was an undercount, from the same flaw already noted for
-`eobt_day` but not carried back: a day-level key checks whether a **value exists** on both
-sides, not whether the counts agree. One archive flight of a callsign and route on a day
-"matches" three downloaded ones, and all four rows are counted as matched. Per flight, the
-figure is the one the nearest-match pairing gives.
-
-### Where they disagree on the same flight
-
-```{r}
-#| label: compare-bra-totalbr-fields
-#| eval: false
-
-compare_totalbr_fields(2024, raw_dir = bra_totalbr_raw_dir)
-
-# to include ds_rota and the li_* arrays as well (holds every column of both
-# sources in memory — several GB over three years)
-compare_totalbr_fields(2024, all_cols = TRUE, raw_dir = bra_totalbr_raw_dir)
-```
-
-For rows both sources carry, this reports per column the share where they differ. It
-separates a genuine disagreement (`DIFFERENT_PCT`) from a field one side simply does not
-populate (`ONLY_PARQUET_PCT` / `ONLY_CSV_PCT`) — the second is a coverage difference and
-needs a different answer from the first.
-
-A row count that matches proves nothing about content: the same flight can be present on
-both sides with a different registration, a different aircraft type, or a stamp minutes
-apart. This is the table that finds that.
 
 ## Traffic Profile
 

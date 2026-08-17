@@ -49,9 +49,21 @@ TOTALBR_DUP_COLS <- c("pk", "co_matricula", "co_addep", "co_addes",
                       "dh_inicio", "dh_fim", "dh_eobt", "dh_eet",
                       "co_indicativo")
 
+# Columns no test needs but every reading of the result does: the route and the
+# units that saw the flight are what tell two records of one flight apart from
+# two flights. Read when present and simply absent otherwise -- a source missing
+# them is still checkable, so they must never join TOTALBR_DUP_COLS, whose
+# absence skips the file.
+TOTALBR_CONTEXT_COLS <- c("ds_rota", "li_orgaos")
+
 # ---- read the columns the check needs, from either source kind --------------
-totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
+totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL,
+                                  month = NULL) {
   want <- unique(c(TOTALBR_DUP_COLS, date_col))
+  # A month is the working unit here: a year of the archive is a 1 GB read and
+  # minutes of comparison, and nothing about the two checks needs the whole year
+  # to be in memory at once. Filtering is pushed down so the rows never arrive.
+  mth <- if (!is.null(month)) sprintf("%02d", as.integer(month)) else NULL
 
   d <- if (grepl("\\.parquet$", path)) {
     ds <- arrow::open_dataset(path)
@@ -61,13 +73,28 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
               paste(miss, collapse = ", "))
       return(NULL)
     }
-    q <- dplyr::select(ds, dplyr::all_of(want))
-    q <- totalbr_add_year_day(q, date_col, totalbr_is_text_date(ds, date_col))
+    q <- dplyr::select(ds, dplyr::all_of(c(want, intersect(TOTALBR_CONTEXT_COLS,
+                                                           names(ds)))))
+    is_text <- totalbr_is_text_date(ds, date_col)
+    q <- totalbr_add_year_day(q, date_col, is_text)
     # the year set is built in R and injected: left as a call inside filter(),
     # arrow turns a multi-year vector into a list<int32> scalar and fails to cast
     if (!is.null(years)) {
       yrs <- as.character(years)
       q <- dplyr::filter(q, YEAR %in% !!yrs)
+    }
+    if (!is.null(mth)) {
+      s <- rlang::sym(date_col)
+      if (is_text) {
+        q <- dplyr::mutate(q, MONTH = substr(!!s, 6, 7))
+        q <- dplyr::filter(q, MONTH %in% !!mth)
+      } else {
+        # arrow has month() but not sprintf(): compare as integers there and
+        # format afterwards, in R, where the padded string costs nothing
+        mi <- as.integer(month)
+        q  <- dplyr::mutate(q, MONTH = lubridate::month(!!s))
+        q  <- dplyr::filter(q, MONTH %in% !!mi)
+      }
     }
     dplyr::collect(q)
   } else {
@@ -79,16 +106,24 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL) {
               paste(miss, collapse = ", "))
       return(NULL)
     }
-    x <- data.table::fread(file = path, sep = ";", select = want,
+    x <- data.table::fread(file = path, sep = ";",
+                           select = c(want, intersect(TOTALBR_CONTEXT_COLS,
+                                                      names(head1))),
                            colClasses = "character", na.strings = "",
                            showProgress = FALSE)
     x <- tibble::as_tibble(x)
     x$YEAR <- substr(x[[date_col]], 1, 4)
     if (!is.null(years)) x <- x[x$YEAR %in% as.character(years), ]
+    if (!is.null(mth)) {
+      x$MONTH <- substr(x[[date_col]], 6, 7)
+      x <- x[x$MONTH %in% mth, ]
+    }
     x
   }
 
   if (is.null(d) || nrow(d) == 0) return(NULL)
+  # one shape for MONTH whichever branch produced it
+  if (!is.null(d$MONTH)) d$MONTH <- sprintf("%02d", as.integer(d$MONTH))
   d <- totalbr_normalise(d)
   d$SOURCE <- basename(path)
   d
@@ -236,7 +271,11 @@ totalbr_flag_near <- function(d, tol_min, plan_tol_min = TOTALBR_PLAN_TOL_MIN) {
 }
 
 # =============================================================================
-# check_totalbr_duplicates(years, tol_min, raw_dir, date_col)
+# check_totalbr_duplicates(years, source, month, tol_min, raw_dir, date_col)
+#
+# `month` restricts the read to one or more months of the given years, which is
+# the normal way to run this: a month is seconds, a year of the archive is
+# minutes and a gigabyte. Omit it to judge the whole year.
 #
 # Per year: duplication under both definitions, plus the rows the second test
 # COULD NOT be applied to (no registration), so the number is read for what it
@@ -244,6 +283,7 @@ totalbr_flag_near <- function(d, tol_min, plan_tol_min = TOTALBR_PLAN_TOL_MIN) {
 # =============================================================================
 check_totalbr_duplicates <- function(years    = NULL,
                                      source   = c("all", "csv", "parquet"),
+                                     month    = NULL,
                                      tol_min  = TOTALBR_NEAR_MIN,
                                      plan_tol_min = TOTALBR_PLAN_TOL_MIN,
                                      raw_dir  = here::here("data-raw", "totalbr"),
@@ -267,7 +307,7 @@ check_totalbr_duplicates <- function(years    = NULL,
   res <- purrr::map(paths, function(path) {
     message("Reading ", basename(path), " ...")
     t0 <- Sys.time()
-    d <- totalbr_read_dup_cols(path, date_col, years)
+    d <- totalbr_read_dup_cols(path, date_col, years, month)
     if (is.null(d)) return(NULL)
     totalbr_report_read(basename(path), nrow(d), t0)
     message("  checking ", basename(path), " ...")
@@ -319,7 +359,9 @@ check_totalbr_duplicates <- function(years    = NULL,
       x <- data.table::fread(file = f, sep = ";", select = c("pk", date_col),
                              colClasses = "character", na.strings = "",
                              showProgress = FALSE)
-      tibble::tibble(YEAR = substr(x[[date_col]], 1, 4), pk = x$pk)
+      tibble::tibble(YEAR  = substr(x[[date_col]], 1, 4),
+                     MONTH = substr(x[[date_col]], 6, 7),
+                     pk    = x$pk)
     }) |> purrr::list_rbind()
   } else NULL
 
@@ -328,6 +370,10 @@ check_totalbr_duplicates <- function(years    = NULL,
   parts_pk <- if (!is.null(pk_parts) && nrow(pk_parts) > 0) {
     p <- pk_parts
     if (!is.null(years)) p <- p[p$YEAR %in% as.character(years), ]
+    # the same month window the rows were read under, or the pk figure would
+    # describe the whole year while every other column describes one month
+    if (!is.null(month))
+      p <- p[p$MONTH %in% sprintf("%02d", as.integer(month)), ]
     dplyr::group_by(p, YEAR) |>
       dplyr::summarise(SAME_PK_PARTS = sum(duplicated(pk)), .groups = "drop")
   } else NULL
@@ -367,6 +413,7 @@ check_totalbr_duplicates <- function(years    = NULL,
 # =============================================================================
 totalbr_duplicate_examples <- function(years    = NULL,
                                        what     = c("near", "pk"),
+                                       month    = NULL,
                                        tol_min  = TOTALBR_NEAR_MIN,
                                        n        = 10L,
                                        raw_dir  = here::here("data-raw", "totalbr"),
@@ -376,7 +423,7 @@ totalbr_duplicate_examples <- function(years    = NULL,
   paths <- unique(c(src$csv, src$parquet))   # the downloaded years first
 
   for (path in paths) {
-    d <- totalbr_read_dup_cols(path, date_col, years)
+    d <- totalbr_read_dup_cols(path, date_col, years, month)
     if (is.null(d)) next
     near <- totalbr_flag_near(d, tol_min)
     if (length(near) == 0) next
@@ -391,14 +438,20 @@ totalbr_duplicate_examples <- function(years    = NULL,
       out <- out[pk %in% head(unique(out$pk), n)]
       data.table::setorderv(out, c("pk", "dh_inicio"))
       message("Exact pk repeats in ", basename(path))
-      return(tibble::as_tibble(out)[, c("SOURCE", "pk", "co_matricula",
-                                        "co_indicativo", "co_addep", "co_addes",
-                                        "dh_inicio", "dh_fim")])
+      return(tibble::as_tibble(out) |>
+               dplyr::select(dplyr::any_of(c(
+                 "SOURCE", "pk", "co_matricula", "co_indicativo",
+                 "co_addep", "co_addes", "dh_inicio", "dh_fim",
+                 TOTALBR_CONTEXT_COLS))))
     }
 
     # same rule as the count: the exact pk repeats belong to the other view
     dt <- dt[!duplicated(pk)]
-    dt[, GRP := paste(co_matricula, co_addep, co_addes, sep = "")]
+    # the SAME grouping the rule uses (totalbr_near_pairs): callsign and aerodrome
+    # pair. Grouping the display on co_matricula instead built groups the rule
+    # never formed, so a zero-duration row -- which usually carries no
+    # registration -- was shown apart from the record it was flagged against.
+    dt[, GRP := paste(co_indicativo, co_addep, co_addes, sep = "")]
     # every row of the groups that contain a flagged row, so the repeat is shown
     # next to what it repeats rather than on its own
     grps <- unique(dt$GRP[near])
@@ -413,14 +466,19 @@ totalbr_duplicate_examples <- function(years    = NULL,
                                                units = "mins")), 1), by = GRP]
 
     message("Examples from ", basename(path),
-            " (same registration, same aerodrome pair, within ", tol_min, " min)")
+            " (same callsign, same aerodrome pair, within ", tol_min, " min)")
     # SOURCE first: the function walks the sources and returns the first that has
     # anything, so without it a result from the parquet archive reads as if it came
     # from the downloaded year — which is exactly how a clean 2026 download looked
     # like it had duplicates that were really the archive's.
-    return(tibble::as_tibble(out)[, c("SOURCE", "co_matricula", "co_indicativo",
-                                      "co_addep", "co_addes", "dh_inicio",
-                                      "dh_fim", "GAP_MIN", "FLAGGED", "pk")])
+    # ds_rota and li_orgaos last, and only if the source carries them: they are
+    # wide, and they are what the reading is actually for -- two records of one
+    # flight name different units over the same route, two flights do not.
+    return(tibble::as_tibble(out) |>
+             dplyr::select(dplyr::any_of(c(
+               "SOURCE", "co_matricula", "co_indicativo", "co_addep", "co_addes",
+               "dh_inicio", "dh_fim", "GAP_MIN", "FLAGGED", "pk",
+               TOTALBR_CONTEXT_COLS))))
   }
 
   message("No near-duplicates found.")
@@ -719,6 +777,7 @@ totalbr_eet_check <- function(raw_dir  = here::here("data-raw", "totalbr"),
 # =============================================================================
 totalbr_duplicate_rows <- function(years    = NULL,
                                    source   = c("csv", "parquet", "all"),
+                                   month    = NULL,
                                    tol_min  = TOTALBR_NEAR_MIN,
                                    raw_dir  = here::here("data-raw", "totalbr"),
                                    date_col = "dt_dia",
@@ -743,6 +802,10 @@ totalbr_duplicate_rows <- function(years    = NULL,
       d0 <- dplyr::collect(ds)
       d0$YEAR <- format(totalbr_parse_time(d0[[date_col]]), "%Y", tz = "UTC")
       if (!is.null(years)) d0 <- d0[d0$YEAR %in% as.character(years), ]
+      if (!is.null(month)) {
+        m <- format(totalbr_parse_time(d0[[date_col]]), "%m", tz = "UTC")
+        d0 <- d0[m %in% sprintf("%02d", as.integer(month)), ]
+      }
       d0
     } else {
       x <- data.table::fread(file = path, sep = ";", colClasses = "character",
@@ -750,6 +813,8 @@ totalbr_duplicate_rows <- function(years    = NULL,
       x <- tibble::as_tibble(x)
       x$YEAR <- substr(x[[date_col]], 1, 4)
       if (!is.null(years)) x <- x[x$YEAR %in% as.character(years), ]
+      if (!is.null(month))
+        x <- x[substr(x[[date_col]], 6, 7) %in% sprintf("%02d", as.integer(month)), ]
       x
     }
     if (nrow(d) == 0) return(NULL)

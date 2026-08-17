@@ -325,7 +325,7 @@ totalbr_year_count <- function(years       = NULL,
 }
 
 # =============================================================================
-# totalbr_read_year(year, tz, source, cols, raw_dir, date_col)
+# totalbr_read_year(year, month, tz, source, cols, raw_dir, date_col)
 #
 # The rows of one year, filtered correctly. Written because filtering this file
 # by hand invites four mistakes, three of them silent:
@@ -342,6 +342,7 @@ totalbr_year_count <- function(years       = NULL,
 # in UTC gives 2,109,856 rows and in America/Sao_Paulo 2,109,631.
 # =============================================================================
 totalbr_read_year <- function(year     = 2025,
+                              month    = NULL,
                               tz       = TOTALBR_TZ,
                               source   = c("parquet", "csv"),
                               cols     = NULL,
@@ -386,6 +387,14 @@ totalbr_read_year <- function(year     = 2025,
     d
   }
 
+  # A month is the working unit everywhere downstream, so it is filtered here
+  # rather than after a year has been pulled into memory. The bounds stay in the
+  # column's own zone, exactly as the year bounds do.
+  keep_month <- function(v) {
+    if (is.null(month)) return(rep(TRUE, length(v)))
+    as.integer(format(v, "%m", tz = bound_tz)) %in% as.integer(month)
+  }
+
   purrr::map(paths, function(path) {
     if (grepl("\\.parquet$", path)) {
       ds <- arrow::open_dataset(path)
@@ -394,9 +403,10 @@ totalbr_read_year <- function(year     = 2025,
            else dplyr::select(ds, dplyr::all_of(unique(c(date_col, cols))))
       # !!from / !!to: the bounds are computed in R and injected, never left as
       # calls for arrow to translate
-      show_in_tz(
-        dplyr::collect(dplyr::filter(q, !!rlang::sym(date_col) >= !!from,
-                                        !!rlang::sym(date_col) <  !!to)))
+      out <- dplyr::collect(dplyr::filter(q, !!rlang::sym(date_col) >= !!from,
+                                             !!rlang::sym(date_col) <  !!to))
+      if (!is.null(month)) out <- out[keep_month(out[[date_col]]), ]
+      show_in_tz(out)
     } else {
       x <- data.table::fread(file = path, sep = ";",
                              select = if (is.null(cols)) NULL
@@ -405,7 +415,8 @@ totalbr_read_year <- function(year     = 2025,
                              showProgress = FALSE)
       x <- tibble::as_tibble(x)
       v <- as.POSIXct(sub("T", " ", x[[date_col]], fixed = TRUE), tz = "UTC")
-      x[!is.na(v) & v >= from & v < to, ]   # CSV columns stay text, no zone to set
+      # CSV columns stay text, no zone to set
+      x[!is.na(v) & v >= from & v < to & keep_month(v), ]
     }
   }) |> purrr::list_rbind()
 }

@@ -99,7 +99,11 @@ TOTALBR_UNION_COLS <- c("li_orgaos", "li_tipovoo", "li_regravoo",
 
 .union_values <- function(x) {
   v <- if (is.list(x)) unlist(x) else as.character(x)
-  v <- unlist(strsplit(v[!is.na(v)], "|", fixed = TRUE))
+  # the two sources separate differently: the API download pipe-separates after
+  # the CSV round-trip, the parquet archive comma-separates. Splitting on only one
+  # leaves "APPAN,APPAN" standing as a single token, and the union then reports a
+  # unit list that is neither source's.
+  v <- unlist(strsplit(v[!is.na(v)], "[|,]"))
   v <- unique(trimws(v))
   v <- v[nzchar(v)]
   if (length(v) == 0) return(NA_character_)
@@ -354,4 +358,115 @@ totalbr_merge_example <- function(d, pairs, merged, callsign,
   # returned as a tibble: this one is meant to be read on screen, and a
   # data.table prints the whole thing rather than a readable head
   if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out[]
+}
+
+# =============================================================================
+# totalbr_merge_duplicate_pk(d)
+#
+# Rows sharing a pk, collapsed into one row each instead of dropped.
+#
+# The premise of "just delete the repeat" is that pk hashes the whole row, so the
+# copies are interchangeable. Measured on the parquet archive, they are not: 455
+# repeated pk, 910 rows, and ALL 910 stay distinct when every column is compared.
+# What never differs is the movement's identity -- id, dt_dia, dh_inicio, dh_fim,
+# co_indicativo, co_addep, co_addes. What differs is the payload, most often
+# li_orgaos (303 of the 455 pairs) and dh_eet (291):
+#
+#   li_orgaos     dh_eet
+#   APPAN         NA
+#   APPAN,APPAN   2023-03-02 21:20:00
+#
+# Keeping "the first copy" therefore discards a filled dh_eet, or a unit, at
+# random -- the very loss the merge in validation 2 exists to prevent. So the
+# same rule applies here, in its degenerate case: identity is already equal, so
+# there is nothing to chain and nothing to judge; union the li_* columns, take
+# the first filled value everywhere else, and no information is lost either way.
+# =============================================================================
+totalbr_merge_duplicate_pk <- function(d, union_cols = TOTALBR_UNION_COLS,
+                                       quiet = FALSE) {
+  if (!"pk" %in% names(d)) {
+    if (!quiet) message("No pk column; nothing to merge.")
+    return(d)
+  }
+  dt <- data.table::as.data.table(d)
+  # the archive writes pk uppercase and the API lowercase, so compare normalised
+  key <- toupper(trimws(as.character(dt$pk)))
+  key[!nzchar(key)] <- NA_character_
+  # NA is not a repeat of NA: rows without a pk are untestable, never touched
+  dup_keys <- unique(key[duplicated(key) & !is.na(key)])
+  if (length(dup_keys) == 0) {
+    if (!quiet) message("Identical pk: none.")
+    return(if (requireNamespace("tibble", quietly = TRUE))
+             tibble::as_tibble(dt) else dt[])
+  }
+
+  dt[, .PK_KEY := key]
+  hit  <- dt[.PK_KEY %in% dup_keys]
+  rest <- dt[!(.PK_KEY %in% dup_keys)]
+
+  val_cols   <- setdiff(names(hit), ".PK_KEY")
+  union_cols <- intersect(union_cols, val_cols)
+  plain_cols <- setdiff(val_cols, union_cols)
+
+  merged <- hit[, c(
+    lapply(.SD, .first_filled),
+    lapply(mget(union_cols), .union_values),
+    list(N_PK_MERGED = .N)
+  ), by = .PK_KEY, .SDcols = plain_cols]
+
+  out <- data.table::rbindlist(list(merged, rest), fill = TRUE, use.names = TRUE)
+  out[is.na(N_PK_MERGED), N_PK_MERGED := 1L]
+  out[, .PK_KEY := NULL]
+  if (!quiet)
+    message(sprintf("Identical pk: %d row(s) merged into %d; %d untouched -> %d total.",
+                    nrow(hit), nrow(merged), nrow(rest), nrow(out)))
+  if (requireNamespace("tibble", quietly = TRUE)) tibble::as_tibble(out) else out[]
+}
+
+
+# =============================================================================
+# totalbr_clean_units(d)
+#
+# One canonical form for the li_* lists: the values de-duplicated inside the row,
+# sorted, pipe-separated.
+#
+# A row is NOT one unit's view. Measured on 2026-01 (API) and 2025-01 (archive),
+# only ~32% of raw rows name a single unit; two thirds already name two to six.
+# What is a fault is the SAME unit listed twice in one row -- "APPAN,APPAN" --
+# which occurs in 1.1% of the API's rows and 2.7% of the archive's, and which
+# makes any count of units per row wrong before anything is merged.
+#
+# The two sources also disagree on the separator (archive: comma, download: pipe
+# after the CSV round-trip), so canonical form has to be imposed, not assumed.
+# =============================================================================
+totalbr_clean_units <- function(d, union_cols = TOTALBR_UNION_COLS, quiet = FALSE) {
+  cols <- intersect(union_cols, names(d))
+  if (length(cols) == 0) return(d)
+  n_rep <- 0L
+  for (cc in cols) {
+    v <- as.character(d[[cc]])
+    # only rows holding a list can hold a repeat; a single token cannot repeat
+    hit <- !is.na(v) & grepl("[|,]", v)
+    if (!any(hit)) next
+    # the same handful of unit lists recurs across millions of rows, so the work
+    # is done once per DISTINCT value and mapped back -- 180k rows go from 17s to
+    # well under a second
+    u   <- unique(v[hit])
+    toks <- strsplit(u, "[|,]")
+    fixed <- vapply(toks, function(z) {
+      z <- unique(trimws(z))
+      z <- z[nzchar(z)]
+      if (length(z) == 0) NA_character_ else paste(sort(z), collapse = "|")
+    }, character(1))
+    # a repeated unit is the fault; a comma or an unsorted list is only a format
+    had_rep <- lengths(toks) > vapply(toks, function(z) length(unique(trimws(z))),
+                                      integer(1))
+    n_rep <- n_rep + sum(had_rep[match(v[hit], u)])
+    v[hit] <- fixed[match(v[hit], u)]
+    d[[cc]] <- v
+  }
+  if (!quiet)
+    message(sprintf("li_* lists: %d row-value(s) had a unit listed twice; all lists now pipe-separated, sorted, distinct.",
+                    n_rep))
+  d
 }

@@ -2,9 +2,9 @@
 # =============================================================================
 # prepare_totalbr.R
 #
-# The whole TOTALBR cycle in one call: read what was downloaded, remove the one
-# kind of row that is genuinely a repeat, merge the records of each flight, and
-# hand back a dataset ready to work on.
+# The whole TOTALBR cycle in one call: read what was downloaded, collapse the
+# rows that share a pk, merge the records of each flight, and hand back a dataset
+# ready to work on.
 #
 #   source(here::here("TOTALBR", "prepare_totalbr.R"))
 #   flights <- totalbr_prepare(2026)                       # one year
@@ -17,8 +17,10 @@
 #                    parquet archive with source = "parquet").
 #   2. NORMALISE     times to POSIXct in one zone, pk to one case. Without this
 #                    the same row from two sources compares as two rows.
-#   3. DROP SAME pk  the only deletion in the pipeline. `pk` is the row hash, so
-#                    an identical pk is the same row stored twice.
+#   3. SAME pk       rows sharing a pk describe one movement -- every identity
+#                    column agrees -- but carry different payloads, so they are
+#                    COLLAPSED, not deleted: li_* unioned, first filled value
+#                    elsewhere. Deleting would drop filled fields at random.
 #   4. MERGE FLIGHTS the records of one flight — one per unit that saw it —
 #                    become one row spanning from the earliest capture to the
 #                    latest, listing every unit.
@@ -65,8 +67,13 @@ totalbr_prepare <- function(years    = NULL,
 
   # ---- 1. read -------------------------------------------------------------
   say("1/4 reading ", source, ": ", paste(years, collapse = ", "))
+  # month goes DOWN to the reader: filtering after a year is in memory is the very
+  # cost this pipeline is meant to avoid. The filter below still runs, on rows
+  # that are already the right month, and stays as the guard for a date_col the
+  # reader could not interpret.
   parts <- lapply(years, function(y)
-    totalbr_read_year(y, source = source, raw_dir = raw_dir, date_col = date_col))
+    totalbr_read_year(y, month = month, source = source, raw_dir = raw_dir,
+                      date_col = date_col))
   parts <- Filter(function(x) !is.null(x) && nrow(x) > 0, parts)
   if (length(parts) == 0) {
     message("Nothing to prepare: no ", source, " data for ",
@@ -104,9 +111,19 @@ totalbr_prepare <- function(years    = NULL,
 
   n_kept <- nrow(d)
 
-  # ---- 3. the only deletion ------------------------------------------------
-  say("3/4 dropping rows whose pk was already seen")
-  d <- totalbr_drop_duplicate_pk(d, quiet = quiet)
+  # ---- 3. collapse the rows that share a pk --------------------------------
+  # Not a deletion. The copies are NOT interchangeable: on the parquet archive all
+  # 910 rows behind 455 repeated pk stay distinct when every column is compared,
+  # differing on li_orgaos and dh_eet while agreeing on every identity column.
+  # Keeping "the first" would discard 162 filled dh_eet values at random.
+  # canonical li_* lists BEFORE anything is grouped: a unit listed twice in one
+  # row makes every later count of units wrong, and the two sources do not even
+  # agree on the separator. Several DIFFERENT units in one row are normal -- two
+  # thirds of raw rows carry two to six -- and are all kept.
+  d <- totalbr_clean_units(d, quiet = quiet)
+
+  say("3/4 collapsing rows that share a pk")
+  d <- totalbr_merge_duplicate_pk(d, quiet = quiet)
   n_after_pk <- nrow(d)
 
   # ---- 4. merge the records of each flight ---------------------------------
@@ -114,7 +131,7 @@ totalbr_prepare <- function(years    = NULL,
   out <- totalbr_merge_flights(d, gap_min = gap_min)
 
   steps <- tibble::tibble(
-    STEP  = c("read", "kept after month filter", "same pk dropped",
+    STEP  = c("read", "kept after month filter", "same pk collapsed",
               "records merged", "flights out"),
     ROWS  = c(n_read, n_kept, n_kept - n_after_pk,
               n_after_pk - nrow(out), nrow(out))
