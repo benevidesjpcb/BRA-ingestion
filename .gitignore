@@ -33,3 +33,12 @@ data/totalbr/
 kpi08-data.js
 index-data.js
 .positai
+
+# Rendered qmd output. The dashboards index.html and kpi08.html are hand-written
+# and DO stay tracked; these are generated on every render and would otherwise
+# show up as changes nobody made.
+Taxi-BRA-ingestion.html
+TOTALBR-BRA-ingestion.html
+TATIC-BRA-ingestion.html
+ASMA-BRA-ingestion.html
+*_files/
