@@ -153,6 +153,139 @@ totalbr_prepare <- function(years    = NULL,
   out
 }
 
+
+# =============================================================================
+# totalbr_prepare_months(years, months, out_dir, force)
+#
+# Runs totalbr_prepare() month by month and writes one file per month:
+#
+#   <out_dir>/totalbr-<year>-<month>-flights.csv
+#
+#   totalbr_prepare_months(2026)                  # every CLOSED month of 2026
+#   totalbr_prepare_months(2026, months = 2)      # just February
+#
+# CLOSED MONTHS ONLY, by default. The current month is still receiving rows, so a
+# file written from it is a snapshot that will disagree with the next one. Pass
+# the month explicitly to force it.
+#
+# ALREADY-WRITTEN MONTHS ARE SKIPPED, so this is re-runnable: it costs nothing to
+# call it again after a new month closes, and it will do only that month.
+#
+# Returns, invisibly, the paths written or already present.
+# =============================================================================
+totalbr_prepare_months <- function(years    = NULL,
+                                   months   = NULL,
+                                   out_dir  = here::here("outputs"),
+                                   raw_dir  = here::here("data-raw", "totalbr"),
+                                   source   = c("csv", "parquet"),
+                                   gap_min  = TOTALBR_GAP_MIN,
+                                   force    = FALSE,
+                                   quiet    = FALSE) {
+
+  source <- match.arg(source)
+  if (is.null(years)) years <- if (exists("totalbr_data_years", inherits = TRUE))
+    get("totalbr_data_years", inherits = TRUE) else
+      as.integer(format(Sys.Date(), "%Y"))
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+  today     <- Sys.Date()
+  this_year <- as.integer(format(today, "%Y"))
+  this_mon  <- as.integer(format(today, "%m"))
+  written   <- character(0)
+
+  for (yr in years) {
+    want <- if (!is.null(months)) as.integer(months) else {
+      # only months that have finished: the current one is still filling up
+      if (yr > this_year) integer(0)
+      else if (yr == this_year) seq_len(max(this_mon - 1L, 0L))
+      else 1:12
+    }
+    if (length(want) == 0) {
+      message("Year ", yr, ": no closed month to prepare yet."); next
+    }
+
+    for (mo in want) {
+      f <- file.path(out_dir, sprintf("totalbr-%d-%02d-flights.csv", yr, mo))
+      if (file.exists(f) && !force) {
+        message(sprintf("%d-%02d  skip (already written: %s)", yr, mo, basename(f)))
+        written <- c(written, f); next
+      }
+      message(sprintf("%d-%02d  preparing ...", yr, mo))
+      out <- totalbr_prepare(yr, month = mo, gap_min = gap_min, source = source,
+                             raw_dir = raw_dir, out_file = f, quiet = quiet)
+      if (nrow(out) > 0) written <- c(written, f)
+    }
+  }
+  invisible(written)
+}
+
+# =============================================================================
+# totalbr_bind_months(files, remerge)
+#
+# The monthly files read back as ONE dataset.
+#
+# WHY THIS IS NOT JUST rbind
+# A flight that starts on 31 January at 23:40 and lands on 1 February has its
+# records split across two months, so each month merged its own half and the
+# flight appears twice, each time incomplete. Concatenating the files preserves
+# that split. `remerge = TRUE` (the default) runs the flight merge once more over
+# the joined data, which joins exactly those straddling records and leaves every
+# other row alone -- the rule is the same, so a flight already whole cannot merge
+# with anything.
+#
+# N_MERGED is recomputed from MERGED_PK, which is unioned across the pass, so it
+# keeps meaning "how many SOURCE rows are behind this flight" rather than "how
+# many rows this last pass merged".
+# =============================================================================
+totalbr_bind_months <- function(files    = NULL,
+                                out_dir  = here::here("outputs"),
+                                pattern  = "^totalbr-\\d{4}-\\d{2}-flights\\.csv$",
+                                remerge  = TRUE,
+                                gap_min  = TOTALBR_GAP_MIN,
+                                out_file = NULL,
+                                quiet    = FALSE) {
+
+  if (is.null(files)) files <- list.files(out_dir, pattern = pattern, full.names = TRUE)
+  if (length(files) == 0) {
+    message("No monthly files in ", out_dir); return(tibble::tibble())
+  }
+  files <- sort(files)
+  if (!quiet) message("Binding ", length(files), " month(s): ",
+                      paste(basename(files), collapse = ", "))
+
+  parts <- lapply(files, function(f)
+    tibble::as_tibble(data.table::fread(file = f, sep = ";", na.strings = "",
+                                        showProgress = FALSE, fill = Inf,
+                                        header = TRUE)))
+  d <- dplyr::bind_rows(parts)
+  # written as text by fwrite; the merge needs real timestamps back
+  for (nm in intersect(c("dt_dia", "dh_inicio", "dh_fim", "dh_eobt", "dh_eet"),
+                       names(d)))
+    if (!inherits(d[[nm]], "POSIXt")) d[[nm]] <- totalbr_parse_time(d[[nm]])
+
+  n_in <- nrow(d)
+  if (!remerge) {
+    if (!quiet) message(n_in, " flight(s), months concatenated as they were.")
+    return(d)
+  }
+
+  # MERGED_PK travels as a union so provenance survives a second pass
+  out <- totalbr_merge_flights(d, gap_min = gap_min,
+                               union_cols = c(TOTALBR_UNION_COLS, "MERGED_PK"))
+  if ("MERGED_PK" %in% names(out))
+    out$N_MERGED <- lengths(strsplit(as.character(out$MERGED_PK), "|", fixed = TRUE))
+
+  if (!quiet)
+    message(sprintf("%d flight(s) in, %d out: %d straddled a month boundary.",
+                    n_in, nrow(out), n_in - nrow(out)))
+
+  if (!is.null(out_file)) {
+    data.table::fwrite(out, out_file, sep = ";", na = "", quote = TRUE)
+    message("Written to ", out_file)
+  }
+  out
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
 if (sys.nframe() == 0L) {
   suppressPackageStartupMessages({

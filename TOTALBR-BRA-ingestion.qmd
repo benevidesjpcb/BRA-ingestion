@@ -718,6 +718,48 @@ d <- totalbr_merge_duplicate_pk(d)                 # validation 1
 merged <- totalbr_merge_flights(d)                 # validation 2, TOTALBR_GAP_MIN
 ```
 
+### Every month, and the months joined
+
+One month is the working unit; the study period is many of them. Two functions cover it, and
+neither re-does a month already written:
+
+```{r}
+#| label: months-bra-totalbr
+#| eval: false
+
+source(here::here("TOTALBR", "prepare_totalbr.R"))
+
+# every CLOSED month of the year, one file each, skipping what is already there
+totalbr_prepare_months(2026, out_dir = here::here("outputs"),
+                       raw_dir = bra_totalbr_raw_dir)
+
+# just one month, when that is what changed
+totalbr_prepare_months(2026, months = 2, raw_dir = bra_totalbr_raw_dir)
+
+# the months read back as one dataset
+flights <- totalbr_bind_months(out_dir = here::here("outputs"))
+```
+
+`totalbr_prepare_months()` stops at the **last closed month**: the current one is still
+receiving rows, so a file written from it disagrees with the next run for no good reason.
+Ask for it by number if you want it anyway. Months already written are skipped, so calling
+this again after a month closes costs one month of work, not a year of it.
+
+**`totalbr_bind_months()` is not `rbind`.** A flight that starts on 31 January at 23:40 and
+lands on 1 February has its records split across two months: each month merged its own half,
+and the flight appears twice, each time incomplete. The bind therefore runs the flight merge
+once more over the joined data, which joins exactly those straddling records and leaves
+everything else alone — the rule is the same one, so a flight that is already whole has
+nothing within `gap_min` to merge with. It reports how many rows the boundary cost:
+
+```
+1,247,301 flight(s) in, 1,247,142 out: 159 straddled a month boundary.
+```
+
+`MERGED_PK` is unioned across that second pass and `N_MERGED` is recomputed from it, so both
+keep meaning "the source rows behind this flight" rather than "what the last pass did".
+`remerge = FALSE` concatenates without it, for when you want the months exactly as written.
+
 **Choosing `gap_min`.** It is the shortest turnaround that still separates two real flights of
 the same aircraft on the same route. Too wide and consecutive legs of a shuttle merge; too
 narrow and one flight splits. Read it off the data rather than assuming:
@@ -976,7 +1018,9 @@ undefined, or at whatever version the session happened to hold.
 
 | Function | What it does |
 | --- | --- |
-| `totalbr_prepare(years, month, gap_min, source, out_file)` | The whole cycle in one call: read → normalise → `totalbr_clean_units()` → validation 1 → validation 2. Prints the step table and returns it as `attr(x, "steps")`. The only function that writes a file, and it refuses a raw download's name. |
+| `totalbr_prepare(years, month, gap_min, source, out_file)` | The whole cycle in one call: read → normalise → `totalbr_clean_units()` → validation 1 → validation 2. Prints the step table and returns it as `attr(x, "steps")`. Writes a file only when `out_file` is given, and refuses a raw download's name. |
+| `totalbr_prepare_months(years, months, out_dir)` | Runs the above for every **closed** month, one file per month, skipping months already written. Re-runnable after a month closes. |
+| `totalbr_bind_months(out_dir, remerge)` | The monthly files as one dataset, re-merging the flights that straddle a month boundary. `remerge = FALSE` concatenates as written. |
 
 ### Getting the data: `TOTALBR/download_totalbr.R` and `ODIN/download_odin.R`
 
