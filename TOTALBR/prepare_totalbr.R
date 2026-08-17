@@ -51,7 +51,7 @@ source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
 # =============================================================================
 totalbr_prepare <- function(years    = NULL,
                             month    = NULL,
-                            gap_min  = 45,
+                            gap_min  = TOTALBR_GAP_MIN,
                             source   = c("csv", "parquet"),
                             raw_dir  = here::here("data-raw", "totalbr"),
                             date_col = "dt_dia",

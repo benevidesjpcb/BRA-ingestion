@@ -11,7 +11,7 @@
 #   totalbr_merge_flights()       rows of one flight, one per unit that saw it
 #
 #   source(here::here("TOTALBR", "prepare_totalbr.R"))   # sources this and more
-#   merged <- totalbr_merge_flights(d, gap_min = 45)
+#   merged <- totalbr_merge_flights(d, gap_min = 60)
 #
 # totalbr_drop_duplicate_pk() (in check_totalbr_duplicates.R) is kept only to
 # reproduce the old delete-the-repeat behaviour for comparison. It loses 162
@@ -101,6 +101,12 @@ totalbr_pair_groups <- function(pairs, n) {
 # li_* arrays, which the download stores pipe-separated.
 TOTALBR_UNION_COLS <- c("li_orgaos", "li_tipovoo", "li_regravoo",
                         "li_prnav", "li_rvsm")
+
+# How far apart two records of the SAME flight may be, in minutes. One value for
+# the whole pipeline: when the default and the examples each carried their own
+# number, a dataset inspected at 45 was written to file at 60 and the counts did
+# not reconcile. Change it here, having looked at totalbr_cluster_profile().
+TOTALBR_GAP_MIN <- 60
 
 .union_values <- function(x) {
   v <- if (is.list(x)) unlist(x) else as.character(x)
@@ -239,7 +245,7 @@ totalbr_merge_duplicates <- function(d, pairs,
 #
 # Groups the records of ONE FLIGHT and merges them. Use this rather than pairing:
 #
-#   merged <- totalbr_merge_flights(d, gap_min = 45)
+#   merged <- totalbr_merge_flights(d, gap_min = 60)
 #
 # WHY NOT PAIRS
 # totalbr_near_pairs() matches ONE record to ONE partner. That was built when the
@@ -261,10 +267,11 @@ totalbr_merge_duplicates <- function(d, pairs,
 # aircraft on the same route. Too large and a shuttle's consecutive legs merge;
 # too small and one flight splits into several. The gap between the records of
 # the same flight is minutes; a genuine next leg needs the aircraft to land, turn
-# around and depart again. 45 minutes is the default, and
+# around and depart again. 60 minutes is the default — TOTALBR_GAP_MIN, set in
+# one place so the pipeline and the examples cannot drift apart — and
 # totalbr_cluster_profile() shows what the data does around it.
 # =============================================================================
-totalbr_merge_flights <- function(d, gap_min = 45,
+totalbr_merge_flights <- function(d, gap_min = TOTALBR_GAP_MIN,
                                   start_col = "dh_inicio",
                                   end_col   = "dh_fim",
                                   key_cols  = c("co_indicativo", "co_addep", "co_addes"),
@@ -276,7 +283,7 @@ totalbr_merge_flights <- function(d, gap_min = 45,
 # The grouping, expressed as edges between consecutive records of one flight, so
 # the union-find in totalbr_merge_duplicates() rebuilds the groups. Returns the
 # same shape as totalbr_near_pairs(), which keeps every downstream tool working.
-totalbr_flight_edges <- function(d, gap_min = 45,
+totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
                                  start_col = "dh_inicio",
                                  end_col   = "dh_fim",
                                  key_cols  = c("co_indicativo", "co_addep", "co_addes")) {

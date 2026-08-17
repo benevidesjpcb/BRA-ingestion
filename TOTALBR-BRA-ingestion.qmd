@@ -635,7 +635,31 @@ one value would erase the units whose reports justified merging. Three columns a
 `N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a merged row
 can always be traced back.
 
-Both validations are one call. Read the month, drop the repeated `pk`, merge each flight's
+### Two ways to run it, and when to use which
+
+The next two chunks do **exactly the same work**. The difference is whether it happens in one
+call or in four, and that decides which one you want:
+
+| | `merge-bra-totalbr` | `merge-bra-totalbr-steps` |
+| --- | --- | --- |
+| What it is | `totalbr_prepare()` — the four steps packaged | the same four steps, written out |
+| Prints | the step table: rows read, `pk` collapsed, records merged, flights out | each function's own message |
+| Writes a file | yes, `out_file=`, and it refuses a raw download's name | no |
+| Lets you stop midway | no — you get the end | **yes** — `d` exists between steps |
+| Use it for | the routine run, and anything whose numbers you will quote | inspecting, testing a different `gap_min`, debugging |
+
+Everything is packaged for a reason: the order matters (`totalbr_clean_units()` before
+anything is grouped, validation 1 before validation 2), and the step table is what lets you
+say what a number cost rather than guess. Reach for the long form when you need the raw `d`
+in your hands — to count something yourself, to look at `totalbr_flight_edges()` before it is
+consumed, or to try two tolerances without re-reading the file.
+
+**Both must be given the same `gap_min`, or their results are not comparable.** The default
+lives in one place, `TOTALBR_GAP_MIN` (60 minutes) in `merge_totalbr_duplicates.R`, precisely
+so the two cannot drift: an earlier version of this document inspected a month at 45 and wrote
+the file at 60, and the two counts had no reason to agree.
+
+Both validations are one call. Read the month, collapse the repeated `pk`, merge each flight's
 records, and what comes back is the dataset to work on:
 
 ```{r}
@@ -651,7 +675,9 @@ jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir)
 #flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir)
 
 # both validations resolved, straight to a NEW file
-totalbr_prepare(2026, month = 1, gap_min = 60, raw_dir = bra_totalbr_raw_dir,
+# gap_min is not passed: the default is TOTALBR_GAP_MIN, the same value the line
+# above used, so the file written matches the dataset just inspected
+totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
                 out_file = here::here("outputs", "totalbr-2026-01-flights.csv"))
 
 # check one aircraft end to end
@@ -689,7 +715,7 @@ d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
                                          raw_dir = bra_totalbr_raw_dir))
 d <- totalbr_clean_units(d)                        # canonical li_* lists
 d <- totalbr_merge_duplicate_pk(d)                 # validation 1
-merged <- totalbr_merge_flights(d, gap_min = 60)   # validation 2
+merged <- totalbr_merge_flights(d)                 # validation 2, TOTALBR_GAP_MIN
 ```
 
 **Choosing `gap_min`.** It is the shortest turnaround that still separates two real flights of
@@ -752,11 +778,13 @@ merge keys on `co_indicativo` plus the aerodrome pair and never consults the reg
 which is what lets it work; but its first-value-filled rule then reports HP9926 for the merged
 flight and drops the rest silently. Do not read the registration of a merged row as fact.
 
-**The default `gap_min = 45` splits this flight.** Rows one and two are 55 minutes apart end
-to start. At 60 the three become one row spanning 286.6 minutes, matching the control exactly;
-at 45 they come out as two flights plus a fragment. `totalbr_cluster_profile()` does not settle
-it either way — the P99 span is flat from 45 to 120 — so the case, not the profile, is the
-argument for widening it.
+**This flight is why the default is 60.** Rows one and two are 55 minutes apart end to start.
+At 60 the three become one row spanning 286.6 minutes, matching the control exactly; at 45 —
+the earlier default — they came out as two flights plus a fragment.
+`totalbr_cluster_profile()` does not settle it either way (the P99 span is flat from 45 to
+120), so the case, not the profile, is the argument. `TOTALBR_GAP_MIN` in
+`merge_totalbr_duplicates.R` now holds that decision for the whole pipeline; change it there
+if a later case argues otherwise.
 
 ### Finding more of them
 
@@ -773,8 +801,7 @@ source(here::here("TOTALBR", "prepare_totalbr.R"))
 # case-normalised, nothing filtered and nothing aggregated
 d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
                                          raw_dir = bra_totalbr_raw_dir))
-m <- totalbr_merge_flights(totalbr_merge_duplicate_pk(totalbr_clean_units(d)),
-                           gap_min = 60)
+m <- totalbr_merge_flights(totalbr_merge_duplicate_pk(totalbr_clean_units(d)))
 
 frag <- m |>
   dplyr::filter(N_MERGED > 1) |>
@@ -937,3 +964,87 @@ airport-level use of this table has to decide what to do with them.
    (traffic volumes, an IFR/VFR split, a national denominator). That step is deliberately
    left out of this document until the use is fixed, so nothing here bakes in a wrong
    assumption.
+
+
+## Function Reference
+
+Every function this chapter uses, and what it is for. Four files, sourced in order by
+`prepare_totalbr.R` — sourcing one of the later ones on its own leaves the earlier ones
+undefined, or at whatever version the session happened to hold.
+
+### The pipeline: `TOTALBR/prepare_totalbr.R`
+
+| Function | What it does |
+| --- | --- |
+| `totalbr_prepare(years, month, gap_min, source, out_file)` | The whole cycle in one call: read → normalise → `totalbr_clean_units()` → validation 1 → validation 2. Prints the step table and returns it as `attr(x, "steps")`. The only function that writes a file, and it refuses a raw download's name. |
+
+### Getting the data: `TOTALBR/download_totalbr.R` and `ODIN/download_odin.R`
+
+| Function | What it does |
+| --- | --- |
+| `download_totalbr(years, out_dir, force)` | Downloads `total_brasil` into `totalbr_<year>.csv`, one month per request, resuming what is on disk. Years default to `totalbr_data_years`. |
+| `odin_probe(table)` | One small request: prints the table's columns and flags the date-like ones. Run before trusting a long download. |
+| `odin_tables()` | Lists every table the ODIN API exposes. |
+| `odin_count(table, date_col, from, to)` | How many rows the API **has** in a window, without downloading them. Tells a download gap from a source gap. |
+
+### Reading and coverage: `TOTALBR/totalbr_sources.R`
+
+| Function | What it does |
+| --- | --- |
+| `totalbr_read_year(year, month, source, raw_dir)` | The rows of one year — or one month of it, filtered while reading. Builds the bounds in the column's own timezone, half-open, so no day is lost at either end. **This is where `d` comes from.** |
+| `totalbr_sources(raw_dir)` | Which files exist: the parquet archive, the downloaded CSVs, the month parts. |
+| `totalbr_year_coverage(years, raw_dir)` | Per year: days held against days possible, movements, which sources hold them, and whether it counts as covered. |
+| `totalbr_missing_years(years, raw_dir)` | Just the years nothing on disk covers — what the download chunk asks for. |
+| `totalbr_day_counts(raw_dir)` | Movements per day per source. The raw material of every coverage table here. |
+| `totalbr_count_by(...)` | Counts grouped by any column, for profiling traffic. |
+| `totalbr_year_span()`, `totalbr_year_edges()`, `totalbr_year_boundary_rows()` | The first and last rows of a year, for checking that a window did not cut a day. |
+| `totalbr_schema_info(raw_dir)` | The arrow type of each time column **with its timezone** — how the spurious `Europe/Paris` label on the archive was found. |
+| `totalbr_year_count(years, official, ...)` | Counts a year under several date definitions at once, to reconcile against an official figure. |
+| `totalbr_stored_tz(ds, col)` | The timezone a parquet column is stored with. Use it to build bounds that match the file. |
+
+### Measuring duplication: `TOTALBR/check_totalbr_duplicates.R`
+
+| Function | What it does |
+| --- | --- |
+| `check_totalbr_duplicates(years, source, month)` | Both validations counted, per source: `SAME_PK`, `NEAR_DUP`, and the rows the tests could **not** be applied to, so a number is read for what it covers. |
+| `totalbr_duplicate_examples(years, what, month)` | The rows themselves — `what = "pk"` for validation 1, `"near"` for validation 2 — each flagged row shown beside the records it was flagged against. |
+| `totalbr_duplicate_rows(...)` | Every flagged row, all columns, from one named source: the file to inspect or to send to ICEA. |
+| `totalbr_near_pairs(d, tol_min)` | The pairing itself: which rows the near test considers the same flight, with the gap in minutes. |
+| `totalbr_normalise(d)` | Times parsed to POSIXct, `pk` to one case, the 1970 sentinel to `NA`. Everything else assumes this has run. |
+| `totalbr_parse_time(v)` | One column of stamps to POSIXct, handling the ISO `T` separator and the epoch sentinel. |
+| `totalbr_midnight_share()`, `totalbr_stamp_agreement()`, `totalbr_eet_check()` | Field-level diagnostics: how often `dt_dia` is midnight, whether the stamps agree, whether `dh_eet` behaves as an arrival estimate. |
+| `totalbr_source_overlap()` | Where the archive and the download cover the same days. |
+| `totalbr_drop_duplicate_pk(d)` | **Not the pipeline.** Deletes repeated `pk` instead of collapsing them — kept only to reproduce the old behaviour, and it loses 162 filled `dh_eet` values on the archive. |
+
+### Resolving it: `TOTALBR/merge_totalbr_duplicates.R`
+
+| Function | What it does |
+| --- | --- |
+| `totalbr_clean_units(d)` | One canonical form for the `li_*` lists: de-duplicated inside the row, sorted, pipe-separated. Run **before** anything is grouped — a unit listed twice makes every later count wrong, and the two sources do not agree on the separator. |
+| `totalbr_merge_duplicate_pk(d)` | **Validation 1.** Rows sharing a `pk` collapsed into one: `li_*` unioned, first filled value elsewhere. Adds `N_PK_MERGED`. |
+| `totalbr_merge_flights(d, gap_min)` | **Validation 2.** The records of one flight — same callsign and aerodrome pair, chained within `gap_min` of the group's latest end — become one row. Adds `N_MERGED`, `SPAN_MIN`, `MERGED_PK`, `ZERO_SPAN_ONLY`. |
+| `totalbr_flight_edges(d, gap_min)` | The grouping alone, as pairs, without merging. For seeing *why* two records were joined. |
+| `totalbr_merge_duplicates(d, pairs)` | The collapse itself, given any pairing. `totalbr_merge_flights()` is this plus the chaining. |
+| `totalbr_cluster_profile(d, gaps)` | Flights, merges and span at several tolerances — how `gap_min` is chosen from the data. |
+| `totalbr_gap_profile(pairs)` | The distribution of the gap between paired records, per kind. |
+| `totalbr_merge_example(d, pairs, merged, callsign)` | One aircraft's source rows and merged result side by side. The check worth running before trusting a month. |
+
+### Comparing the two sources: `TOTALBR/compare_totalbr_sources.R`
+
+| Function | What it does |
+| --- | --- |
+| `compare_totalbr_sources(years, key)` | Archive against API download: what matches, what exists on one side only. |
+| `totalbr_match_flights(years, tol_min)` | Nearest-neighbour one-to-one pairing between the sources, when the keys do not match exactly. |
+| `totalbr_unmatched(years, key, out_file)` | Every unmatched row, with the key used, so the comparison is auditable. |
+| `totalbr_lookup(callsign, day)` | One flight in both sources, side by side — is it absent, or present with a different stamp? |
+| `totalbr_pk_overlap()` | Whether the same `pk` appears in both sources at all. |
+
+### Constants worth knowing
+
+| Constant | Where | Meaning |
+| --- | --- | --- |
+| `TOTALBR_GAP_MIN` | `merge_totalbr_duplicates.R` | 60 minutes — how far apart two records of one flight may be. One value for the whole pipeline. |
+| `TOTALBR_UNION_COLS` | `merge_totalbr_duplicates.R` | The `li_*` columns that are unioned rather than picked. |
+| `TOTALBR_NEAR_MIN` | `check_totalbr_duplicates.R` | The near test's tolerance, in minutes. |
+| `TOTALBR_DUP_COLS` | `check_totalbr_duplicates.R` | The columns the checks need; a source missing one is skipped. |
+| `TOTALBR_CONTEXT_COLS` | `check_totalbr_duplicates.R` | `ds_rota`, `li_orgaos` — read when present, for reading the result. |
