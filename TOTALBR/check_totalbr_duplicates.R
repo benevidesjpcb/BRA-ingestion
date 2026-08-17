@@ -23,15 +23,18 @@
 #   check_totalbr_duplicates(2026)              # the summary
 #   totalbr_duplicate_examples(2026)            # the rows themselves
 #
-# Everything here MEASURES and leaves the data alone, with one exception:
-# totalbr_drop_duplicate_pk(), which removes rows carrying a pk already seen.
-# That is the ONLY deletion, because `pk` is the row hash and an identical pk is
-# literally the same row stored twice.
+# Everything here MEASURES and leaves the data alone. Both kinds of duplication
+# are RESOLVED BY MERGING, in TOTALBR/merge_totalbr_duplicates.R:
 #
-# The other duplication - one flight reported by two units, or a filed plan
-# beside its movement - is resolved by MERGING the rows into one, not by picking
-# a survivor: each row holds part of the flight. See
-# TOTALBR/merge_totalbr_duplicates.R.
+#   the same pk twice     one movement recorded twice. Not the same row: on the
+#                         archive all 910 rows behind 455 repeated pk stay
+#                         distinct on payload (li_orgaos, dh_eet) while every
+#                         identity column agrees.
+#   one flight, N rows    one record per unit that tracked it.
+#
+# totalbr_drop_duplicate_pk() below deletes instead of merging. It is kept ONLY
+# to reproduce the old behaviour for comparison - it discards 162 filled dh_eet
+# values on the archive - and is not part of the pipeline.
 # =============================================================================
 
 source(here::here("TOTALBR", "totalbr_sources.R"))

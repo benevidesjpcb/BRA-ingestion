@@ -2,16 +2,20 @@
 # =============================================================================
 # merge_totalbr_duplicates.R
 #
-# COLLAPSES the duplicate rows of a flight into ONE row. This is how the
-# duplication is resolved; deletion applies to exactly one case:
+# COLLAPSES duplicate rows into ONE row. NOTHING HERE DELETES: both kinds of
+# duplication are resolved by merging, because in both the copies carry
+# different payloads and dropping one loses filled fields.
 #
-#   totalbr_drop_duplicate_pk()  drops a row whose pk was already seen - the
-#                                same row stored twice, so nothing is lost
-#   totalbr_merge_duplicates()   fuses the rows of one flight into a single row
+#   totalbr_merge_duplicate_pk()  rows sharing a pk - one movement, recorded
+#                                 twice; identity equal, payload not
+#   totalbr_merge_flights()       rows of one flight, one per unit that saw it
 #
-#   source(here::here("TOTALBR", "merge_totalbr_duplicates.R"))
-#   pairs  <- totalbr_near_pairs(d, tol_min = TOTALBR_NEAR_MIN)
-#   merged <- totalbr_merge_duplicates(d, pairs)
+#   source(here::here("TOTALBR", "prepare_totalbr.R"))   # sources this and more
+#   merged <- totalbr_merge_flights(d, gap_min = 45)
+#
+# totalbr_drop_duplicate_pk() (in check_totalbr_duplicates.R) is kept only to
+# reproduce the old delete-the-repeat behaviour for comparison. It loses 162
+# dh_eet values on the archive; see the qmd.
 #
 # WHY MERGE
 # The same flight is reported by more than one unit — APPAN and APPBR, say — and
@@ -24,8 +28,8 @@
 #   dh_fim            : from the LATEST row
 #   everything else   : the first value that is actually filled in, taking the
 #                       rows in order of how informative they are — the one with
-#                       a registration first, then an actual movement over a
-#                       filed plan, then the earliest.
+#                       a registration first, then a row covering a span over a
+#                       single-instant capture, then the earliest.
 #
 # So co_matricula comes from the row that has it, and the aerodrome pair likewise
 # — a blank never overwrites a value.
@@ -45,9 +49,10 @@
 # flight.
 #
 # GROUPS, NOT PAIRS
-# A flight can appear three times (a plan and two unit reports). The pairs are
-# therefore treated as edges of a graph and every connected group is collapsed
-# together, so three rows become one row and not "one merge plus a leftover".
+# A flight can appear three or four times, once per unit that tracked it. The
+# pairs are therefore treated as edges of a graph and every connected group is
+# collapsed together, so four rows become one row and not "one merge plus
+# leftovers".
 #
 # WHAT IS ADDED
 #   N_MERGED   how many rows went into this one (1 = untouched)
