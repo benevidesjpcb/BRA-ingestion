@@ -320,6 +320,60 @@ totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
   e[]
 }
 
+# =============================================================================
+# totalbr_edge_profile(d, gap_min, unit_col)
+#
+# EVERY LINK THE GROUPING WOULD MAKE, split by whether the two records share a
+# unit, and by how far apart they are.
+#
+# WHAT THE QUESTION IS
+# The records of one flight are supposed to come from DIFFERENT units -- one per
+# unit that saw it. So a link between two records of the SAME unit is suspect: a
+# unit does not report one flight twice, which would make those two records two
+# flights. PRMES on 2026-01-01 is the case that raised it: ten APPPS records of a
+# helicopter shuttling SBPS <-> SD49, chained into one flight because each hop
+# starts within gap_min of the previous one and a zero-duration row makes the
+# group's running end its last START.
+#
+# BUT THE RULE CANNOT BE ADOPTED ON THAT ONE CASE. If a unit sometimes emits two
+# records of the SAME flight, refusing to link them splits real flights instead.
+# The data says which: shared-unit links concentrated at tiny gaps are two views
+# of one flight, and separating them would be wrong; shared-unit links spread
+# over tens of minutes are separate legs, and linking them is the error.
+#
+# Reports, decides nothing. Run it before changing how the grouping works.
+# =============================================================================
+totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
+                                 unit_col  = "li_orgaos",
+                                 start_col = "dh_inicio",
+                                 end_col   = "dh_fim",
+                                 breaks    = c(0, 1, 5, 15, 30, 45, 60)) {
+  e <- totalbr_flight_edges(d, gap_min, start_col, end_col)
+  if (nrow(e) == 0) { message("No link at gap_min = ", gap_min); return(tibble::tibble()) }
+  if (!unit_col %in% names(d))
+    stop("No column '", unit_col, "' to judge the units by.")
+
+  # the units of a row, as a set; the two separators are both in play because the
+  # archive comma-separates and the download pipe-separates
+  units <- strsplit(as.character(d[[unit_col]]), "[|,]")
+  units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
+
+  dt <- data.table::as.data.table(e)
+  dt[, SHARED := mapply(function(a, b) length(intersect(units[[a]], units[[b]])) > 0,
+                        ROW_ID, PARTNER_ID)]
+  # a row with no unit listed cannot answer the question either way
+  dt[, KNOWN := mapply(function(a, b) length(units[[a]]) > 0 && length(units[[b]]) > 0,
+                       ROW_ID, PARTNER_ID)]
+  dt[, BUCKET := cut(GAP_MIN, breaks = unique(c(breaks, Inf)),
+                     include.lowest = TRUE, right = TRUE)]
+
+  out <- dt[KNOWN == TRUE, list(LINKS = .N), by = list(SHARED, BUCKET)]
+  data.table::setorderv(out, c("SHARED", "BUCKET"))
+  if (any(!dt$KNOWN))
+    message(sum(!dt$KNOWN), " link(s) left out: one of the two rows lists no unit.")
+  tibble::as_tibble(out)
+}
+
 # ---- what the grouping does at different tolerances --------------------------
 # Run before trusting gap_min: how many flights each tolerance produces, and the
 # largest span it creates. A tolerance that starts swallowing consecutive legs
