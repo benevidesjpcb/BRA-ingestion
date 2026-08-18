@@ -383,56 +383,54 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
 }
 
 # =============================================================================
-# totalbr_plan_split(d, gap_min, plan_col, unit_col)
+# totalbr_zero_split(d, gap_min, unit_col)
 #
-# THE LINKS SPLIT BY WHETHER THE TWO RECORDS SHARE A PLANNED OFF-BLOCK TIME.
+# THE LINKS SPLIT BY WHETHER EITHER RECORD HAS A DURATION OF ITS OWN.
 #
-# WHY THIS AND NOT A TIME THRESHOLD
-# January says the shared-unit links are a CONTINUUM, not two separable humps:
-# per minute they decay 208, 152, 98, 68, 49, 35, 25, 23, 15.5, 13 -- roughly 440
-# duplicate reports mixed into roughly 1,200 separate legs, overlapping across
-# the whole 0-15 minute range. No cut in minutes divides them, and the reason is
-# physical: 15 minutes apart is a new leg for a helicopter shuttle and the same
-# flight for an airliner. Time cannot separate them because time is not what
-# separates them.
+# WHY DURATION AND NOT MINUTES
+# The shared-unit links are a continuum in time -- per minute they decay 208,
+# 152, 98, 68, 49, 35, 25, 23, 15.5, 13, with no valley -- so no threshold
+# divides duplicate reports from separate legs. It cannot: 15 minutes apart is a
+# new leg for a helicopter shuttle and the same flight for an airliner.
 #
-# dh_eobt does not depend on time at all: every leg is filed with its own planned
-# off-block time. Two records of ONE flight quote the SAME dh_eobt however far
-# apart they were captured; two legs quote different ones however close together
-# they are.
+# What differs is the SHAPE of the records. A row with dh_fim > dh_inicio is a
+# tracked passage, and the group's running end means something: the flight was
+# still airborne at that time, so a record starting soon after belongs to it. A
+# row with dh_fim == dh_inicio is one instant. Two instants carry no evidence of
+# a flight lasting from one to the other, and chaining them is what let PRMES's
+# ten APPPS hops collapse into a single flight spanning the day.
 #
-# READ IT AS: within SHARED = TRUE, do the links divide cleanly into same-plan and
-# different-plan? If they do, the grouping can use the plan and drop the minutes.
+# READ IT AS: within SHARED = TRUE, are the long-gap links the ones where BOTH
+# rows are instants? If they are, refusing exactly those links fixes PRMES and
+# touches nothing else -- no tolerance is changed and no threshold is invented.
 # =============================================================================
-totalbr_plan_split <- function(d, gap_min = TOTALBR_GAP_MIN,
-                               plan_col  = "dh_eobt",
+totalbr_zero_split <- function(d, gap_min = TOTALBR_GAP_MIN,
                                unit_col  = "li_orgaos",
                                start_col = "dh_inicio",
                                end_col   = "dh_fim",
                                breaks    = c(0, 1, 5, 15, 30, 60)) {
-  if (!plan_col %in% names(d)) stop("No column '", plan_col, "'.")
   e <- totalbr_flight_edges(d, gap_min, start_col, end_col)
   if (nrow(e) == 0) { message("No link at gap_min = ", gap_min); return(tibble::tibble()) }
 
   units <- strsplit(as.character(d[[unit_col]]), "[|,]")
   units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
-  plan  <- d[[plan_col]]
+  # a row is an instant when its end equals its start, or it has no end at all --
+  # both mean the same thing here: nothing says the flight lasted
+  st   <- as.numeric(d[[start_col]])
+  en   <- as.numeric(d[[end_col]])
+  zero <- is.na(en) | en <= st
 
   dt <- data.table::as.data.table(e)
   dt[, SHARED := mapply(function(a, b) length(intersect(units[[a]], units[[b]])) > 0,
                         ROW_ID, PARTNER_ID)]
-  # three states, not two: a missing plan is not evidence of agreement, and
-  # folding it into "different" would invent legs out of blank fields
-  dt[, PLAN := mapply(function(a, b) {
-        pa <- plan[a]; pb <- plan[b]
-        if (is.na(pa) || is.na(pb)) "missing"
-        else if (identical(as.character(pa), as.character(pb))) "same" else "different"
-      }, ROW_ID, PARTNER_ID)]
+  dt[, SHAPE := data.table::fifelse(zero[ROW_ID] & zero[PARTNER_ID], "both instants",
+                data.table::fifelse(zero[ROW_ID] | zero[PARTNER_ID], "one instant",
+                                    "both tracked"))]
   dt[, BUCKET := cut(GAP_MIN, breaks = unique(c(breaks, Inf)),
                      include.lowest = TRUE, right = TRUE)]
 
-  out <- dt[, list(LINKS = .N), by = list(SHARED, PLAN, BUCKET)]
-  data.table::setorderv(out, c("SHARED", "PLAN", "BUCKET"))
+  out <- dt[, list(LINKS = .N), by = list(SHARED, SHAPE, BUCKET)]
+  data.table::setorderv(out, c("SHARED", "SHAPE", "BUCKET"))
   tibble::as_tibble(out)
 }
 
