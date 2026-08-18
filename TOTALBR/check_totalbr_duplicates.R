@@ -59,6 +59,21 @@ TOTALBR_DUP_COLS <- c("pk", "co_matricula", "co_addep", "co_addes",
 # absence skips the file.
 TOTALBR_CONTEXT_COLS <- c("ds_rota", "li_orgaos")
 
+# ---- which files can possibly hold the years asked for ----------------------
+# The downloader writes one file per year, <prefix>_<year>.csv, so the name is a
+# reliable statement about the contents. A path whose name carries no year says
+# nothing and is therefore KEPT -- the row filter still applies to it.
+totalbr_paths_for_years <- function(paths, years = NULL) {
+  if (is.null(years) || length(paths) == 0) return(paths)
+  in_name <- sub("^.*_(\\d{4})\\.csv$", "\\1", basename(paths))
+  named   <- in_name != basename(paths)          # the pattern actually matched
+  keep    <- !named | in_name %in% as.character(years)
+  if (any(!keep))
+    message("  skipping ", sum(!keep), " file(s) for other year(s): ",
+            paste(basename(paths[!keep]), collapse = ", "))
+  paths[keep]
+}
+
 # ---- read the columns the check needs, from either source kind --------------
 totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL,
                                   month = NULL) {
@@ -301,6 +316,17 @@ check_totalbr_duplicates <- function(years    = NULL,
                   parquet = src$parquet)
   if (length(paths) == 0) {
     message("No ", source, " source in ", raw_dir); return(tibble::tibble())
+  }
+  # A year file is named for the year it holds, so a year outside `years` can be
+  # skipped WITHOUT OPENING IT. The row filter downstream is not enough: fread
+  # takes no row predicate, so a CSV is read whole into memory and then thrown
+  # away -- asking for 2026 read every row of 2024 and 2025 first. Only names
+  # that actually carry a year are judged; anything else (the parquet archive,
+  # a file named by hand) is left in and filtered by row as before.
+  paths <- totalbr_paths_for_years(paths, years)
+  if (length(paths) == 0) {
+    message("No source file holds ", paste(years, collapse = ", "), " in ", raw_dir)
+    return(tibble::tibble())
   }
   # The pk test also reads the per-month PARTS, which are the API's: the merge
   # de-duplicates on pk, so by the time a year file exists it can no longer show
