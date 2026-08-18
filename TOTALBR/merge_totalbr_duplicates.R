@@ -347,7 +347,8 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
                                  unit_col  = "li_orgaos",
                                  start_col = "dh_inicio",
                                  end_col   = "dh_fim",
-                                 breaks    = c(0, 1, 5, 15, 30, 45, 60)) {
+                                 breaks    = c(0, 0.5, 1, 2, 3, 5, 10, 15,
+                                               30, 45, 60)) {
   e <- totalbr_flight_edges(d, gap_min, start_col, end_col)
   if (nrow(e) == 0) { message("No link at gap_min = ", gap_min); return(tibble::tibble()) }
   if (!unit_col %in% names(d))
@@ -367,7 +368,14 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
   dt[, BUCKET := cut(GAP_MIN, breaks = unique(c(breaks, Inf)),
                      include.lowest = TRUE, right = TRUE)]
 
+  # PER MINUTE, not per bucket. The buckets are deliberately uneven -- the
+  # interesting structure is in the first minutes -- so raw counts across them
+  # are not comparable, and reading them as if they were says a distribution is
+  # flat when its density peaks tenfold at zero.
+  wid <- diff(unique(c(breaks, Inf)))
   out <- dt[KNOWN == TRUE, list(LINKS = .N), by = list(SHARED, BUCKET)]
+  out[, WIDTH   := wid[as.integer(BUCKET)]]
+  out[, PER_MIN := round(LINKS / WIDTH, 1)]
   data.table::setorderv(out, c("SHARED", "BUCKET"))
   if (any(!dt$KNOWN))
     message(sum(!dt$KNOWN), " link(s) left out: one of the two rows lists no unit.")
