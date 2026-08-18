@@ -108,6 +108,15 @@ TOTALBR_UNION_COLS <- c("li_orgaos", "li_tipovoo", "li_regravoo",
 # not reconcile. Change it here, having looked at totalbr_cluster_profile().
 TOTALBR_GAP_MIN <- 60
 
+# How far apart two records listing the SAME units may be and still be one
+# flight. A unit does report one passage twice -- PRATC's APPRJ filed 06:07:03
+# and 06:07:04, one second apart -- but a second leg of the same aircraft on the
+# same route is tens of minutes away: PRMES's APPPS hops are 10 to 45 minutes
+# apart. Seconds against tens of minutes, with nothing in between, so this
+# tolerance is deliberately tight. It is NOT a turnaround time and must not be
+# raised towards one; totalbr_edge_profile() shows the gap it sits in.
+TOTALBR_SAME_UNIT_MIN <- 1
+
 .union_values <- function(x) {
   v <- if (is.list(x)) unlist(x) else as.character(x)
   # the two sources separate differently: the API download pipe-separates after
@@ -263,10 +272,11 @@ totalbr_merge_duplicates <- function(d, pairs,
 # what lets a 05:43 instant, a 06:07-06:59 track and anything between them form
 # one flight.
 #
-# The unit condition is what keeps a shuttle apart: a record whose unit list is
-# IDENTICAL to the previous one is the same observer reporting again, so it is a
-# second flight. See totalbr_flight_edges() for why the sets must be equal rather
-# than merely overlapping, and why no tolerance in minutes can do the same job.
+# The tolerance is not one number. A record listing the SAME units as the one
+# before it is the same observer reporting again, which happens seconds apart,
+# so it gets `same_unit_min` instead of `gap_min`. That is what keeps a
+# helicopter shuttle apart while a flight crossing sectors stays whole. See
+# totalbr_flight_edges().
 #
 # CHOOSING gap_min
 # It is the shortest turnaround that still separates two real flights of the same
@@ -282,8 +292,10 @@ totalbr_merge_flights <- function(d, gap_min = TOTALBR_GAP_MIN,
                                   end_col   = "dh_fim",
                                   key_cols  = c("co_indicativo", "co_addep", "co_addes"),
                                   unit_col  = "li_orgaos",
+                                  same_unit_min = TOTALBR_SAME_UNIT_MIN,
                                   ...) {
-  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols, unit_col)
+  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols,
+                                unit_col, same_unit_min)
   totalbr_merge_duplicates(d, edges, start_col = start_col, end_col = end_col, ...)
 }
 
@@ -294,7 +306,8 @@ totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
                                  start_col = "dh_inicio",
                                  end_col   = "dh_fim",
                                  key_cols  = c("co_indicativo", "co_addep", "co_addes"),
-                                 unit_col  = "li_orgaos") {
+                                 unit_col  = "li_orgaos",
+                                 same_unit_min = TOTALBR_SAME_UNIT_MIN) {
   empty <- data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
                                   GAP_MIN = numeric(), KIND = character())
   dt <- data.table::as.data.table(d)
@@ -321,52 +334,45 @@ totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
   ok[, .RUN_END := data.table::shift(cummax(.E)), by = .KEY]
   ok[, .GAP     := (.S - .RUN_END) / 60]
 
-  # THE SAME OBSERVER DOES NOT REPORT ONE FLIGHT TWICE.
-  # Two records whose unit lists are IDENTICAL are two flights, however close
-  # together they fall: the same units watching the same route again is a second
-  # movement, not a second view of the first.
+  # THE SAME OBSERVER REPORTS ONE PASSAGE TWICE, SECONDS APART -- NOT TWICE AN HOUR.
+  # PRATC on 2026-01-01 is four records: APPSP at 05:43:04, APPRJ at 06:07:03,
+  # APPRJ again at 06:07:04, then ACCCW|APPVT tracking 06:21-06:59. One flight.
+  # PRMES the same day is 115 records all listing APPPS alone, a helicopter
+  # shuttling SBPS <-> SD49, its hops 10 to 45 minutes apart. Separate flights,
+  # which the chaining merged into one: each hop starts within gap_min of the one
+  # before, and a zero-duration row makes the group's running end its last START,
+  # so nothing broke the chain.
   #
-  # IDENTICAL, NOT MERELY OVERLAPPING. A record is not one unit's view -- most
-  # carry two to six units -- and a unit covering successive sectors appears in
-  # consecutive records of ONE flight. PRATC on 2026-01-01 is exactly that:
-  # {APPRJ, APPSP} ending 06:07:03 and {ACCCW, APPRJ, APPVT} starting 06:07:04,
-  # one second apart, sharing APPRJ. Refusing every overlapping pair split that
-  # flight in two. Requiring the sets to be EQUAL keeps it whole and still
-  # separates PRMES, whose hops are all {APPPS} against {APPPS}.
-  # Without this, PRMES's ten APPPS records of a helicopter shuttling SBPS <->
-  # SD49 chained into a single flight spanning the day: each hop starts within
-  # gap_min of the one before, and a zero-duration row makes the group's running
-  # end its last START, so the chain never breaks.
+  # WHAT SEPARATES THEM IS THE SCALE. Two captures of ONE passage by the SAME
+  # units are seconds apart; two legs are tens of minutes apart. One second
+  # against ten minutes leaves no ambiguity to resolve.
   #
-  # NO TOLERANCE IN MINUTES COULD DO THIS. Measured over January, the links whose
-  # rows overlap on a unit decay smoothly -- 208, 152, 98, 68, 49, 35, 25, 23,
-  # 15.5, 13 per minute -- with no valley anywhere to cut at, because 15 minutes
-  # apart is a new leg for a helicopter and the same flight for an airliner. Time
-  # is not what separates them, so the rule does not use it. gap_min is untouched
-  # and still governs everything else.
+  # So the tolerance depends on WHO reported. Records listing DIFFERENT units are
+  # a flight crossing sectors and keep the full gap_min -- that is the case it was
+  # built for. Records listing the SAME units get same_unit_min, which is the
+  # width of a duplicate report, not of a turnaround.
   #
-  # THE COST: where the same observer really did report one passage twice, the
-  # two records now stay apart as two flights. Nothing loses sight of them --
-  # check_totalbr_duplicates() reports them as REPEAT_DUP -- but the count has
-  # not been measured for THIS rule. The 160-a-month figure from the first
-  # attempt was for any overlapping pair, and this rule refuses far fewer, so
-  # that number is an upper bound rather than the answer.
-  ok[, .SHARED := FALSE]
+  # EQUAL SETS, not overlapping ones. A record is not one unit's view -- many
+  # carry two to six -- and a unit covering successive sectors appears in
+  # consecutive records of one flight. Refusing every overlapping pair split
+  # PRATC in two.
+  ok[, .SAME_SET := FALSE]
   if (!is.null(unit_col) && unit_col %in% names(d)) {
-    # sorted and de-duplicated, so the comparison is of SETS: the same units in
-    # another order, or listed twice, must not read as a different observer
+    # sorted and de-duplicated, so this compares SETS: the same units in another
+    # order, or listed twice, must not read as a different observer
     units <- strsplit(as.character(d[[unit_col]]), "[|,]")
     units <- vapply(units, function(u) {
       u <- unique(trimws(u[!is.na(u) & nzchar(trimws(u))]))
       if (length(u) == 0) NA_character_ else paste(sort(u), collapse = "|")
     }, character(1))
-    # a record listing no unit says nothing about who saw it, so it is never
-    # blocked on this ground -- two blanks are not evidence of the same observer
-    ok[!is.na(.PREV), .SHARED := !is.na(units[ROW_ID]) & !is.na(units[.PREV]) &
-                                 units[ROW_ID] == units[.PREV]]
+    # a record listing no unit says nothing about who saw it, so it is never held
+    # to the tight tolerance -- two blanks are not evidence of one observer
+    ok[!is.na(.PREV), .SAME_SET := !is.na(units[ROW_ID]) & !is.na(units[.PREV]) &
+                                    units[ROW_ID] == units[.PREV]]
   }
+  ok[, .TOL := data.table::fifelse(.SAME_SET, same_unit_min, gap_min)]
 
-  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= gap_min & !.SHARED,
+  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= .TOL,
           list(ROW_ID, PARTNER_ID = .PREV, GAP_MIN = round(.GAP, 1),
                KIND = "same flight")]
   if (nrow(e) == 0) return(empty)
@@ -400,8 +406,8 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
                                  unit_col  = "li_orgaos",
                                  start_col = "dh_inicio",
                                  end_col   = "dh_fim",
-                                 breaks    = c(0, 0.5, 1, 2, 3, 5, 10, 15,
-                                               30, 45, 60)) {
+                                 breaks    = c(0, 1/60, 0.25, 0.5, 1, 2, 5,
+                                               10, 15, 30, 45, 60)) {
   e <- totalbr_flight_edges(d, gap_min, start_col, end_col)
   if (nrow(e) == 0) { message("No link at gap_min = ", gap_min); return(tibble::tibble()) }
   if (!unit_col %in% names(d))
@@ -412,12 +418,17 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
   units <- strsplit(as.character(d[[unit_col]]), "[|,]")
   units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
 
+  key <- vapply(units, function(u)
+    if (length(u) == 0) NA_character_ else paste(sort(u), collapse = "|"),
+    character(1))
+
   dt <- data.table::as.data.table(e)
-  dt[, SHARED := mapply(function(a, b) length(intersect(units[[a]], units[[b]])) > 0,
-                        ROW_ID, PARTNER_ID)]
+  # EQUAL sets, which is what the grouping now keys on -- not mere overlap. A
+  # unit covering successive sectors appears in consecutive records of one
+  # flight, so overlap says nothing.
+  dt[, SAME_SET := key[ROW_ID] == key[PARTNER_ID]]
   # a row with no unit listed cannot answer the question either way
-  dt[, KNOWN := mapply(function(a, b) length(units[[a]]) > 0 && length(units[[b]]) > 0,
-                       ROW_ID, PARTNER_ID)]
+  dt[, KNOWN := !is.na(key[ROW_ID]) & !is.na(key[PARTNER_ID])]
   dt[, BUCKET := cut(GAP_MIN, breaks = unique(c(breaks, Inf)),
                      include.lowest = TRUE, right = TRUE)]
 
@@ -426,10 +437,10 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
   # are not comparable, and reading them as if they were says a distribution is
   # flat when its density peaks tenfold at zero.
   wid <- diff(unique(c(breaks, Inf)))
-  out <- dt[KNOWN == TRUE, list(LINKS = .N), by = list(SHARED, BUCKET)]
+  out <- dt[KNOWN == TRUE, list(LINKS = .N), by = list(SAME_SET, BUCKET)]
   out[, WIDTH   := wid[as.integer(BUCKET)]]
   out[, PER_MIN := round(LINKS / WIDTH, 1)]
-  data.table::setorderv(out, c("SHARED", "BUCKET"))
+  data.table::setorderv(out, c("SAME_SET", "BUCKET"))
   if (any(!dt$KNOWN))
     message(sum(!dt$KNOWN), " link(s) left out: one of the two rows lists no unit.")
   tibble::as_tibble(out)
