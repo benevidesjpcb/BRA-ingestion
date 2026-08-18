@@ -263,10 +263,10 @@ totalbr_merge_duplicates <- function(d, pairs,
 # what lets a 05:43 instant, a 06:07-06:59 track and anything between them form
 # one flight.
 #
-# The unit condition is what keeps a shuttle apart. A flight has one record per
-# unit that saw it, so a repeated unit means a second flight, not a second view
-# of the first. See totalbr_flight_edges() for what it costs and why no
-# tolerance in minutes can do the same job.
+# The unit condition is what keeps a shuttle apart: a record whose unit list is
+# IDENTICAL to the previous one is the same observer reporting again, so it is a
+# second flight. See totalbr_flight_edges() for why the sets must be equal rather
+# than merely overlapping, and why no tolerance in minutes can do the same job.
 #
 # CHOOSING gap_min
 # It is the shortest turnaround that still separates two real flights of the same
@@ -321,31 +321,49 @@ totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
   ok[, .RUN_END := data.table::shift(cummax(.E)), by = .KEY]
   ok[, .GAP     := (.S - .RUN_END) / 60]
 
-  # ONE UNIT DOES NOT REPORT ONE FLIGHT TWICE.
-  # The several records of a flight are one per unit that saw it, so two records
-  # listing the SAME unit are two flights, however close together they fall.
+  # THE SAME OBSERVER DOES NOT REPORT ONE FLIGHT TWICE.
+  # Two records whose unit lists are IDENTICAL are two flights, however close
+  # together they fall: the same units watching the same route again is a second
+  # movement, not a second view of the first.
+  #
+  # IDENTICAL, NOT MERELY OVERLAPPING. A record is not one unit's view -- most
+  # carry two to six units -- and a unit covering successive sectors appears in
+  # consecutive records of ONE flight. PRATC on 2026-01-01 is exactly that:
+  # {APPRJ, APPSP} ending 06:07:03 and {ACCCW, APPRJ, APPVT} starting 06:07:04,
+  # one second apart, sharing APPRJ. Refusing every overlapping pair split that
+  # flight in two. Requiring the sets to be EQUAL keeps it whole and still
+  # separates PRMES, whose hops are all {APPPS} against {APPPS}.
   # Without this, PRMES's ten APPPS records of a helicopter shuttling SBPS <->
   # SD49 chained into a single flight spanning the day: each hop starts within
   # gap_min of the one before, and a zero-duration row makes the group's running
   # end its last START, so the chain never breaks.
   #
-  # No threshold divides the two cases. January's shared-unit links decay
-  # smoothly -- 208, 152, 98, 68, 49, 35, 25, 23, 15.5, 13 per minute, no valley
-  # -- because 15 minutes apart is a new leg for a helicopter and the same flight
-  # for an airliner. Time is not what separates them, so the rule does not use it.
+  # NO TOLERANCE IN MINUTES COULD DO THIS. Measured over January, the links whose
+  # rows overlap on a unit decay smoothly -- 208, 152, 98, 68, 49, 35, 25, 23,
+  # 15.5, 13 per minute -- with no valley anywhere to cut at, because 15 minutes
+  # apart is a new leg for a helicopter and the same flight for an airliner. Time
+  # is not what separates them, so the rule does not use it. gap_min is untouched
+  # and still governs everything else.
   #
-  # THE COST, KNOWINGLY PAID: the same unit does sometimes report one passage
-  # twice, about 160 links a month under one minute, and those now stay apart as
-  # two flights -- 0.09% of a month's rows. They are not lost sight of:
-  # check_totalbr_duplicates() reports them as REPEAT_DUP. The other side of the
-  # trade is roughly 1,200 separate legs a month that stop being glued together.
+  # THE COST: where the same observer really did report one passage twice, the
+  # two records now stay apart as two flights. Nothing loses sight of them --
+  # check_totalbr_duplicates() reports them as REPEAT_DUP -- but the count has
+  # not been measured for THIS rule. The 160-a-month figure from the first
+  # attempt was for any overlapping pair, and this rule refuses far fewer, so
+  # that number is an upper bound rather than the answer.
   ok[, .SHARED := FALSE]
   if (!is.null(unit_col) && unit_col %in% names(d)) {
+    # sorted and de-duplicated, so the comparison is of SETS: the same units in
+    # another order, or listed twice, must not read as a different observer
     units <- strsplit(as.character(d[[unit_col]]), "[|,]")
-    units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
-    ok[!is.na(.PREV), .SHARED := mapply(
-      function(a, b) length(intersect(units[[a]], units[[b]])) > 0,
-      ROW_ID, .PREV)]
+    units <- vapply(units, function(u) {
+      u <- unique(trimws(u[!is.na(u) & nzchar(trimws(u))]))
+      if (length(u) == 0) NA_character_ else paste(sort(u), collapse = "|")
+    }, character(1))
+    # a record listing no unit says nothing about who saw it, so it is never
+    # blocked on this ground -- two blanks are not evidence of the same observer
+    ok[!is.na(.PREV), .SHARED := !is.na(units[ROW_ID]) & !is.na(units[.PREV]) &
+                                 units[ROW_ID] == units[.PREV]]
   }
 
   e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= gap_min & !.SHARED,
