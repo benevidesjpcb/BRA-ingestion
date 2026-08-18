@@ -236,9 +236,43 @@ percentile; it is the volume/denominator dataset.
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
 | `TOTALBR/merge_totalbr_duplicates.R` | Merges the records of one flight into one row | yes |
 | `TOTALBR/prepare_totalbr.R` | The whole cycle in one call: read, drop repeated `pk`, merge flights | yes |
+| `TOTALBR/run_totalbr.R` | Download, check, prepare per month and bind — the whole cycle up to a cut-off date | yes |
 | `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs API download: what matches, what is one-sided, where they disagree | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
 | `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
+
+### Running the whole cycle up to a date
+
+`run_totalbr.R` is the driver: it downloads, measures the duplication, prepares
+**one file per month**, and binds the months into one dataset — up to a cut-off.
+
+```r
+source(here::here("TOTALBR", "run_totalbr.R"))
+run_totalbr(through = "2026-06-30")   # January .. June 2026
+```
+
+```bash
+Rscript TOTALBR/run_totalbr.R 2026-06-30
+```
+
+`through` means **every month that ends on or before that date**, so the period
+never stops inside an open month — a month still receiving rows would give a file
+the next run disagrees with. It writes:
+
+| File | What it is |
+| --- | --- |
+| `outputs/totalbr-<year>-<mm>-flights.csv` | the product, one per month |
+| `outputs/totalbr-flights-<from>-<through>.csv` | the months bound together |
+| `outputs/totalbr-duplicates-<through>.csv` | duplication measured on the raw download |
+
+Every step is re-runnable and skips what is done: the download resumes, a month
+already prepared is left alone, the bind reads whatever months exist. **When July
+closes, the same call with `through = "2026-07-31"` downloads July, prepares July,
+and re-binds** — nothing else changes.
+
+> The bind re-runs the flight merge on purpose. A flight whose records straddle
+> 31 January → 1 February was split into two incomplete halves by the per-month
+> preparation, and only a pass over the joined data puts it back together.
 
 TOTALBR has two sources and both count: a **parquet archive** holding the history (all
 airports, up to 2025), and the **ODIN API** for the rest. `totalbr_sources.R` reads them as
