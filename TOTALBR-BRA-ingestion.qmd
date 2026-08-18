@@ -613,14 +613,44 @@ side.
 The rows of one flight are found by **key plus time chaining**:
 
 - same `co_indicativo`, `co_addep` and `co_addes`; **and**
-- the record starts within `gap_min` of the **latest end already in the group**.
+- the record starts within the tolerance of the **latest end already in the group**, where
+  the tolerance depends on **who reported**:
+
+| The two records list | Tolerance | Because |
+| --- | --- | --- |
+| **different** unit sets | `gap_min` = 60 min | the flight is crossing sectors, and each unit sees it in turn |
+| the **same** unit set | `same_unit_min` = 1 min | the same observer filing twice is one passage recorded twice, seconds apart |
 
 Chaining on the running end — not on the group's first record — is what matters. PRATC on
-2026-01-01 was captured by APPSP at 05:43 and tracked by ACCCW, APPRJ and APPVT from 06:07 to
-06:59: one flight, four records, joined because 05:43 and 06:07 are 24 minutes apart. Before
-the chaining it came out as two flights, because the earlier matching was one-to-one — one
-record answered for one partner, and the APPSP capture was left over as a phantom second
-flight.
+2026-01-01 has four records: APPSP at 05:43:04, APPRJ at 06:07:03, **APPRJ again at
+06:07:04**, and ACCCW|APPVT tracking 06:21–06:59. One flight, joined because 05:43 and 06:07
+are 24 minutes apart and the two APPRJ records are one second apart.
+
+### Why the tolerance is not one number
+
+PRMES the same day is 115 records, every one listing APPPS alone — a helicopter shuttling
+SBPS ↔ SD49, its hops 10 to 45 minutes apart. Under a single 60-minute tolerance the whole
+day chained into **one** flight: each hop starts within `gap_min` of the one before, and a
+zero-duration row makes the group's running end its last *start*, so nothing ever broke the
+chain.
+
+No single tolerance separates the two cases, and January's data says why. The links whose
+records overlap on a unit decay smoothly — 208, 152, 98, 68, 49, 35, 25, 23, 15.5, 13 links
+per minute — with no valley to cut at. There cannot be one: **15 minutes apart is a new leg
+for a helicopter and the same flight for an airliner.**
+
+What does separate them is the *scale* at which one observer repeats itself. Two captures of
+one passage by the same units are **seconds** apart; two legs are **tens of minutes** apart.
+So the tight tolerance applies only where the unit sets are equal.
+
+> **Equal sets, not overlapping ones.** A record is not one unit's view — many carry two to
+> six — and a unit covering successive sectors appears in consecutive records of one flight.
+> Refusing every link whose records shared *any* unit split PRATC in two, at the APPRJ it has
+> in common with the ACCCW|APPVT track.
+
+> `same_unit_min` is the width of a duplicate report, **not a turnaround time**. Raising it
+> towards one re-creates the PRMES defect. It lives in `merge_totalbr_duplicates.R`, next to
+> `TOTALBR_GAP_MIN`, so both are changed with the same deliberation.
 
 
 | Field | Value in the merged row |
