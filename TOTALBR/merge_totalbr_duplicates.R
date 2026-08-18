@@ -258,9 +258,15 @@ totalbr_merge_duplicates <- function(d, pairs,
 # HOW THE GROUPING WORKS
 # Records sharing callsign + departure + destination are sorted by start time.
 # A record joins the group being built when it starts within `gap_min` of the
-# LATEST END so far in that group; otherwise it opens a new flight. Chaining on
-# the running end, not on the first record, is what lets a 05:43 instant, a
-# 06:07-06:59 track and anything between them form one flight.
+# LATEST END so far in that group AND lists no unit already in it; otherwise it
+# opens a new flight. Chaining on the running end, not on the first record, is
+# what lets a 05:43 instant, a 06:07-06:59 track and anything between them form
+# one flight.
+#
+# The unit condition is what keeps a shuttle apart. A flight has one record per
+# unit that saw it, so a repeated unit means a second flight, not a second view
+# of the first. See totalbr_flight_edges() for what it costs and why no
+# tolerance in minutes can do the same job.
 #
 # CHOOSING gap_min
 # It is the shortest turnaround that still separates two real flights of the same
@@ -275,8 +281,9 @@ totalbr_merge_flights <- function(d, gap_min = TOTALBR_GAP_MIN,
                                   start_col = "dh_inicio",
                                   end_col   = "dh_fim",
                                   key_cols  = c("co_indicativo", "co_addep", "co_addes"),
+                                  unit_col  = "li_orgaos",
                                   ...) {
-  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols)
+  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols, unit_col)
   totalbr_merge_duplicates(d, edges, start_col = start_col, end_col = end_col, ...)
 }
 
@@ -286,7 +293,8 @@ totalbr_merge_flights <- function(d, gap_min = TOTALBR_GAP_MIN,
 totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
                                  start_col = "dh_inicio",
                                  end_col   = "dh_fim",
-                                 key_cols  = c("co_indicativo", "co_addep", "co_addes")) {
+                                 key_cols  = c("co_indicativo", "co_addep", "co_addes"),
+                                 unit_col  = "li_orgaos") {
   empty <- data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
                                   GAP_MIN = numeric(), KIND = character())
   dt <- data.table::as.data.table(d)
@@ -313,7 +321,34 @@ totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
   ok[, .RUN_END := data.table::shift(cummax(.E)), by = .KEY]
   ok[, .GAP     := (.S - .RUN_END) / 60]
 
-  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= gap_min,
+  # ONE UNIT DOES NOT REPORT ONE FLIGHT TWICE.
+  # The several records of a flight are one per unit that saw it, so two records
+  # listing the SAME unit are two flights, however close together they fall.
+  # Without this, PRMES's ten APPPS records of a helicopter shuttling SBPS <->
+  # SD49 chained into a single flight spanning the day: each hop starts within
+  # gap_min of the one before, and a zero-duration row makes the group's running
+  # end its last START, so the chain never breaks.
+  #
+  # No threshold divides the two cases. January's shared-unit links decay
+  # smoothly -- 208, 152, 98, 68, 49, 35, 25, 23, 15.5, 13 per minute, no valley
+  # -- because 15 minutes apart is a new leg for a helicopter and the same flight
+  # for an airliner. Time is not what separates them, so the rule does not use it.
+  #
+  # THE COST, KNOWINGLY PAID: the same unit does sometimes report one passage
+  # twice, about 160 links a month under one minute, and those now stay apart as
+  # two flights -- 0.09% of a month's rows. They are not lost sight of:
+  # check_totalbr_duplicates() reports them as REPEAT_DUP. The other side of the
+  # trade is roughly 1,200 separate legs a month that stop being glued together.
+  ok[, .SHARED := FALSE]
+  if (!is.null(unit_col) && unit_col %in% names(d)) {
+    units <- strsplit(as.character(d[[unit_col]]), "[|,]")
+    units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
+    ok[!is.na(.PREV), .SHARED := mapply(
+      function(a, b) length(intersect(units[[a]], units[[b]])) > 0,
+      ROW_ID, .PREV)]
+  }
+
+  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= gap_min & !.SHARED,
           list(ROW_ID, PARTNER_ID = .PREV, GAP_MIN = round(.GAP, 1),
                KIND = "same flight")]
   if (nrow(e) == 0) return(empty)
@@ -379,58 +414,6 @@ totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
   data.table::setorderv(out, c("SHARED", "BUCKET"))
   if (any(!dt$KNOWN))
     message(sum(!dt$KNOWN), " link(s) left out: one of the two rows lists no unit.")
-  tibble::as_tibble(out)
-}
-
-# =============================================================================
-# totalbr_zero_split(d, gap_min, unit_col)
-#
-# THE LINKS SPLIT BY WHETHER EITHER RECORD HAS A DURATION OF ITS OWN.
-#
-# WHY DURATION AND NOT MINUTES
-# The shared-unit links are a continuum in time -- per minute they decay 208,
-# 152, 98, 68, 49, 35, 25, 23, 15.5, 13, with no valley -- so no threshold
-# divides duplicate reports from separate legs. It cannot: 15 minutes apart is a
-# new leg for a helicopter shuttle and the same flight for an airliner.
-#
-# What differs is the SHAPE of the records. A row with dh_fim > dh_inicio is a
-# tracked passage, and the group's running end means something: the flight was
-# still airborne at that time, so a record starting soon after belongs to it. A
-# row with dh_fim == dh_inicio is one instant. Two instants carry no evidence of
-# a flight lasting from one to the other, and chaining them is what let PRMES's
-# ten APPPS hops collapse into a single flight spanning the day.
-#
-# READ IT AS: within SHARED = TRUE, are the long-gap links the ones where BOTH
-# rows are instants? If they are, refusing exactly those links fixes PRMES and
-# touches nothing else -- no tolerance is changed and no threshold is invented.
-# =============================================================================
-totalbr_zero_split <- function(d, gap_min = TOTALBR_GAP_MIN,
-                               unit_col  = "li_orgaos",
-                               start_col = "dh_inicio",
-                               end_col   = "dh_fim",
-                               breaks    = c(0, 1, 5, 15, 30, 60)) {
-  e <- totalbr_flight_edges(d, gap_min, start_col, end_col)
-  if (nrow(e) == 0) { message("No link at gap_min = ", gap_min); return(tibble::tibble()) }
-
-  units <- strsplit(as.character(d[[unit_col]]), "[|,]")
-  units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
-  # a row is an instant when its end equals its start, or it has no end at all --
-  # both mean the same thing here: nothing says the flight lasted
-  st   <- as.numeric(d[[start_col]])
-  en   <- as.numeric(d[[end_col]])
-  zero <- is.na(en) | en <= st
-
-  dt <- data.table::as.data.table(e)
-  dt[, SHARED := mapply(function(a, b) length(intersect(units[[a]], units[[b]])) > 0,
-                        ROW_ID, PARTNER_ID)]
-  dt[, SHAPE := data.table::fifelse(zero[ROW_ID] & zero[PARTNER_ID], "both instants",
-                data.table::fifelse(zero[ROW_ID] | zero[PARTNER_ID], "one instant",
-                                    "both tracked"))]
-  dt[, BUCKET := cut(GAP_MIN, breaks = unique(c(breaks, Inf)),
-                     include.lowest = TRUE, right = TRUE)]
-
-  out <- dt[, list(LINKS = .N), by = list(SHARED, SHAPE, BUCKET)]
-  data.table::setorderv(out, c("SHARED", "SHAPE", "BUCKET"))
   tibble::as_tibble(out)
 }
 
