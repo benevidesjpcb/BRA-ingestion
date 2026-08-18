@@ -130,6 +130,16 @@ TOTALBR_SAME_UNIT_MIN <- 1
   paste(sort(v), collapse = "|")
 }
 
+# Rows that were not merged in THIS pass still need N_MERGED and MERGED_PK -- but
+# only if they do not already carry them from an earlier one. Setting them
+# unconditionally is how a second pass forgets what the first one did.
+.keep_provenance <- function(x) {
+  if (!"MERGED_PK" %in% names(x))
+    x[, MERGED_PK := if ("pk" %in% names(x)) as.character(pk) else NA_character_]
+  if (!"N_MERGED" %in% names(x)) x[, N_MERGED := 1L]
+  x
+}
+
 # =============================================================================
 # totalbr_merge_duplicates(d, pairs, time_cols)
 #
@@ -153,7 +163,7 @@ totalbr_merge_duplicates <- function(d, pairs,
   dt <- data.table::as.data.table(d)
   n  <- nrow(dt)
   if (!nrow(pairs)) {
-    dt[, `:=`(N_MERGED = 1L, MERGED_PK = if ("pk" %in% names(dt)) pk else NA_character_)]
+    dt <- .keep_provenance(dt)
     return(if (as_tibble && requireNamespace("tibble", quietly = TRUE))
              tibble::as_tibble(dt) else dt[])
   }
@@ -179,8 +189,14 @@ totalbr_merge_duplicates <- function(d, pairs,
              .IS_PLAN = as.integer(is_plan))]      # 0 first = row with a span
   data.table::setorderv(grp, c("GRP_ID", ".HAS_REG", ".IS_PLAN", start_col))
 
+  # The columns the merge PRODUCES must not also be carried in as values. On raw
+  # data they do not exist and this is a no-op; on a second pass -- which is what
+  # totalbr_bind_months() runs over the monthly files -- they are already there,
+  # and taking them through .first_filled() as well produced a frame with
+  # N_MERGED and MERGED_PK twice, which fwrite refuses to write.
   val_cols <- setdiff(names(grp),
-                      c("GRP_ID", "ROW_ID", ".HAS_REG", ".IS_PLAN"))
+                      c("GRP_ID", "ROW_ID", ".HAS_REG", ".IS_PLAN",
+                        "N_MERGED", "MERGED_PK"))
 
   merged <- grp[, c(
     lapply(.SD, .first_filled),
@@ -231,8 +247,11 @@ totalbr_merge_duplicates <- function(d, pairs,
                     uni, by = "GRP_ID")
   }
 
-  rest[, `:=`(N_MERGED = 1L,
-              MERGED_PK = if ("pk" %in% names(rest)) pk else NA_character_)]
+  # A row this pass did not touch keeps whatever provenance it arrived with. On a
+  # second pass most rows are untouched, and overwriting MERGED_PK with the row's
+  # own pk erased the records behind a flight already merged in a previous pass:
+  # a January flight built from four records came out of the bind claiming one.
+  rest <- .keep_provenance(rest)
   rest[, c("GRP_ID") := NULL]
   merged[, c("GRP_ID") := NULL]
   if ("ROW_ID" %in% names(merged)) merged[, ROW_ID := NULL]
