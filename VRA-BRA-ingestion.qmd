@@ -117,21 +117,21 @@ measures it instead of trusting it:
 ```{r}
 #| label: tbl-bra-vra-key
 #| tbl-cap: "How often the candidate key repeats"
-#| eval: false
 
-d <- data.table::fread(
-  file = file.path(bra_vra_raw_dir, "vra_2024.csv"), sep = ";",
-  select = c("sg_empresa_icao", "nr_voo", "dt_partida_prevista",
-             "sg_icao_origem", "sg_icao_destino", vra_date_col),
-  colClasses = "character", showProgress = FALSE)
+d <- vra_read(cols = c("sg_empresa_icao", "nr_voo", "dt_partida_prevista",
+                       "sg_icao_origem", "sg_icao_destino"),
+              raw_dir = bra_vra_raw_dir)
 
-k <- paste(d$sg_empresa_icao, d$nr_voo, d$dt_partida_prevista, sep = "|")
-tibble::tibble(
-  ROWS        = nrow(d),
-  DISTINCT    = dplyr::n_distinct(k),
-  REPEATED    = sum(duplicated(k)),
-  PCT         = round(100 * sum(duplicated(k)) / nrow(d), 2)
-) |> knitr::kable()
+if (nrow(d) == 0) {
+  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
+} else {
+  k <- paste(d$sg_empresa_icao, d$nr_voo, d$dt_partida_prevista, sep = "|")
+  knitr::kable(tibble::tibble(
+    ROWS     = nrow(d),
+    DISTINCT = dplyr::n_distinct(k),
+    REPEATED = sum(duplicated(k)),
+    PCT      = round(100 * sum(duplicated(k)) / nrow(d), 2)))
+}
 ```
 
 A repeat rate near zero means the key holds. A repeat rate of a few percent needs the
@@ -163,22 +163,24 @@ to the previous day's instance of the same service, and ANAC's own verdict reads
 ```{r}
 #| label: tbl-bra-vra-dayshift
 #| tbl-cap: "Departures whose realised time is more than 6 h from the schedule"
-#| eval: false
 
-d <- data.table::fread(
-  file = file.path(bra_vra_raw_dir, "vra_2024.csv"), sep = ";",
-  select = c("sg_empresa_icao", "nr_voo", "dt_partida_prevista",
-             "dt_partida_real", "ds_situacao_partida"),
-  colClasses = "character", showProgress = FALSE)
+d <- vra_read(cols = c("sg_empresa_icao", "nr_voo", "dt_partida_prevista",
+                       "dt_partida_real", "ds_situacao_partida"),
+              raw_dir = bra_vra_raw_dir)
 
-p <- as.POSIXct(d$dt_partida_prevista, format = "%d/%m/%Y %H:%M", tz = "UTC")
-r <- as.POSIXct(d$dt_partida_real,     format = "%d/%m/%Y %H:%M", tz = "UTC")
-gap <- as.numeric(difftime(r, p, units = "hours"))
+if (nrow(d) == 0) {
+  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
+} else {
+  p   <- as.POSIXct(d$dt_partida_prevista, format = "%d/%m/%Y %H:%M", tz = "UTC")
+  r   <- as.POSIXct(d$dt_partida_real,     format = "%d/%m/%Y %H:%M", tz = "UTC")
+  gap <- as.numeric(difftime(r, p, units = "hours"))
 
-tibble::tibble(SITUACAO = d$ds_situacao_partida, GAP_H = gap) |>
-  dplyr::filter(!is.na(GAP_H), abs(GAP_H) > 6) |>
-  dplyr::count(SITUACAO, sort = TRUE) |>
-  knitr::kable()
+  knitr::kable(
+    tibble::tibble(SITUACAO = d$ds_situacao_partida, GAP_H = gap) |>
+      dplyr::filter(!is.na(GAP_H), abs(GAP_H) > 6) |>
+      dplyr::count(SITUACAO, sort = TRUE) |>
+      dplyr::mutate(PCT_OF_ALL = round(100 * n / nrow(d), 3)))
+}
 ```
 
 Run it before using `dt_partida_real` for anything. If these rows are a handful, exclude and
@@ -187,10 +189,11 @@ too, and that is a question for ANAC rather than a filter for us.
 
 ## Open Points
 
-- **The candidate key is unmeasured.** The chunk above is `eval: false` until a year exists
-  to run it on.
-- **The day-shift rows are uncounted**, and their effect on any punctuality figure is
-  therefore unknown.
+- **The candidate key is measured but not adopted.** Nothing de-duplicates on it until the
+  repeated rows have been looked at: a leg re-filed is two rows that are not
+  interchangeable, and deleting the wrong one loses a filled field.
+- **The day-shift rows are counted but not handled.** Whether to exclude them, and what that
+  does to a punctuality figure, is open.
 - **`nr_assentos_ofertados` makes VRA a capacity source too** — seats offered per flight,
   which none of the other datasets carry. Not used yet; worth remembering it is here.
 - **The relationship to TOTALBR is unmeasured.** Both describe the same flights; VRA covers

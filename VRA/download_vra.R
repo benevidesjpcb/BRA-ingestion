@@ -76,6 +76,75 @@ vra_month_days <- function(year, month) {
 }
 
 # =============================================================================
+# vra_read(years, months, cols, raw_dir)
+#
+# READ WHAT IS ON DISK, whichever form it is in.
+#
+#   vra_read(2024)                      # the year, however it is stored
+#   vra_read(2024, months = 1:2)        # only those months
+#   vra_read(2026, cols = c("nr_voo"))  # only the columns needed
+#
+# The year file is written only when a year finishes downloading, so for most of
+# the life of a download it does not exist and the data is in parts/. Naming
+# vra_<year>.csv directly therefore fails on data that is perfectly well there --
+# which is what every chunk of the .qmd did before this existed.
+#
+# So: the year file when it exists, the month parts otherwise. The two hold the
+# same rows in the same shape, and the year file is itself built from the parts.
+# =============================================================================
+vra_read <- function(years   = NULL,
+                     months  = NULL,
+                     cols    = NULL,
+                     raw_dir = here::here("data-raw", "vra"),
+                     date_col = VRA_DATE_COL,
+                     quiet   = FALSE) {
+
+  if (is.null(years)) {
+    # every year present, in either form
+    yf <- list.files(raw_dir, pattern = "^vra_\\d{4}\\.csv$")
+    yp <- list.files(file.path(raw_dir, "parts"), pattern = "^vra_\\d{4}-\\d{2}\\.csv$")
+    years <- sort(unique(as.integer(c(substr(yf, 5, 8), substr(yp, 5, 8)))))
+  }
+  if (length(years) == 0) { message("No VRA data in ", raw_dir); return(tibble::tibble()) }
+
+  rd <- function(f) {
+    a <- list(file = f, sep = ";", colClasses = "character",
+              showProgress = FALSE, fill = TRUE)
+    # the date column is always needed: the month filter reads it
+    if (!is.null(cols)) a$select <- unique(c(cols, date_col))
+    do.call(data.table::fread, a)
+  }
+
+  parts <- lapply(years, function(y) {
+    yf <- file.path(raw_dir, sprintf("vra_%d.csv", y))
+    if (file.exists(yf)) {
+      if (!quiet) message("  ", y, ": year file")
+      return(rd(yf))
+    }
+    ps <- list.files(file.path(raw_dir, "parts"),
+                     pattern = sprintf("^vra_%d-\\d{2}\\.csv$", y),
+                     full.names = TRUE)
+    if (length(ps) == 0) {
+      message("  ", y, ": nothing on disk"); return(NULL)
+    }
+    if (!quiet) message("  ", y, ": ", length(ps), " month part(s)")
+    data.table::rbindlist(lapply(sort(ps), rd), fill = TRUE, use.names = TRUE)
+  })
+
+  parts <- Filter(function(x) !is.null(x) && nrow(x) > 0, parts)
+  if (length(parts) == 0) return(tibble::tibble())
+  d <- data.table::rbindlist(parts, fill = TRUE, use.names = TRUE)
+
+  if (!is.null(months) && date_col %in% names(d)) {
+    # dt_referencia is dd/mm/YYYY, so the month is characters 4-5 -- no parsing,
+    # nothing to go wrong on a locale
+    mm <- sprintf("%02d", as.integer(months))
+    d  <- d[substr(as.character(d[[date_col]]), 4, 5) %in% mm]
+  }
+  tibble::as_tibble(d)
+}
+
+# =============================================================================
 # vra_coverage(raw_dir)
 #
 # Days and rows per month, from WHAT IS ON DISK RIGHT NOW.
