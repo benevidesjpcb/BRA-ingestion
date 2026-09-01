@@ -31,10 +31,27 @@
 
 source(here::here("VRA", "download_vra.R"))
 
-# The key under test. Operator + flight number + scheduled departure is the
-# natural identity of a scheduled flight: the same service on the same day is one
-# row. It is a CANDIDATE until this file says otherwise.
-VRA_KEY_COLS <- c("sg_empresa_icao", "nr_voo", "dt_partida_prevista")
+# The key under test.
+#
+# WHY THESE FIVE, AND NOT operator + number + scheduled departure
+# That first candidate collapsed flights that are plainly different, for two
+# reasons found in the data:
+#
+#   A FLIGHT NUMBER IS NOT A ROUTE. AAL Z0930 on 14/01/2026 appears as
+#   SBGR -> KFLL and again as KFLL -> KMIA: two legs of one number, two
+#   movements, two rows. Origin and destination separate them.
+#
+#   dt_partida_prevista IS OFTEN EMPTY. Those same rows carry "" -- they are
+#   cd_di = 4, non-scheduled services, which have no planned departure at all. A
+#   blank component makes the key "AAL|Z0930|", so every Z0930 in the file
+#   collides, including the same route on 14/01 and on 21/02. A key component
+#   that can be empty does not divide anything; it merges.
+#
+# dt_referencia is the day the API itself partitions on and is never empty, so it
+# is what carries the date here. dt_partida_prevista stays OUT of the key for
+# exactly the reason above -- it is still read, as a column, where it exists.
+VRA_KEY_COLS <- c("sg_empresa_icao", "nr_voo",
+                  "sg_icao_origem", "sg_icao_destino", "dt_referencia")
 
 vra_build_key <- function(d, key_cols = VRA_KEY_COLS) {
   miss <- setdiff(key_cols, names(d))
@@ -63,6 +80,19 @@ vra_key_profile <- function(years    = NULL,
 
   k   <- vra_build_key(d, key_cols)
   dup <- k %in% k[duplicated(k)]
+
+  # A KEY COMPONENT THAT IS EMPTY MERGES ROWS SILENTLY, which is how the first
+  # candidate collapsed three unrelated Z0930 movements into one group. Say how
+  # often each component is blank before any conclusion is drawn from the counts.
+  blanks <- vapply(key_cols, function(cl)
+    sum(is.na(d[[cl]]) | !nzchar(trimws(as.character(d[[cl]])))), integer(1))
+  if (any(blanks > 0) && !quiet) {
+    message("Blank key components -- these MERGE rows rather than separate them:")
+    print(as.data.frame(tibble::tibble(
+      COLUMN = key_cols, BLANK = as.integer(blanks),
+      PCT    = round(100 * as.integer(blanks) / nrow(d), 2))), row.names = FALSE)
+    message("")
+  }
 
   summary <- tibble::tibble(
     ROWS       = nrow(d),
