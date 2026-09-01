@@ -164,6 +164,20 @@ bra_tatic_raw_dir <- here::here("data-raw", "tatic")   # tatic_<year>.csv + part
 bra_totalbr_raw_dir  <- here::here("data-raw", "totalbr")   # raw CSVs (ODIN)
 bra_totalbr_apdf_dir <- here::here("data", "totalbr")       # harmonised extracts
 
+# VRA (ANAC) ingestion: parameters and paths ==================================
+# VRA is "Voo Regular Ativo": the scheduled and realised times of every regular
+# flight, FILED BY THE AIRLINES, plus ANAC's own verdict on each one. It is
+# schedule adherence as declared, not movement as observed by ATC -- so a
+# disagreement with TOTALBR or dstaxi is two measurements differing, not
+# necessarily an ingestion fault.
+vra_data_years   <- 2024:2026            # <- CHANGE THE STUDY PERIOD HERE
+# The window parameter filters on dt_referencia, which dates a flight by its
+# DEPARTURE and carries no time of day. A night flight therefore lands on the
+# following date: never read a time off this column.
+vra_date_col     <- "dt_referencia"
+bra_vra_raw_dir  <- here::here("data-raw", "vra")
+
+
 # set ggplot2 default theme
 ggplot2::theme_set(theme_minimal())
 
