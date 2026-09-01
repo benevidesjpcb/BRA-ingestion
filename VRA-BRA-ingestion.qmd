@@ -6,6 +6,7 @@
 
 source(here::here("_chapter-setup.R"))
 source(here::here("VRA", "download_vra.R"))
+source(here::here("VRA", "check_vra_duplicates.R"))
 ```
 
 This note documents the ingestion of **VRA** — *Voo Regular Ativo* — ANAC's record of the
@@ -111,32 +112,70 @@ plausible is exactly what costs the most when it is wrong. TOTALBR's `id` is the
 it reads like an identifier, repeats on every flight of the same route, and de-duplicating on
 it would have deleted almost the entire dataset.
 
-The natural candidate here is **operator + flight number + scheduled departure**. This
-measures it instead of trusting it:
+The candidate here is **operator + flight number + scheduled departure** — `VRA_KEY_COLS` in
+`VRA/check_vra_duplicates.R`.
 
 ```{r}
 #| label: tbl-bra-vra-key
 #| tbl-cap: "How often the candidate key repeats"
 
-d <- vra_read(cols = c("sg_empresa_icao", "nr_voo", "dt_partida_prevista",
-                       "sg_icao_origem", "sg_icao_destino"),
-              raw_dir = bra_vra_raw_dir)
-
-if (nrow(d) == 0) {
+prof <- vra_key_profile(quiet = TRUE)
+if (is.null(prof)) {
   knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
 } else {
-  k <- paste(d$sg_empresa_icao, d$nr_voo, d$dt_partida_prevista, sep = "|")
-  knitr::kable(tibble::tibble(
-    ROWS     = nrow(d),
-    DISTINCT = dplyr::n_distinct(k),
-    REPEATED = sum(duplicated(k)),
-    PCT      = round(100 * sum(duplicated(k)) / nrow(d), 2)))
+  knitr::kable(prof$summary)
 }
 ```
 
-A repeat rate near zero means the key holds. A repeat rate of a few percent needs the
-repeated rows looked at before anything is deleted: a flight can legitimately appear twice
-when a leg is re-filed, and the two rows are then not interchangeable.
+`SURPLUS` is what a naive de-duplication would delete; `IN_A_GROUP` is how many rows are
+involved in a repeat at all — the two differ because a group of three copies contributes
+three rows and two surplus.
+
+### What the repeats ARE
+
+A count says how much would be deleted. It does not say whether deleting is right. Two rows
+under one key are one of three things, and only the last means the key is broken:
+
+| The copies | What they are | What to do |
+| --- | --- | --- |
+| identical everywhere | the same filing received twice | either copy will do |
+| differ on the realised times or the situation | the flight **re-filed** after a change | keep the later filing; fill blanks from the earlier |
+| differ on the aerodromes | **two real flights** the key cannot tell apart | the key is wrong — widen it |
+
+Which of the three it is can be read off directly: for each column, in how many repeated
+groups does its value vary?
+
+```{r}
+#| label: tbl-bra-vra-key-columns
+#| tbl-cap: "Where the copies differ, as a share of the repeated groups"
+
+if (is.null(prof) || nrow(prof$columns) == 0) {
+  knitr::kable(tibble::tibble(note = "No repeated key, or nothing downloaded."))
+} else {
+  knitr::kable(prof$columns)
+}
+```
+
+A column varying in ~0% of groups is carried identically by every copy. A column varying in
+most groups is what the copies exist to record — and is therefore what any collapse has to
+choose between rather than discard.
+
+Then look at the groups themselves rather than inferring from a percentage. `only_col`
+restricts to the groups that differ on one column, which is how a suspicion raised above gets
+confirmed:
+
+```{r}
+#| label: vra-key-examples
+#| eval: false
+
+vra_key_examples(n = 3)                                   # any repeated group
+vra_key_examples(only_col = "dt_partida_real", n = 3)     # re-filed?
+vra_key_examples(only_col = "sg_icao_destino", n = 3)     # two real flights?
+```
+
+**Nothing de-duplicates yet.** The rule follows from what the tables above show, and it is
+written once that is known — collapsing before then would delete a filled field to keep an
+empty one, which is exactly the trap TOTALBR's `pk` collapse exists to avoid.
 
 ## Scheduled against realised — the day-shift to watch
 
