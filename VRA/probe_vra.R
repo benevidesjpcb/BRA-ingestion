@@ -64,6 +64,31 @@ vra_window <- function(from, to) {
 }
 
 # =============================================================================
+# vra_parse_json(body)
+#
+# THE RESPONSE IS JSON INSIDE JSON. The endpoint answers with a JSON *string*
+# whose content is the array of records -- so one fromJSON() yields a character
+# vector of length one that merely looks like a truncated mess, and the rows only
+# appear on a second decode:
+#
+#   "[{\"sg_empresa_icao\":\"AAL\", ...}]"      <- what arrives
+#    [{ sg_empresa_icao:  AAL , ...}]         <- what it means
+#
+# Unwrapped here, once, so nothing downstream has to know. Written defensively:
+# if ANAC ever stops double-encoding, a single decode already gives the table and
+# the second pass is skipped.
+# =============================================================================
+vra_parse_json <- function(body) {
+  obj <- jsonlite::fromJSON(body, flatten = TRUE)
+  # a single string that itself starts like JSON is the wrapper, not the answer
+  if (is.character(obj) && length(obj) == 1 && grepl("^\\s*[\\[{]", obj)) {
+    message("(double-encoded JSON: decoding the string it wrapped)")
+    obj <- jsonlite::fromJSON(obj, flatten = TRUE)
+  }
+  obj
+}
+
+# =============================================================================
 # vra_probe(url, query, n)
 #
 # Performs one request and reports, in this order: the URL as sent, the status,
@@ -93,7 +118,7 @@ vra_probe <- function(url = VRA_API_URL, query = list(), n = 5L) {
   # ---- JSON ---------------------------------------------------------------
   if (grepl("json", ctype, ignore.case = TRUE) ||
       grepl("^\\s*[\\[{]", body)) {
-    obj <- tryCatch(jsonlite::fromJSON(body, flatten = TRUE),
+    obj <- tryCatch(vra_parse_json(body),
                     error = function(e) { message("Not valid JSON: ",
                                                   conditionMessage(e)); NULL })
     if (is.null(obj)) { cat(substr(body, 1, 1000), "\n"); return(invisible(NULL)) }
