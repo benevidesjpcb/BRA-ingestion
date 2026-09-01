@@ -100,6 +100,41 @@ vra_probe <- function(url = VRA_API_URL, query = list(), n = 5L) {
 
     if (is.data.frame(obj)) return(invisible(.vra_report_df(obj, n)))
 
+    # NOT a data.frame. Two shapes reach here and they need different words:
+    # an envelope with named keys (the rows sit under one of them), and a plain
+    # unnamed list -- an array jsonlite could not simplify, usually because the
+    # records do not all carry the same fields. The second one printed nothing at
+    # all when this only knew about the first.
+    if (is.null(names(obj)) || !any(nzchar(names(obj)))) {
+      message("An unnamed JSON list of ", length(obj), " element(s).")
+      if (length(obj) > 0) {
+        el <- obj[[1]]
+        message("First element: ", class(el)[1], ", ", length(el), " field(s)")
+        if (!is.null(names(el)))
+          message("Its fields: ", paste(names(el), collapse = ", "))
+        message("The first element in full:")
+        utils::str(el, max.level = 2, list.len = 100)
+      }
+      # do the records share a shape? If they do, one table comes out of them and
+      # the download is simple; if they do not, that is the thing to know now
+      flat <- tryCatch(
+        jsonlite::fromJSON(body, flatten = TRUE, simplifyDataFrame = TRUE),
+        error = function(e) NULL)
+      if (is.data.frame(flat)) {
+        message("They do share a shape -- as a table:")
+        return(invisible(.vra_report_df(flat, n)))
+      }
+      bound <- tryCatch(data.table::rbindlist(obj, fill = TRUE, use.names = TRUE),
+                        error = function(e) NULL)
+      if (!is.null(bound)) {
+        message("Bound into one table with fill = TRUE:")
+        return(invisible(.vra_report_df(as.data.frame(bound), n)))
+      }
+      message("The records do not share a shape. Raw, first 800 characters:")
+      cat(substr(body, 1, 800), "\n")
+      return(invisible(obj))
+    }
+
     # an envelope: the rows are under one of the keys, and which one is exactly
     # the sort of thing worth reading rather than assuming
     message("A JSON object, not a table. Top-level keys: ",
