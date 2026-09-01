@@ -57,12 +57,25 @@ hold, and a month window that comes back with one day says so and names the fix.
 #| eval: false
 
 source(here::here("VRA", "download_vra.R"))
-download_vra(vra_data_years)          # 2024:2026, from _chapter-setup.R
+
+# The period comes from _chapter-setup.R, and R holds the value it read when the
+# session started. Editing the file does not change a running session -- source
+# it again, and check, before a download that takes hours goes after the wrong
+# years.
+source(here::here("_chapter-setup.R"))
+vra_data_years                        # <- confirm this is the period you meant
+
+download_vra(vra_data_years)
+download_vra(2026)                    # or name the year outright
 ```
 
-One file per year in `data-raw/vra/`, with the month parts under `parts/`. Each month is
-written as it arrives, so an interrupted run keeps its progress; a month already complete is
-skipped, so re-running costs nothing.
+One file per year in `data-raw/vra/`, with the month parts under `parts/`.
+
+**Each month is written the moment it arrives**, before the next is asked for, so a run
+stopped halfway keeps every month it had. Re-running skips the months already complete, so
+interrupting costs nothing but the month in flight — and completeness is judged by the days
+a part holds, not by a request having returned, so a month that came back short is fetched
+again rather than trusted.
 
 **Completeness is a statement about days present, never about a request having returned.** A
 month fetched while it was still open is short by design and is fetched again once it
