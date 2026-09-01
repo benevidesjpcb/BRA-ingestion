@@ -5,8 +5,8 @@
 # ASK THE VRA API WHAT IT IS, BEFORE WRITING A DOWNLOADER FOR IT.
 #
 #   source(here::here("VRA", "probe_vra.R"))
-#   vra_probe()                                  # the base endpoint, as it comes
-#   vra_probe(query = list(ano = 2026, mes = 1)) # try a parameter shape
+#   vra_probe(query = vra_window("2024-12-01", "2024-12-01"))   # one day
+#   vra_probe(query = vra_window("2024-12-01", "2024-12-31"))   # one month
 #
 # WHY THIS EXISTS AS A STEP OF ITS OWN
 # Every downloader in this project keys on things that cannot be guessed: which
@@ -30,7 +30,24 @@
 source(here::here("proxy.R"))
 
 VRA_API_URL <- Sys.getenv("VRA_API_URL",
-                          unset = "https://sas.anac.gov.br/sas/vra_api")
+                          unset = "https://sas.anac.gov.br/sas/vra_api/vra")
+
+# The window is two dates, and they are DDMMYYYY -- not ISO, not d/m/Y. Written
+# once here so no caller formats a date by hand:
+#   .../vra?dt_referencia1=01122024&dt_referencia2=31122024
+VRA_DATE_FMT <- "%d%m%Y"
+vra_date <- function(x) format(as.Date(x), VRA_DATE_FMT)
+
+# =============================================================================
+# vra_window(from, to)
+#
+# The query for one window, from two dates given in any form R understands.
+# Both bounds are INCLUSIVE, as the endpoint's own example reads: 01122024 to
+# 31122024 is the whole of December.
+# =============================================================================
+vra_window <- function(from, to) {
+  list(dt_referencia1 = vra_date(from), dt_referencia2 = vra_date(to))
+}
 
 .vra_req <- function(url = VRA_API_URL, query = list(), timeout = 120) {
   for (p in c("httr2", "jsonlite"))
@@ -131,9 +148,30 @@ vra_probe <- function(url = VRA_API_URL, query = list(), n = 5L) {
   id <- grep("(^id$|_id$|chave|hash|pk|numero|voo)", names(d),
              value = TRUE, ignore.case = TRUE)
   if (length(id) > 0) message("Id-like: ", paste(id, collapse = ", "))
-  print(utils::head(as.data.frame(d), n))
+  if (n > 0) print(utils::head(as.data.frame(d), n))
   invisible(d)
 }
 
+# =============================================================================
+# vra_window_size(from, to)
+#
+# HOW MANY ROWS A WINDOW ACTUALLY RETURNS -- the question that decides whether
+# the download can ask for a month at a time.
+#
+# Ask it for one day, then for the month that day is in. If the month returns
+# about thirty times the day, the window is honoured and months are the unit.
+# If it returns the same as the day, or a suspiciously round number, it is not:
+# TATIC silently answers a wide window with ONLY THE FIRST DAY, and a round
+# number is a page cap rather than an answer. Either way the finding changes the
+# downloader, and it is one request to learn.
+# =============================================================================
+vra_window_size <- function(from, to) {
+  d <- vra_probe(query = vra_window(from, to), n = 0L)
+  n <- if (is.data.frame(d)) nrow(d) else NA_integer_
+  message("Window ", vra_date(from), " -> ", vra_date(to), ": ", n, " row(s)")
+  invisible(n)
+}
+
 # ---- run only when executed as a script (not when sourced) ------------------
-if (sys.nframe() == 0L) vra_probe()
+if (sys.nframe() == 0L)
+  vra_probe(query = vra_window(Sys.Date() - 40, Sys.Date() - 40))
