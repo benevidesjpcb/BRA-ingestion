@@ -112,9 +112,10 @@ plausible is exactly what costs the most when it is wrong. TOTALBR's `id` is the
 it reads like an identifier, repeats on every flight of the same route, and de-duplicating on
 it would have deleted almost the entire dataset.
 
-The key is **operator + flight number + origin + destination + `dt_referencia`** —
-`VRA_KEY_COLS` in `VRA/check_vra_duplicates.R`. It started as operator + number + scheduled
-departure, and the data rejected that on two counts:
+The key is **operator + flight number + origin + destination + `dt_referencia` + scheduled
+departure** — `VRA_KEY_COLS` in `VRA/check_vra_duplicates.R`. It took three passes over the
+data to get there, and each component earned its place by a case that broke the version
+before it:
 
 **A flight number is not a route.** AAL `Z0930` on 14/01/2026 appears as SBGR → KFLL and
 again as KFLL → KMIA — two legs of one number, two movements, two rows.
@@ -123,7 +124,20 @@ again as KFLL → KMIA — two legs of one number, two movements, two rows.
 non-scheduled services, which have no planned departure. A blank component makes the key
 `AAL|Z0930|`, so every Z0930 collides — including the same route on 14/01 and on 21/02. **A
 key component that can be empty does not divide anything; it merges.** `dt_referencia` is
-the day the API itself partitions on and is never blank, so it carries the date instead.
+the day the API itself partitions on and is never blank, so it carries the date
+unconditionally.
+
+**A route flown twice in one day is two flights.** ACA0090 CYYZ → SBGR on 05/01/2026 is filed
+once for 00:35 and once for 23:00 — same operator, number, route and day, two operations.
+Only the scheduled time separates them, so it comes back into the key alongside
+`dt_referencia` rather than instead of it: a blank scheduled time falls back on the day and
+the route, and a shared day is still split by the scheduled time.
+
+> **What this gives up.** A flight re-filed with a corrected schedule now reads as a separate
+> flight rather than as a copy of the first. That distinction was never observable: VRA
+> carries no submission timestamp, so "the later filing" cannot be identified, only guessed
+> at. Sixteen of the twenty-three repeated groups found under the previous key differed on
+> exactly this column and are now separate rows.
 
 ```{r}
 #| label: tbl-bra-vra-key

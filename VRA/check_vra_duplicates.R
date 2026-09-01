@@ -48,10 +48,26 @@ source(here::here("VRA", "download_vra.R"))
 #   that can be empty does not divide anything; it merges.
 #
 # dt_referencia is the day the API itself partitions on and is never empty, so it
-# is what carries the date here. dt_partida_prevista stays OUT of the key for
-# exactly the reason above -- it is still read, as a column, where it exists.
+# carries the date unconditionally.
+#
+#   AND THE SCHEDULED DEPARTURE JOINS IT, because a route flown twice in one day
+#   is two flights. ACA0090 CYYZ -> SBGR on 05/01/2026 is filed once for 00:35
+#   and once for 23:00: same operator, same number, same route, same day, two
+#   operations. Only the scheduled time separates them.
+#
+# The two date components do different jobs and both are needed. dt_referencia
+# alone merges the two ACA0090 rotations; dt_partida_prevista alone merges every
+# cd_di = 4 movement, since those carry "". Together, a blank scheduled time
+# falls back on the day and the route, and a shared day is still split by the
+# scheduled time.
+#
+# WHAT THIS GIVES UP: a flight re-filed with a corrected schedule now reads as a
+# separate flight rather than as a copy. That distinction was never observable
+# anyway -- VRA carries no submission timestamp, so "the later filing" cannot be
+# identified, only guessed at.
 VRA_KEY_COLS <- c("sg_empresa_icao", "nr_voo",
-                  "sg_icao_origem", "sg_icao_destino", "dt_referencia")
+                  "sg_icao_origem", "sg_icao_destino",
+                  "dt_referencia", "dt_partida_prevista")
 
 vra_build_key <- function(d, key_cols = VRA_KEY_COLS) {
   miss <- setdiff(key_cols, names(d))
