@@ -22,8 +22,14 @@
 #   4. TAKES BLOCK_TIME FROM THE PHASE. Off-blocks for a departure is `cPush`;
 #      on-blocks for an arrival is `cPos`. They are different events and there is
 #      no single column holding both.
-#   5. FILTERS to the study aerodromes, when asked, keeping a flight that TOUCHES
-#      one -- departing OR arriving, not both.
+#   5. NAMES THE AERODROME THE EVENT HAPPENED AT, as APT: ADEP on a departure,
+#      ADES on an arrival. This is the column the study filters on, and it is not
+#      the same as "the flight touches a study aerodrome". A row is ONE movement
+#      at ONE aerodrome; the other end is route context. TAM4682 SBSP->SBTE
+#      arriving is a movement at SBTE, and its RWY, BLOCK_TIME and MOV_TIME all
+#      describe SBTE -- keeping it because SBSP is in the study would file
+#      another aerodrome's arrival under Congonhas.
+#   6. FILTERS on APT, when asked.
 #
 # NOT FILLED IN, DELIBERATELY: `REG` and `CLASS` come back NA. The TATIC field
 # list carries no registration, and `CLASS` (the slide's example is "H") could be
@@ -37,9 +43,9 @@
 # The target schema, in the order the slide lists it. Columns TATIC cannot fill
 # are still created, so every year harmonises to the SAME shape and a later join
 # does not have to ask which columns exist.
-TATIC_APDF_COLS <- c("FLTID", "ADEP", "ADES", "REG", "CLASS", "ARCTYP", "PHASE",
-                     "STAND", "RWY", "BLOCK_TIME", "MOV_TIME", "SCHEDULE_TIME",
-                     "TATIC_DAY")
+TATIC_APDF_COLS <- c("FLTID", "ADEP", "ADES", "APT", "REG", "CLASS", "ARCTYP",
+                     "PHASE", "STAND", "RWY", "BLOCK_TIME", "MOV_TIME",
+                     "SCHEDULE_TIME", "TATIC_DAY")
 
 # ---- find a column whatever case the export used ----------------------------
 # The JSON exports and the API download have disagreed on capitalisation before.
@@ -82,15 +88,15 @@ tatic_parse_time <- function(x) {
 # harmonise_tatic(d, apts, keep_extra)
 #
 #   d          : the TATIC data frame (a downloaded year, or several bound)
-#   apts       : ICAO codes to keep. A row survives if ADEP **or** ADES is one of
-#                them -- a flight that touches the study, not only the domestic
-#                legs between two study aerodromes. NULL keeps everything.
+#   apts       : ICAO codes to keep. A row survives when the aerodrome the event
+#                happened at -- APT -- is one of them. NULL keeps everything.
 #   keep_extra : also carry the TATIC columns the schema has no place for
 #                (Locality, Transponder, Equipment, the other milestones), so a
 #                question asked later does not need the raw file again.
 #
-# Returns a tibble with TATIC_APDF_COLS, plus DEP_BRA/ARR_BRA/ROLE when `apts`
-# is given, plus the extra columns when asked for.
+# Returns a tibble with TATIC_APDF_COLS, plus OTHER_APT when `apts` is given (the
+# far end of the route, so a domestic pair is still recognisable), plus the extra
+# columns when asked for.
 # =============================================================================
 harmonise_tatic <- function(d, apts = NULL, keep_extra = FALSE, quiet = FALSE) {
 
@@ -149,6 +155,12 @@ harmonise_tatic <- function(d, apts = NULL, keep_extra = FALSE, quiet = FALSE) {
   out$SCHEDULE_TIME <- tatic_parse_time(.tatic_get(d, "EOBT"))
   out$TATIC_DAY     <- .tatic_get(d, "TATIC_DAY")
 
+  # the aerodrome this movement happened at -- the one RWY, BLOCK_TIME and
+  # MOV_TIME all refer to
+  out$APT <- dplyr::case_when(out$PHASE == "DEP" ~ out$ADEP,
+                              out$PHASE == "ARR" ~ out$ADES,
+                              TRUE               ~ NA_character_)
+
   out <- out[, TATIC_APDF_COLS]
 
   if (keep_extra) {
@@ -161,13 +173,13 @@ harmonise_tatic <- function(d, apts = NULL, keep_extra = FALSE, quiet = FALSE) {
   # ---- 4. the study aerodromes --------------------------------------------
   if (!is.null(apts)) {
     apts <- up(as.character(apts))
-    out$DEP_BRA <- out$ADEP %in% apts
-    out$ARR_BRA <- out$ADES %in% apts
-    out <- out[out$DEP_BRA | out$ARR_BRA, , drop = FALSE]
-    out$ROLE <- dplyr::case_when(out$DEP_BRA & out$ARR_BRA ~ "both",
-                                 out$DEP_BRA               ~ "departure",
-                                 TRUE                      ~ "arrival")
-    say("Study aerodromes: ", nrow(out), " of ", n_in, " row(s) touch one.")
+    keep <- !is.na(out$APT) & out$APT %in% apts
+    out  <- out[keep, , drop = FALSE]
+    # the far end, so a leg between two study aerodromes is still recognisable
+    # without going back to ADEP/ADES and re-deriving which end this row is
+    out$OTHER_APT <- ifelse(out$PHASE == "DEP", out$ADES, out$ADEP)
+    say("Study aerodromes: ", nrow(out), " of ", n_in,
+        " row(s) are a movement AT one.")
   }
 
   # What the caller needs to know before trusting the result: a movement with no
