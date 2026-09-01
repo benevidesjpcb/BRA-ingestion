@@ -88,32 +88,18 @@ and the two are deliberately not distinguished at this stage — both mean "fetc
 #| label: tbl-bra-vra-coverage
 #| tbl-cap: "Days and rows per month, as downloaded"
 
-files <- list.files(bra_vra_raw_dir, pattern = "^vra_\\d{4}\\.csv$",
-                    full.names = TRUE)
-if (length(files) == 0) {
+cov <- vra_coverage(bra_vra_raw_dir)
+if (is.null(cov)) {
   knitr::kable(tibble::tibble(
     note = "Nothing downloaded yet — run the chunk above."))
 } else {
-  cov <- purrr::map_dfr(files, function(f) {
-    d <- data.table::fread(file = f, sep = ";", select = vra_date_col,
-                           colClasses = "character", showProgress = FALSE)
-    tibble::tibble(DAY = as.character(d[[1]])) |>
-      dplyr::mutate(YEAR  = substr(DAY, 7, 10),
-                    MONTH = substr(DAY, 4, 5)) |>
-      dplyr::group_by(YEAR, MONTH) |>
-      dplyr::summarise(DAYS = dplyr::n_distinct(DAY), ROWS = dplyr::n(),
-                       .groups = "drop")
-  })
-  # a month is short when it holds fewer days than the calendar gives it
-  cov <- cov |>
-    dplyr::mutate(
-      IN_MONTH = lubridate::days_in_month(
-        as.Date(sprintf("%s-%s-01", YEAR, MONTH))),
-      SHORT    = ifelse(DAYS < IN_MONTH, "yes", "")) |>
-    dplyr::arrange(YEAR, MONTH)
   knitr::kable(cov)
 }
 ```
+
+It reads the month **parts**, not the year files. The year file is written only after the
+last month of a year has been fetched, so a run interrupted halfway — the normal way a long
+download ends — leaves months on disk and no year file at all.
 
 A `SHORT` month is either still open or truncated. Read it together with today's date before
 concluding which.

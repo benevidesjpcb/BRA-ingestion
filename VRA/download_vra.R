@@ -76,6 +76,58 @@ vra_month_days <- function(year, month) {
 }
 
 # =============================================================================
+# vra_coverage(raw_dir)
+#
+# Days and rows per month, from WHAT IS ON DISK RIGHT NOW.
+#
+# It reads the month PARTS, not the year files. The year file is written only
+# after the last month of a year has been fetched, so a run interrupted halfway
+# -- which is the normal way a long download ends -- leaves months on disk and no
+# year file at all. A coverage table that looked only at year files answered
+# "nothing downloaded yet" over two months of data.
+#
+# Returns one row per year and month, with SHORT marking a month holding fewer
+# days than the calendar gives it: either still open, or truncated.
+# =============================================================================
+vra_coverage <- function(raw_dir = here::here("data-raw", "vra"),
+                         date_col = VRA_DATE_COL) {
+  parts <- list.files(file.path(raw_dir, "parts"),
+                      pattern = "^vra_\\d{4}-\\d{2}\\.csv$", full.names = TRUE)
+  # the year files are read only for years that have NO parts left on disk --
+  # someone may have cleaned parts/ after a year completed
+  years <- list.files(raw_dir, pattern = "^vra_\\d{4}\\.csv$", full.names = TRUE)
+  have_part_years <- unique(substr(basename(parts), 5, 8))
+  years <- years[!substr(basename(years), 5, 8) %in% have_part_years]
+
+  files <- c(parts, years)
+  if (length(files) == 0) return(NULL)
+
+  out <- lapply(files, function(f) {
+    d <- data.table::fread(file = f, sep = ";", select = date_col,
+                           colClasses = "character", showProgress = FALSE)
+    v <- as.character(d[[1]])
+    v <- v[!is.na(v) & nzchar(v)]
+    if (length(v) == 0) return(NULL)
+    tibble::tibble(DAY = v,
+                   YEAR  = substr(v, 7, 10),
+                   MONTH = substr(v, 4, 5),
+                   SOURCE = if (grepl("-", basename(f), fixed = TRUE)) "part" else "year")
+  })
+  out <- dplyr::bind_rows(Filter(Negate(is.null), out))
+  if (nrow(out) == 0) return(NULL)
+
+  out |>
+    dplyr::group_by(YEAR, MONTH, SOURCE) |>
+    dplyr::summarise(DAYS = dplyr::n_distinct(DAY), ROWS = dplyr::n(),
+                     .groups = "drop") |>
+    dplyr::mutate(
+      IN_MONTH = as.integer(lubridate::days_in_month(
+        as.Date(sprintf("%s-%s-01", YEAR, MONTH)))),
+      SHORT    = ifelse(DAYS < IN_MONTH, "yes", "")) |>
+    dplyr::arrange(YEAR, MONTH)
+}
+
+# =============================================================================
 # vra_fetch(from, to)
 #
 # One window, as a data frame. Returns an empty frame rather than failing when
