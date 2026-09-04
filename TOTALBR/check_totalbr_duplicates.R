@@ -389,17 +389,38 @@ check_totalbr_duplicates <- function(years    = NULL,
   pk_parts <- if (use_parts && length(src$parts) > 0) {
     message("Reading the month parts for the pk test ...")
     purrr::map(src$parts, function(f) {
-      x <- data.table::fread(file = f, sep = ";", select = c("pk", date_col),
+      # Look at the header BEFORE selecting. fread(select=) only warns about a
+      # column it cannot find -- "Column name 'pk' not found ... skipping" -- and
+      # then returns the rest, so a part written in another shape produced an
+      # empty pk test that read as "no duplicates" rather than as "not tested".
+      hdr  <- names(data.table::fread(file = f, sep = ";", nrows = 0L,
+                                      showProgress = FALSE))
+      want <- c("pk", date_col)
+      miss <- setdiff(want, hdr)
+      if (length(miss) > 0) {
+        message("  skipping ", basename(f), ": no column(s) ",
+                paste(miss, collapse = ", "),
+                ". It holds: ", paste(utils::head(hdr, 8), collapse = ", "),
+                if (length(hdr) > 8) ", ..." else "")
+        return(NULL)
+      }
+      x <- data.table::fread(file = f, sep = ";", select = want,
                              colClasses = "character", na.strings = "",
                              showProgress = FALSE)
       tibble::tibble(YEAR  = substr(x[[date_col]], 1, 4),
                      MONTH = substr(x[[date_col]], 6, 7),
                      pk    = x$pk)
-    }) |> purrr::list_rbind()
+    }) |> purrr::compact() |> purrr::list_rbind()
   } else NULL
 
   # a pk repeated ACROSS two month files is what an overlapping request window
   # produces, so the parts are pooled before the test rather than checked one by one
+  # NOT TESTED is not the same as NO DUPLICATES. If every part was skipped, say so
+  # rather than reporting a zero that means nothing.
+  if (use_parts && (is.null(pk_parts) || nrow(pk_parts) == 0))
+    message("SAME_PK_PARTS could not be measured: no month part carried both ",
+            "pk and ", date_col, ". The figure below is NA, not zero.")
+
   parts_pk <- if (!is.null(pk_parts) && nrow(pk_parts) > 0) {
     p <- pk_parts
     if (!is.null(years)) p <- p[p$YEAR %in% as.character(years), ]
