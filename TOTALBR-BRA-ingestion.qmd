@@ -517,20 +517,48 @@ take the first filled value everywhere else**. Nothing is lost either way.
 #| label: merge-pk-bra-totalbr
 #| eval: false
 
-# prepare_totalbr.R sources the other three in order, so one line is enough --
-# sourcing merge_totalbr_duplicates.R alone leaves totalbr_read_year() and
-# totalbr_normalise() undefined, or worse, at whatever version the session
-# already held
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# d is the RAW dataset: the rows as downloaded, with times parsed and pk
-# case-normalised, nothing filtered and nothing aggregated
+# STAGE ONE, in one call. This is the normal way to run it.
+totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
+                merge_flights = FALSE,
+                dedup_file = here::here("outputs", "totalbr-2026-01-dedup.csv"))
+```
+
+### What stage one does when `SAME_PK` is 0
+
+It still does most of its work. Only one of its three operations depends on a `pk` being
+repeated:
+
+| Operation | With `SAME_PK = 0` |
+| --- | --- |
+| `totalbr_normalise()` — `dh_inicio`, `dh_fim`, `dh_eobt`, `dh_eet` parsed to POSIXct, `pk` case-normalised | **does work** |
+| `totalbr_clean_units()` — the `li_*` lists made canonical: one separator, a unit listed twice in one row reduced to once | **does work** |
+| `totalbr_merge_duplicate_pk()` — rows sharing a `pk` collapsed | nothing to do |
+
+So `-dedup.csv` is not a copy of the raw file. It is the raw data with times that can be
+compared and unit lists that can be counted — which is what stage two consumes, and what any
+count of records should read.
+
+**And it is written even when nothing was collapsed**, so that "ran, found nothing" and
+"never ran" do not look the same on disk.
+
+### Running the steps one at a time
+
+Only when you want to stop between them and look at `d` — for the routine run, the single
+call above is the same work:
+
+```{r}
+#| label: merge-pk-bra-totalbr-steps
+#| eval: false
+
+source(here::here("TOTALBR", "prepare_totalbr.R"))
+
 d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
                                          raw_dir = bra_totalbr_raw_dir))
 d <- totalbr_clean_units(d)          # canonical li_* lists, before any grouping
 d <- totalbr_merge_duplicate_pk(d)   # adds N_PK_MERGED; deletes nothing
 
-# the resolved month, written out — semicolon-delimited like the raw files.
 # NEVER over a raw download's name: that file records what the API served.
 data.table::fwrite(d, here::here("outputs", "totalbr-2026-01-dedup.csv"),
                    sep = ";", na = "", quote = TRUE)
