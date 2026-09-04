@@ -545,6 +545,10 @@ totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
 #                    sep = ";", na = "", quote = TRUE)   # never a raw file's name
 ```
 
+> **Several months at once?** `totalbr_prepare_months(2026, months = 1:6, merge_flights = FALSE)`
+> — see [Many Months at Once]. It names the files itself, one `-dedup.csv` per month, and
+> skips a month already written.
+
 ### What stage one does when `SAME_PK` is 0
 
 It still does most of its work. Only one of its three operations depends on a `pk` being
@@ -809,10 +813,15 @@ source(here::here("TOTALBR", "prepare_totalbr.R"))
 # merged <- totalbr_merge_flights(d)             # stage two, TOTALBR_GAP_MIN
 ```
 
-### Every month, and the months joined
+## Many Months at Once
 
-One month is the working unit; the study period is many of them. Two functions cover it, and
-neither re-does a month already written:
+*Applies to both stages.* One month is the working unit; a study period is many of them, and
+neither function below re-does a month already written — so a run can be interrupted and
+picked up.
+
+`merge_flights = FALSE` runs **stage one alone** across every month asked for, writing one
+`-dedup.csv` each. That is the cheaper run, and the right one when records are what is being
+counted.
 
 ```{r}
 #| label: months-bra-totalbr
@@ -820,18 +829,20 @@ neither re-does a month already written:
 
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# every CLOSED month of the year, skipping what is already written.
-# THREE files per month: -dedup, -flights and -rebuilt.
-totalbr_prepare_months(2026, out_dir = here::here("outputs"),
+# STAGE ONE ONLY, January to June: one -dedup.csv per month, nothing else
+totalbr_prepare_months(2026, months = 1:6, merge_flights = FALSE,
+                       out_dir = here::here("outputs"),
                        raw_dir = bra_totalbr_raw_dir)
 
 # ---- variants, when you need them --------------------------------------------
 
+# both stages, every CLOSED month of the year.
+# THREE files per month: -dedup, -flights and -rebuilt.
+# totalbr_prepare_months(2026, out_dir = here::here("outputs"),
+#                        raw_dir = bra_totalbr_raw_dir)
+
 # just one month, when that is what changed
 # totalbr_prepare_months(2026, months = 2, raw_dir = bra_totalbr_raw_dir)
-
-# stage one only, every month
-# totalbr_prepare_months(2026, rebuilt = FALSE, raw_dir = bra_totalbr_raw_dir)
 
 # the months read back as one dataset, straddling flights rejoined
 # flights <- totalbr_bind_months(out_dir = here::here("outputs"))
