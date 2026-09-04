@@ -378,3 +378,148 @@ if (sys.nframe() == 0L) {
   args <- commandArgs(trailingOnly = TRUE)
   totalbr_prepare(if (length(args) == 0) NULL else as.integer(args))
 }
+
+
+# =============================================================================
+# THE TWO STAGES AS TWO FUNCTIONS
+#
+#   totalbr_stage1(2026, months = 1:6)   ->  outputs/totalbr-2026-01-dedup.csv ...
+#   totalbr_stage2(2026, months = 1:6)   ->  ...-flights.csv and ...-rebuilt.csv
+#
+# Stage two READS STAGE ONE'S FILES. It does not go back to the raw download, so
+# the file on disk is the actual input and can be inspected, replaced or handed
+# to someone else, and the work of stage one is not silently repeated.
+#
+# WHY TWO FUNCTIONS AND NOT ONE WITH A SWITCH
+# A flag that turns half a function off is a worse way to say "these are two
+# steps": the caller has to know which arguments belong to which half, and
+# stopping after the first reads as disabling something rather than as finishing.
+# Wanting only stage one means calling only stage one, and its output is a
+# complete, usable dataset -- the source with each row appearing once.
+# =============================================================================
+
+# the months to work on: the ones asked for, or every CLOSED month of the year
+.totalbr_months <- function(year, months) {
+  if (!is.null(months)) return(as.integer(months))
+  today <- Sys.Date()
+  y <- as.integer(format(today, "%Y")); m <- as.integer(format(today, "%m"))
+  if (year > y) integer(0) else if (year == y) seq_len(max(m - 1L, 0L)) else 1:12
+}
+
+.totalbr_out <- function(out_dir, year, month, what)
+  file.path(out_dir, sprintf("totalbr-%d-%02d-%s.csv", year, month, what))
+
+# =============================================================================
+# totalbr_stage1(years, months, ...)
+#
+# Read the raw download, parse the times, make the li_* unit lists canonical,
+# collapse rows sharing a pk. One -dedup.csv per month.
+#
+# The file is written whether or not anything was collapsed: "ran, found nothing"
+# and "never ran" must not look the same on disk.
+# =============================================================================
+totalbr_stage1 <- function(years   = NULL,
+                           months  = NULL,
+                           source  = c("csv", "parquet"),
+                           raw_dir = here::here("data-raw", "totalbr"),
+                           out_dir = here::here("outputs"),
+                           force   = FALSE,
+                           quiet   = FALSE) {
+  source <- match.arg(source)
+  if (is.null(years)) years <- if (exists("totalbr_data_years", inherits = TRUE))
+    get("totalbr_data_years", inherits = TRUE) else
+      as.integer(format(Sys.Date(), "%Y"))
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  written <- character(0)
+
+  for (yr in as.integer(years)) {
+    mos <- .totalbr_months(yr, months)
+    if (length(mos) == 0) { message("Year ", yr, ": no closed month yet."); next }
+    for (mo in mos) {
+      f <- .totalbr_out(out_dir, yr, mo, "dedup")
+      if (file.exists(f) && !force) {
+        message(sprintf("%d-%02d  stage 1 skip (%s)", yr, mo, basename(f)))
+        written <- c(written, f); next
+      }
+      message(sprintf("%d-%02d  stage 1 ...", yr, mo))
+      out <- totalbr_prepare(yr, month = mo, source = source, raw_dir = raw_dir,
+                             merge_flights = FALSE, dedup_file = f, quiet = quiet)
+      if (nrow(out) > 0) written <- c(written, f)
+    }
+  }
+  invisible(written)
+}
+
+# ---- read one stage-one file back, with real timestamps ---------------------
+# fwrite wrote the times as text; the flight merge needs them as instants again.
+totalbr_read_stage1 <- function(path) {
+  d <- tibble::as_tibble(data.table::fread(file = path, sep = ";",
+                                           na.strings = "", showProgress = FALSE,
+                                           fill = TRUE, header = TRUE))
+  for (nm in intersect(c("dt_dia", "dh_inicio", "dh_fim", "dh_eobt", "dh_eet"),
+                       names(d)))
+    if (!inherits(d[[nm]], "POSIXt")) d[[nm]] <- totalbr_parse_time(d[[nm]])
+  d
+}
+
+# =============================================================================
+# totalbr_stage2(years, months, ...)
+#
+# Take stage one's file for each month and merge the records of each flight into
+# one row. Two files out:
+#
+#   -flights.csv   the result
+#   -rebuilt.csv   ONLY the flights assembled from several records -- what this
+#                  stage changed, each row naming its sources in MERGED_PK so
+#                  they can be found again in the -dedup.csv it came from
+#
+# A month whose stage-one file is missing is reported and skipped: stage two has
+# no business reading the raw download.
+# =============================================================================
+totalbr_stage2 <- function(years   = NULL,
+                           months  = NULL,
+                           gap_min = TOTALBR_GAP_MIN,
+                           in_dir  = here::here("outputs"),
+                           out_dir = here::here("outputs"),
+                           force   = FALSE,
+                           quiet   = FALSE) {
+  if (is.null(years)) years <- if (exists("totalbr_data_years", inherits = TRUE))
+    get("totalbr_data_years", inherits = TRUE) else
+      as.integer(format(Sys.Date(), "%Y"))
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  written <- character(0)
+
+  for (yr in as.integer(years)) {
+    for (mo in .totalbr_months(yr, months)) {
+      src <- .totalbr_out(in_dir, yr, mo, "dedup")
+      f   <- .totalbr_out(out_dir, yr, mo, "flights")
+      fr  <- .totalbr_out(out_dir, yr, mo, "rebuilt")
+
+      if (!file.exists(src)) {
+        message(sprintf("%d-%02d  stage 2 skip: no %s. Run totalbr_stage1() first.",
+                        yr, mo, basename(src)))
+        next
+      }
+      if (file.exists(f) && !force) {
+        message(sprintf("%d-%02d  stage 2 skip (%s)", yr, mo, basename(f)))
+        written <- c(written, f); next
+      }
+      message(sprintf("%d-%02d  stage 2 from %s ...", yr, mo, basename(src)))
+      d   <- totalbr_read_stage1(src)
+      out <- totalbr_merge_flights(d, gap_min = gap_min)
+
+      .totalbr_guard_name(f); .totalbr_guard_name(fr)
+      data.table::fwrite(out, f, sep = ";", na = "", quote = TRUE)
+      reb <- out[!is.na(out$N_MERGED) & out$N_MERGED > 1L, , drop = FALSE]
+      data.table::fwrite(reb, fr, sep = ";", na = "", quote = TRUE)
+
+      message(sprintf("    %s row(s) in, %s flight(s) out; %s rebuilt from %s record(s)",
+                      format(nrow(d), big.mark = ","),
+                      format(nrow(out), big.mark = ","),
+                      format(nrow(reb), big.mark = ","),
+                      format(sum(reb$N_MERGED), big.mark = ",")))
+      written <- c(written, f)
+    }
+  }
+  invisible(written)
+}
