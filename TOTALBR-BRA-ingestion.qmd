@@ -42,11 +42,32 @@ on the way in would discard data that could only be recovered by downloading the
 again.
 
 ::: {.callout-important}
+
 ## Prerequisites to run this document
 Neither the parquet archive nor the CSVs are shipped with the repository. Put the archive
 in `data-raw/totalbr/` (or point `BRA_TOTALBR_PARQUET` at it if you keep it elsewhere —
 it is large), and get the remaining years with the download chunk below. Until then, the
 tables render with a short notice instead of failing.
+:::
+
+### On a corporate network
+If the API answers in a browser but R fails with `CONNECT tunnel failed, response 407` — or
+the vaguer `Failure when receiving data from the peer` — the proxy is refusing an
+unauthenticated request. The browser authenticates with the logged-in account and never says
+so; curl, under `httr2`, does not try unless told how. Write the settings once:
+
+```{r}
+#| label: setup-env-proxy
+#| eval: false
+
+source(here::here("setup_renviron.R"))
+setup_renviron()   # creates/updates .Renviron with BRA_PROXY, BRA_PROXY_AUTH, ...
+```
+
+and fill in, e.g. `BRA_PROXY=http://proxy.example.int:9512`, `BRA_PROXY_AUTH=ntlm`,
+`BRA_PROXY_USERPWD=:`. On Windows, `netsh winhttp show proxy` shows the address; the bare
+`:` authenticates as the logged-in account, so no password is stored anywhere. Restart R
+afterwards — `.Renviron` is read at startup only.
 :::
 
 ## Getting the Source Data
@@ -88,25 +109,6 @@ Years you already hold as files go straight into `data-raw/totalbr/` with the sa
 (`totalbr_2019.csv`); the downloader inspects what each covers and fetches only the gaps.
 
 ::: {.callout-note}
-## On a corporate network
-If the API answers in a browser but R fails with `CONNECT tunnel failed, response 407` — or
-the vaguer `Failure when receiving data from the peer` — the proxy is refusing an
-unauthenticated request. The browser authenticates with the logged-in account and never says
-so; curl, under `httr2`, does not try unless told how. Write the settings once:
-
-```{r}
-#| label: setup-env-proxy
-#| eval: false
-
-source(here::here("setup_renviron.R"))
-setup_renviron()   # creates/updates .Renviron with BRA_PROXY, BRA_PROXY_AUTH, ...
-```
-
-and fill in, e.g. `BRA_PROXY=http://proxy.example.int:9512`, `BRA_PROXY_AUTH=ntlm`,
-`BRA_PROXY_USERPWD=:`. On Windows, `netsh winhttp show proxy` shows the address; the bare
-`:` authenticates as the logged-in account, so no password is stored anywhere. Restart R
-afterwards — `.Renviron` is read at startup only.
-:::
 
 ```{r}
 #| label: download-bra-totalbr-data
@@ -353,7 +355,22 @@ source(here::here("TOTALBR", "download_totalbr.R"))
 download_totalbr(<the offending years>, out_dir = bra_totalbr_raw_dir, force = TRUE)
 ```
 
-## Two Validations, One Month at a Time
+## Resolving the Data — Two Stages, One Month at a Time
+
+The pipeline has **two stages, and each ends in a file of its own**:
+
+| Stage | What it settles | It writes |
+| --- | --- | --- |
+| **One — the same `pk` twice** | the same row filed more than once | `totalbr-<year>-<month>-dedup.csv` |
+| **Two — one flight, several rows** *(optional)* | the records of one flight becoming one flight | `totalbr-<year>-<month>-flights.csv`, and `-rebuilt.csv` holding only what it assembled |
+
+**Stage two is optional and stage one is not.** Stage one gives the source with each row
+appearing once, which is the right dataset for anything counting *records*. Stage two turns
+records into *flights*, which is a different question — and if it is not the question being
+asked, stopping after stage one is the correct thing to do, not a shortcut.
+
+The `-dedup.csv` is written whether or not anything was collapsed: "no duplicates found" and
+"the step never ran" must not look the same on disk.
 
 Everything from here on works on **one month**. That is not a limitation to apologise for, it
 is the unit the checks are meant to run in: a month of the API download reads in about ten
@@ -401,7 +418,7 @@ In practice neither resolving function is called by hand: `totalbr_prepare()` ru
 `totalbr_drop_duplicate_pk()` still exists but is **not** the path — it is kept only to
 reproduce the old behaviour, and it is what loses the 162 `dh_eet` values measured below.
 
-## Validation 1 — The Same `pk` Twice
+## Stage One — The Same `pk` Twice
 
 Nothing else: does a `pk` appear more than once? One number answers it, and no judgement is
 needed to *find* them. What to do with them turned out to need a rule — see below.
@@ -515,7 +532,7 @@ d <- totalbr_merge_duplicate_pk(d)   # adds N_PK_MERGED; deletes nothing
 
 # the resolved month, written out — semicolon-delimited like the raw files.
 # NEVER over a raw download's name: that file records what the API served.
-data.table::fwrite(d, here::here("outputs", "totalbr-2026-01-pk-resolved.csv"),
+data.table::fwrite(d, here::here("outputs", "totalbr-2026-01-dedup.csv"),
                    sep = ";", na = "", quote = TRUE)
 ```
 
@@ -532,7 +549,72 @@ The API download shows `SAME_PK` of zero for every month tested, so this is an a
 property so far. It is measured on the archive and applied to both, because a rule that keeps
 information cannot be wrong on a source that never triggers it.
 
-## Validation 2 — One Flight, Several Rows
+## Stage Two — Rebuilding the Flight
+
+*Optional.* Skip it and the `-dedup.csv` from stage one is your dataset — the source with
+each row appearing once, which is what anything counting **records** should use.
+
+This stage answers a different question: which of those records are the **same flight**. It
+writes two files. `-flights.csv` is the result; `-rebuilt.csv` holds **only** the flights it
+assembled from several records — the evidence for what changed, with `MERGED_PK` on each row
+naming the source records so they can be found again in the `-dedup.csv`.
+
+The rows of one flight are found by **key plus time chaining**:
+
+- same `co_indicativo`, `co_addep` and `co_addes`; **and**
+- the record starts within the tolerance of the **latest end already in the group**, where
+  the tolerance depends on **who reported**:
+
+| The two records list | Tolerance | Because |
+| --- | --- | --- |
+| **different** unit sets | `gap_min` = 60 min | the flight is crossing sectors, and each unit sees it in turn |
+| the **same** unit set | `same_unit_min` = 1 min | the same observer filing twice is one passage recorded twice, seconds apart |
+
+Chaining on the running end — not on the group's first record — is what matters. PRATC on
+2026-01-01 has four records: APPSP at 05:43:04, APPRJ at 06:07:03, **APPRJ again at
+06:07:04**, and ACCCW|APPVT tracking 06:21–06:59. One flight, joined because 05:43 and 06:07
+are 24 minutes apart and the two APPRJ records are one second apart.
+
+### Why the tolerance is not one number
+
+PRMES the same day is 115 records, every one listing APPPS alone — a helicopter shuttling
+SBPS ↔ SD49, its hops 10 to 45 minutes apart. Under a single 60-minute tolerance the whole
+day chained into **one** flight: each hop starts within `gap_min` of the one before, and a
+zero-duration row makes the group's running end its last *start*, so nothing ever broke the
+chain.
+
+No single tolerance separates the two cases, and January's data says why. The links whose
+records overlap on a unit decay smoothly — 208, 152, 98, 68, 49, 35, 25, 23, 15.5, 13 links
+per minute — with no valley to cut at. There cannot be one: **15 minutes apart is a new leg
+for a helicopter and the same flight for an airliner.**
+
+What does separate them is the *scale* at which one observer repeats itself. Two captures of
+one passage by the same units are **seconds** apart; two legs are **tens of minutes** apart.
+So the tight tolerance applies only where the unit sets are equal.
+
+> **Equal sets, not overlapping ones.** A record is not one unit's view — many carry two to
+> six — and a unit covering successive sectors appears in consecutive records of one flight.
+> Refusing every link whose records shared *any* unit split PRATC in two, at the APPRJ it has
+> in common with the ACCCW|APPVT track.
+
+> `same_unit_min` is the width of a duplicate report, **not a turnaround time**. Raising it
+> towards one re-creates the PRMES defect. It lives in `merge_totalbr_duplicates.R`, next to
+> `TOTALBR_GAP_MIN`, so both are changed with the same deliberation.
+
+
+| Field | Value in the merged row |
+| --- | --- |
+| `dh_inicio`, `dt_dia` | from the **earliest** record |
+| `dh_fim` | from the **latest** record |
+| `li_orgaos` and the other `li_*` | the **union** of every record's values |
+| `co_matricula`, aerodromes, everything else | the first value actually filled in — a blank never overwrites a value |
+
+`li_orgaos` has to be the union: it is precisely what differs between the records, so keeping
+one value would erase the units whose reports justified merging. Three columns are added —
+`N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a merged row
+can always be traced back.
+
+### Measuring it: one flight, several rows
 
 Everything that is not an identical `pk` lands here, and here there **is** judgement to make.
 Two rows can be the same movement recorded twice, or one flight handed from sector to sector,
@@ -608,63 +690,6 @@ route, two genuine flights do not.
 which is what makes it usable as evidence, and what ICEA need to find the records on their
 side.
 
-### Rebuilding the flight
-
-The rows of one flight are found by **key plus time chaining**:
-
-- same `co_indicativo`, `co_addep` and `co_addes`; **and**
-- the record starts within the tolerance of the **latest end already in the group**, where
-  the tolerance depends on **who reported**:
-
-| The two records list | Tolerance | Because |
-| --- | --- | --- |
-| **different** unit sets | `gap_min` = 60 min | the flight is crossing sectors, and each unit sees it in turn |
-| the **same** unit set | `same_unit_min` = 1 min | the same observer filing twice is one passage recorded twice, seconds apart |
-
-Chaining on the running end — not on the group's first record — is what matters. PRATC on
-2026-01-01 has four records: APPSP at 05:43:04, APPRJ at 06:07:03, **APPRJ again at
-06:07:04**, and ACCCW|APPVT tracking 06:21–06:59. One flight, joined because 05:43 and 06:07
-are 24 minutes apart and the two APPRJ records are one second apart.
-
-### Why the tolerance is not one number
-
-PRMES the same day is 115 records, every one listing APPPS alone — a helicopter shuttling
-SBPS ↔ SD49, its hops 10 to 45 minutes apart. Under a single 60-minute tolerance the whole
-day chained into **one** flight: each hop starts within `gap_min` of the one before, and a
-zero-duration row makes the group's running end its last *start*, so nothing ever broke the
-chain.
-
-No single tolerance separates the two cases, and January's data says why. The links whose
-records overlap on a unit decay smoothly — 208, 152, 98, 68, 49, 35, 25, 23, 15.5, 13 links
-per minute — with no valley to cut at. There cannot be one: **15 minutes apart is a new leg
-for a helicopter and the same flight for an airliner.**
-
-What does separate them is the *scale* at which one observer repeats itself. Two captures of
-one passage by the same units are **seconds** apart; two legs are **tens of minutes** apart.
-So the tight tolerance applies only where the unit sets are equal.
-
-> **Equal sets, not overlapping ones.** A record is not one unit's view — many carry two to
-> six — and a unit covering successive sectors appears in consecutive records of one flight.
-> Refusing every link whose records shared *any* unit split PRATC in two, at the APPRJ it has
-> in common with the ACCCW|APPVT track.
-
-> `same_unit_min` is the width of a duplicate report, **not a turnaround time**. Raising it
-> towards one re-creates the PRMES defect. It lives in `merge_totalbr_duplicates.R`, next to
-> `TOTALBR_GAP_MIN`, so both are changed with the same deliberation.
-
-
-| Field | Value in the merged row |
-| --- | --- |
-| `dh_inicio`, `dt_dia` | from the **earliest** record |
-| `dh_fim` | from the **latest** record |
-| `li_orgaos` and the other `li_*` | the **union** of every record's values |
-| `co_matricula`, aerodromes, everything else | the first value actually filled in — a blank never overwrites a value |
-
-`li_orgaos` has to be the union: it is precisely what differs between the records, so keeping
-one value would erase the units whose reports justified merging. Three columns are added —
-`N_MERGED`, `SPAN_MIN` and `MERGED_PK` (every source `pk`, pipe-separated) — so a merged row
-can always be traced back.
-
 ### Two ways to run it, and when to use which
 
 The next two chunks do **exactly the same work**. The difference is whether it happens in one
@@ -704,11 +729,23 @@ jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir)
 # the whole year, when that is what is wanted
 #flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir)
 
-# both validations resolved, straight to a NEW file
-# gap_min is not passed: the default is TOTALBR_GAP_MIN, the same value the line
-# above used, so the file written matches the dataset just inspected
+# BOTH STAGES, straight to files. gap_min is not passed: the default is
+# TOTALBR_GAP_MIN, the same value the line above used, so what is written matches
+# the dataset just inspected.
+#
+#   out_file      the flights
+#   rebuilt_file  ONLY the flights assembled from several records -- the evidence
+#                 for what stage two changed, each row naming its sources in
+#                 MERGED_PK so they can be found again in the dedup file
 totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
-                out_file = here::here("outputs", "totalbr-2026-01-flights.csv"))
+                dedup_file   = here::here("outputs", "totalbr-2026-01-dedup.csv"),
+                out_file     = here::here("outputs", "totalbr-2026-01-flights.csv"),
+                rebuilt_file = here::here("outputs", "totalbr-2026-01-rebuilt.csv"))
+
+# STAGE ONE ONLY, when records are what is being counted and flights are not
+totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
+                merge_flights = FALSE,
+                dedup_file = here::here("outputs", "totalbr-2026-01-dedup.csv"))
 
 # check one aircraft end to end
 jan |>
@@ -759,9 +796,13 @@ neither re-does a month already written:
 
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# every CLOSED month of the year, one file each, skipping what is already there
+# every CLOSED month of the year, skipping what is already there.
+# THREE files per month: -dedup, -flights and -rebuilt.
 totalbr_prepare_months(2026, out_dir = here::here("outputs"),
                        raw_dir = bra_totalbr_raw_dir)
+
+# stage one only, for every month
+totalbr_prepare_months(2026, rebuilt = FALSE, raw_dir = bra_totalbr_raw_dir)
 
 # just one month, when that is what changed
 totalbr_prepare_months(2026, months = 2, raw_dir = bra_totalbr_raw_dir)
@@ -805,6 +846,7 @@ The tolerance to avoid is the one where the span starts climbing while the fligh
 moves: that is legs being swallowed, not records being joined.
 
 ::: {.callout-warning}
+
 ## Measured on the API download
 The rules were read off the CSVs. The **parquet archive has not been analysed the same way**
 and may record flights differently. Measure it first, and write the result to a new file: a
@@ -904,7 +946,6 @@ records — which is the form ICEA need it in.
 
 Set against `NEAR_DUP` at 4,289 for the same month, these are not overlapping figures and must
 not be added or compared. They count different faults.
-
 
 ## Traffic Profile
 
