@@ -140,8 +140,12 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL,
   }
 
   if (is.null(d) || nrow(d) == 0) return(NULL)
-  # one shape for MONTH whichever branch produced it
-  if (!is.null(d$MONTH)) d$MONTH <- sprintf("%02d", as.integer(d$MONTH))
+  # one shape for MONTH whichever branch produced it.
+  # Tested by NAME, not with d$MONTH: on a tibble, reaching for a column that is
+  # not there warns ("Unknown or uninitialised column"), and MONTH is absent
+  # whenever no month filter was asked for -- so the ordinary call printed a
+  # warning about a column it had deliberately not created.
+  if ("MONTH" %in% names(d)) d$MONTH <- sprintf("%02d", as.integer(d$MONTH))
   d <- totalbr_normalise(d)
   d$SOURCE <- basename(path)
   d
