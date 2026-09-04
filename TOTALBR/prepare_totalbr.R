@@ -214,9 +214,13 @@ totalbr_prepare <- function(years    = NULL,
 #   <out_dir>/totalbr-<year>-<month>-rebuilt.csv   only the flights that were
 #                                                  assembled from several records
 #
-# dedup = FALSE or rebuilt = FALSE skips the corresponding file. The flights file
-# is what a month is judged on -- it is written last, so its presence means the
-# whole month got through
+# merge_flights = FALSE runs STAGE ONE ONLY across every month asked for: each
+# month gets its -dedup.csv and nothing else. That is the right run when records
+# are what is being counted, and it is much the cheaper of the two.
+#
+# dedup = FALSE or rebuilt = FALSE skips the corresponding file. A month is judged
+# on the last file its run writes -- the flights file normally, the dedup file
+# when stage two is off -- so its presence means the whole month got through
 #
 #   totalbr_prepare_months(2026)                  # every CLOSED month of 2026
 #   totalbr_prepare_months(2026, months = 2)      # just February
@@ -232,6 +236,7 @@ totalbr_prepare <- function(years    = NULL,
 # =============================================================================
 totalbr_prepare_months <- function(years    = NULL,
                                    months   = NULL,
+                                   merge_flights = TRUE,
                                    dedup    = TRUE,
                                    rebuilt  = TRUE,
                                    out_dir  = here::here("outputs"),
@@ -274,20 +279,25 @@ totalbr_prepare_months <- function(years    = NULL,
       fd <- file.path(out_dir, sprintf("totalbr-%d-%02d-dedup.csv",   yr, mo))
       fr <- file.path(out_dir, sprintf("totalbr-%d-%02d-rebuilt.csv", yr, mo))
 
-      # judged on the flights file: it is written last, so its presence means the
-      # whole month got through
-      if (file.exists(f) && !force) {
-        message(sprintf("%d-%02d  skip (already written: %s)", yr, mo, basename(f)))
-        written <- c(written, f); next
+      # A month is judged on the LAST file its run writes -- the flights file
+      # normally, the dedup file when stage two is switched off. Judging on a
+      # file the run was never going to write would re-do every month forever.
+      done <- if (merge_flights) f else fd
+
+      if (file.exists(done) && !force) {
+        message(sprintf("%d-%02d  skip (already written: %s)", yr, mo,
+                        basename(done)))
+        written <- c(written, done); next
       }
       message(sprintf("%d-%02d  preparing ...", yr, mo))
       out <- totalbr_prepare(yr, month = mo, gap_min = gap_min, source = source,
                              raw_dir = raw_dir,
-                             out_file     = f,
+                             merge_flights = merge_flights,
+                             out_file     = if (merge_flights) f else NULL,
                              dedup_file   = if (dedup)   fd else NULL,
-                             rebuilt_file = if (rebuilt) fr else NULL,
+                             rebuilt_file = if (merge_flights && rebuilt) fr else NULL,
                              quiet = quiet)
-      if (nrow(out) > 0) written <- c(written, f)
+      if (nrow(out) > 0) written <- c(written, done)
     }
   }
   invisible(written)
