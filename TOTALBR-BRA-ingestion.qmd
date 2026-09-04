@@ -519,10 +519,30 @@ take the first filled value everywhere else**. Nothing is lost either way.
 
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# STAGE ONE, in one call. This is the normal way to run it.
+# ---- STAGE ONE ---------------------------------------------------------------
 totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
                 merge_flights = FALSE,
                 dedup_file = here::here("outputs", "totalbr-2026-01-dedup.csv"))
+
+# ---- variants, when you need them --------------------------------------------
+
+# the whole year instead of one month
+# totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir, merge_flights = FALSE,
+#                 dedup_file = here::here("outputs", "totalbr-2026-dedup.csv"))
+
+# the parquet archive instead of the API download
+# totalbr_prepare(2025, month = 1, source = "parquet",
+#                 raw_dir = bra_totalbr_raw_dir, merge_flights = FALSE,
+#                 dedup_file = here::here("outputs", "totalbr-2025-01-dedup.csv"))
+
+# the same three steps written out, for stopping between them to look at `d`.
+# Same work as the call above; it just keeps the intermediate in the session.
+# d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
+#                                          raw_dir = bra_totalbr_raw_dir))
+# d <- totalbr_clean_units(d)          # canonical li_* lists, before any grouping
+# d <- totalbr_merge_duplicate_pk(d)   # adds N_PK_MERGED; deletes nothing
+# data.table::fwrite(d, here::here("outputs", "totalbr-2026-01-dedup.csv"),
+#                    sep = ";", na = "", quote = TRUE)   # never a raw file's name
 ```
 
 ### What stage one does when `SAME_PK` is 0
@@ -542,27 +562,6 @@ count of records should read.
 
 **And it is written even when nothing was collapsed**, so that "ran, found nothing" and
 "never ran" do not look the same on disk.
-
-### Running the steps one at a time
-
-Only when you want to stop between them and look at `d` — for the routine run, the single
-call above is the same work:
-
-```{r}
-#| label: merge-pk-bra-totalbr-steps
-#| eval: false
-
-source(here::here("TOTALBR", "prepare_totalbr.R"))
-
-d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
-                                         raw_dir = bra_totalbr_raw_dir))
-d <- totalbr_clean_units(d)          # canonical li_* lists, before any grouping
-d <- totalbr_merge_duplicate_pk(d)   # adds N_PK_MERGED; deletes nothing
-
-# NEVER over a raw download's name: that file records what the API served.
-data.table::fwrite(d, here::here("outputs", "totalbr-2026-01-dedup.csv"),
-                   sep = ";", na = "", quote = TRUE)
-```
 
 `N_PK_MERGED` says how many source rows each row stands for, so the written file carries its
 own evidence: `N_PK_MERGED > 1` is exactly the set that had a repeated `pk`. Write it to
@@ -751,34 +750,34 @@ records, and what comes back is the dataset to work on:
 
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# the working unit: one month
-jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir)
-
-# the whole year, when that is what is wanted
-#flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir)
-
-# BOTH STAGES, straight to files. gap_min is not passed: the default is
-# TOTALBR_GAP_MIN, the same value the line above used, so what is written matches
-# the dataset just inspected.
+# ---- STAGE TWO ---------------------------------------------------------------
+# Both stages, one month, straight to files. gap_min is not passed: the default
+# is TOTALBR_GAP_MIN, so what is written matches what the sections above measured.
 #
+#   dedup_file    stage one's result
 #   out_file      the flights
 #   rebuilt_file  ONLY the flights assembled from several records -- the evidence
-#                 for what stage two changed, each row naming its sources in
+#                 for what this stage changed, each row naming its sources in
 #                 MERGED_PK so they can be found again in the dedup file
-totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
-                dedup_file   = here::here("outputs", "totalbr-2026-01-dedup.csv"),
-                out_file     = here::here("outputs", "totalbr-2026-01-flights.csv"),
-                rebuilt_file = here::here("outputs", "totalbr-2026-01-rebuilt.csv"))
+jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
+                       dedup_file   = here::here("outputs", "totalbr-2026-01-dedup.csv"),
+                       out_file     = here::here("outputs", "totalbr-2026-01-flights.csv"),
+                       rebuilt_file = here::here("outputs", "totalbr-2026-01-rebuilt.csv"))
 
-# STAGE ONE ONLY, when records are what is being counted and flights are not
-totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir,
-                merge_flights = FALSE,
-                dedup_file = here::here("outputs", "totalbr-2026-01-dedup.csv"))
+# ---- variants, when you need them --------------------------------------------
+
+# the whole year in one go
+# flights <- totalbr_prepare(2026, raw_dir = bra_totalbr_raw_dir,
+#                            out_file = here::here("outputs", "totalbr-2026-flights.csv"))
+
+# in memory only, writing nothing
+# jan <- totalbr_prepare(2026, month = 1, raw_dir = bra_totalbr_raw_dir)
 
 # check one aircraft end to end
-jan |>
-  dplyr::filter(co_indicativo == "CMP205") |>
-  dplyr::select(co_indicativo , co_addep, co_addes, dh_inicio, dh_fim, ds_rota , SPAN_MIN, N_MERGED, li_orgaos)
+# jan |>
+#   dplyr::filter(co_indicativo == "CMP205") |>
+#   dplyr::select(co_indicativo, co_addep, co_addes, dh_inicio, dh_fim,
+#                 ds_rota, SPAN_MIN, N_MERGED, li_orgaos)
 ```
 
 It prints what each step did — rows read, rows dropped as a repeated `pk`, records absorbed
@@ -792,25 +791,22 @@ Renaming columns, filtering to the study airports, deriving metrics: all of that
 refuses a raw download's file name — a download records what the API served and is not edited
 in place.
 
-The individual steps stay available for when something needs to be looked at on its own:
+The four steps written out, for when one of them needs to be looked at on its own. Same work
+as the call above — it just leaves the intermediate `d` in the session:
 
 ```{r}
 #| label: merge-bra-totalbr-steps
 #| eval: false
 
-# prepare_totalbr.R sources the other three in order, so one line is enough --
-# sourcing merge_totalbr_duplicates.R alone leaves totalbr_read_year() and
-# totalbr_normalise() undefined, or worse, at whatever version the session
-# already held
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
 # d is the RAW dataset: the rows as downloaded, with times parsed and pk
 # case-normalised, nothing filtered and nothing aggregated
-d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
-                                         raw_dir = bra_totalbr_raw_dir))
-d <- totalbr_clean_units(d)                        # canonical li_* lists
-d <- totalbr_merge_duplicate_pk(d)                 # validation 1
-merged <- totalbr_merge_flights(d)                 # validation 2, TOTALBR_GAP_MIN
+# d <- totalbr_normalise(totalbr_read_year(2026, month = 1, source = "csv",
+#                                          raw_dir = bra_totalbr_raw_dir))
+# d <- totalbr_clean_units(d)                    # canonical li_* lists
+# d <- totalbr_merge_duplicate_pk(d)             # stage one
+# merged <- totalbr_merge_flights(d)             # stage two, TOTALBR_GAP_MIN
 ```
 
 ### Every month, and the months joined
@@ -824,19 +820,21 @@ neither re-does a month already written:
 
 source(here::here("TOTALBR", "prepare_totalbr.R"))
 
-# every CLOSED month of the year, skipping what is already there.
+# every CLOSED month of the year, skipping what is already written.
 # THREE files per month: -dedup, -flights and -rebuilt.
 totalbr_prepare_months(2026, out_dir = here::here("outputs"),
                        raw_dir = bra_totalbr_raw_dir)
 
-# stage one only, for every month
-totalbr_prepare_months(2026, rebuilt = FALSE, raw_dir = bra_totalbr_raw_dir)
+# ---- variants, when you need them --------------------------------------------
 
 # just one month, when that is what changed
-totalbr_prepare_months(2026, months = 2, raw_dir = bra_totalbr_raw_dir)
+# totalbr_prepare_months(2026, months = 2, raw_dir = bra_totalbr_raw_dir)
 
-# the months read back as one dataset
-flights <- totalbr_bind_months(out_dir = here::here("outputs"))
+# stage one only, every month
+# totalbr_prepare_months(2026, rebuilt = FALSE, raw_dir = bra_totalbr_raw_dir)
+
+# the months read back as one dataset, straddling flights rejoined
+# flights <- totalbr_bind_months(out_dir = here::here("outputs"))
 ```
 
 `totalbr_prepare_months()` stops at the **last closed month**: the current one is still
