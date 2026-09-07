@@ -8,13 +8,11 @@
 #   export_asma_pbwg()                      # every year present
 #   export_asma_pbwg(years = 2026)          # just one
 #
-# Output: outputs/asma/BRA-airport-xsma-<ring>-<year>.csv
+# Output: outputs/asma/BRA-airport-xsma-<year>.csv, named the way PBWG names the
+# other members' files (SIN-airport-xsma-2026.csv).
 #
-# The name follows the PBWG convention seen on the other members' files
-# (SIN-airport-xsma-2026.csv), with the ring inserted -- see below for why it
-# cannot be dropped.
-#
-#   ICAO, DATE, PHASE, RWY, N_VALID, TOTAL_TIME, TOTAL_REF_TIME, TOTAL_ADD_TIME
+#   ICAO, DATE, PHASE, RWY, RANGE, N_VALID, TOTAL_TIME, TOTAL_REF_TIME,
+#   TOTAL_ADD_TIME
 #
 # THE NUMBERS ARE OURS, NOT THE SUPPLIED ONES.
 # The source carries Brazil's own `desimp` and `kpi08`, and they are kept in the
@@ -25,13 +23,13 @@
 # the reference on CLASS, theirs does not -- so mixing them in one column would
 # produce a file nobody could reconcile.
 #
-# ONE FILE PER RING, and this is not negotiable in code.
-# The requested columns carry no RANGE, but C40 and C100 measure different
-# distances -- about ten minutes apart in this source -- so a row summing both
-# describes the ring mix rather than the operation. Rather than pool them into a
-# column that cannot say which is which, each ring gets its own file and says so
-# in its name. If PBWG wants a single file, add RANGE as a column; do not add the
-# rings together.
+# ONE FILE PER YEAR, WITH RANGE AS A COLUMN.
+# C40 and C100 measure different distances -- about ten minutes apart in this
+# source -- so a row summing both would describe the ring mix rather than the
+# operation, and a year whose traffic shifted between rings would look like a
+# year whose performance changed. RANGE therefore stays in the grouping: the two
+# rings share a file but never a row, and any reader aggregating this file must
+# keep them apart.
 #
 # WHAT IS AGGREGATED AWAY
 # The analytic table is one row per ICAO/PHASE/DATE/RANGE/CLASS/RWY/SECTOR_GROUP.
@@ -74,25 +72,29 @@ export_asma_pbwg <- function(years    = NULL,
 
   written <- character(0)
   for (yr in sort(unique(d$YEAR))) {
-    for (rg in sort(unique(d$RANGE[d$YEAR == yr]))) {
-      out <- d |>
-        filter(YEAR == yr, RANGE == rg) |>
-        group_by(ICAO, DATE, PHASE, RWY) |>
-        summarise(N_VALID        = sum(MVTS_VALID),
-                  TOTAL_TIME     = round(sum(TOT_ASMA), 4),
-                  TOTAL_REF_TIME = round(sum(TOT_REF), 4),
-                  TOTAL_ADD_TIME = round(sum(TOT_ADD_TIME), 4),
-                  .groups = "drop") |>
-        arrange(ICAO, DATE, RWY)
+    out <- d |>
+      filter(YEAR == yr) |>
+      group_by(ICAO, DATE, PHASE, RWY, RANGE) |>
+      summarise(N_VALID        = sum(MVTS_VALID),
+                TOTAL_TIME     = round(sum(TOT_ASMA), 4),
+                TOTAL_REF_TIME = round(sum(TOT_REF), 4),
+                TOTAL_ADD_TIME = round(sum(TOT_ADD_TIME), 4),
+                .groups = "drop") |>
+      arrange(ICAO, DATE, RWY, RANGE)
 
-      f <- file.path(out_dir, sprintf("BRA-airport-xsma-%s-%s.csv", rg, yr))
-      readr::write_csv(out, f, na = "")
-      written <- c(written, f)
-      if (!quiet)
-        message(sprintf("%s: %s row(s), %s movement(s), %.3f min/movement",
-                        basename(f), format(nrow(out), big.mark = ","),
-                        format(sum(out$N_VALID), big.mark = ","),
-                        sum(out$TOTAL_ADD_TIME) / sum(out$N_VALID)))
+    f <- file.path(out_dir, sprintf("BRA-airport-xsma-%s.csv", yr))
+    readr::write_csv(out, f, na = "")
+    written <- c(written, f)
+    if (!quiet) {
+      # per ring, because a single figure over both would be the very average
+      # this file is shaped to prevent
+      per <- out |> group_by(RANGE) |>
+        summarise(mv = sum(N_VALID),
+                  add = sum(TOTAL_ADD_TIME) / sum(N_VALID), .groups = "drop")
+      message(sprintf("%s: %s row(s)", basename(f), format(nrow(out), big.mark = ",")))
+      for (i in seq_len(nrow(per)))
+        message(sprintf("    %-5s %s movement(s), %.3f min/movement",
+                        per$RANGE[i], format(per$mv[i], big.mark = ","), per$add[i]))
     }
   }
   invisible(written)
