@@ -715,6 +715,63 @@ Before treating the output as final, confirm with DECEA/ICEA:
 4. Whether any DEP/DSMA (departure) evidence exists; these files are arrival-only, so a
    separate DSMA source is still needed for the departure side.
 
+## The PBWG Deliverable
+
+One file per year, in the columns PBWG asks for and named the way the other members name
+theirs (`SIN-airport-xsma-2026.csv`):
+
+```
+outputs/asma/BRA-airport-xsma-2024.csv
+outputs/asma/BRA-airport-xsma-2025.csv
+outputs/asma/BRA-airport-xsma-2026.csv
+```
+
+| Column | What it holds |
+| --- | --- |
+| `ICAO`, `DATE`, `PHASE`, `RWY` | the aerodrome, the day, the phase, the runway |
+| `RANGE` | the ASMA ring — see below |
+| `N_VALID` | movements with a reference, i.e. the ones the other three columns are over |
+| `TOTAL_TIME` | observed ASMA transit, summed |
+| `TOTAL_REF_TIME` | **our** recomputed reference, summed |
+| `TOTAL_ADD_TIME` | `TOTAL_TIME` − `TOTAL_REF_TIME` |
+
+```{r}
+#| label: export-bra-asma-pbwg
+#| eval: false
+
+source(here::here("KPI08", "export_asma_pbwg.R"))
+export_asma_pbwg()            # every year present in the analytic table
+
+# ---- variants, when you need them --------------------------------------------
+# export_asma_pbwg(2026)                                  # a single year
+# export_asma_pbwg(out_dir = here::here("outputs", "pbwg"))
+```
+
+**The numbers are the ones recomputed here.** Brazil's supplied `desimp` and `kpi08` stay in
+the analytic table as `TOT_BRA_REF` / `TOT_BRA_KPI08` for validation and reach none of these
+columns. The two references are built on different keys — ours includes `CLASS`, the supplied
+one does not — so a file mixing them could not be reconciled by whoever receives it.
+
+**The rings share a file but never a row.** `RANGE` stays in the grouping because C40 and
+C100 are about ten minutes apart in this source: a row summing both would make a year whose
+traffic shifted between rings look like a year whose performance changed. Anyone aggregating
+this file has to keep them apart.
+
+::: {.callout-important}
+## Send the coverage with the file
+`N_VALID` is the numerator of the coverage and the file carries no denominator, so the
+recipient cannot work out how much traffic is behind it. Roughly a fifth is not:
+**19.1% excluded in 2024, 20.3% in 2025, 16.6% in 2026**, almost entirely for want of an
+entry sector in the source.
+
+Two years compared without that are two different slices of traffic compared as if they were
+the same one. See [Coverage — how much of the traffic the metric actually covers].
+:::
+
+> **Still in the file:** the ~600 movements on runway designations that match no runway at
+> the aerodrome (`06L` at SBBR and the like). They are 0.02% and move nothing, but they are
+> there, and their reference was built from themselves. See the open points.
+
 ## Dashboard
 
 `kpi08.html` is the interactive companion to this document: headline tiles, additional
