@@ -8,7 +8,11 @@
 #   export_asma_pbwg()                      # every year present
 #   export_asma_pbwg(years = 2026)          # just one
 #
-# Output: outputs/asma/ASMA-<ring>-<year>.csv
+# Output: outputs/asma/BRA-airport-xsma-<ring>-<year>.csv
+#
+# The name follows the PBWG convention seen on the other members' files
+# (SIN-airport-xsma-2026.csv), with the ring inserted -- see below for why it
+# cannot be dropped.
 #
 #   ICAO, DATE, PHASE, RWY, N_VALID, TOTAL_TIME, TOTAL_REF_TIME, TOTAL_ADD_TIME
 #
@@ -81,7 +85,7 @@ export_asma_pbwg <- function(years    = NULL,
                   .groups = "drop") |>
         arrange(ICAO, DATE, RWY)
 
-      f <- file.path(out_dir, sprintf("ASMA-%s-%s.csv", rg, yr))
+      f <- file.path(out_dir, sprintf("BRA-airport-xsma-%s-%s.csv", rg, yr))
       readr::write_csv(out, f, na = "")
       written <- c(written, f)
       if (!quiet)
