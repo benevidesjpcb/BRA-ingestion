@@ -98,7 +98,19 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
     summarise(avg_add = round(sum(TOT_ADD_TIME) / sum(MVTS_VALID), 3),
               mvts = sum(MVTS_VALID), .groups = "drop")
 
+  # PER AIRPORT AND MONTH, so the trend can be read for one aerodrome rather than
+  # for Brazil as a whole. Kept as its own branch instead of deepening `airports`:
+  # the year-level leaf is what every other chart reads, and nesting a month under
+  # it would make each of them walk one level it does not need.
+  # 12 aerodromes x 2 rings x the years x 12 months is a few hundred leaves.
+  apmo_df <- raw |>
+    group_by(ICAO, RANGE, YEAR, MONTH) |>
+    summarise(avg_add = round(sum(TOT_ADD_TIME) / sum(MVTS_VALID), 3),
+              mvts = sum(MVTS_VALID), .groups = "drop")
+
   airports <- nest(ap_df, c("ICAO", "RANGE", "YEAR"), leaf)
+  apMonthly <- nest(apmo_df, c("ICAO", "RANGE", "YEAR", "MONTH"),
+                    function(r) list(add = r$avg_add, mvts = r$mvts))
   overall  <- nest(ov_df, c("RANGE", "YEAR"),        leaf)
   monthly  <- nest(mo_df, c("RANGE", "YEAR", "MONTH"),
                    function(r) list(add = r$avg_add, mvts = r$mvts))
@@ -110,6 +122,7 @@ build_kpi08_dashboard <- function(data_dir  = here::here("data"),
   for (i in seq_len(nrow(pd))) partial[[pd$YEAR[i]]] <- pd$maxd[i]
 
   payload <- list(airports = airports, overall = overall, monthly = monthly,
+                  apMonthly = apMonthly,
                   meta = list(partial = partial),
                   # I() keeps these as JSON arrays: auto_unbox would turn a
                   # single ring or a single year into a bare string, and the page

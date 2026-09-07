@@ -43,6 +43,12 @@
   .controls{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-end;background:var(--panel);border:1px solid var(--hair);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);margin-bottom:20px}
   .ctl{display:flex;flex-direction:column;gap:7px}
   .ctl > span{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint)}
+  /* the aerodrome picker: a select rather than a segmented control, because
+     twelve buttons would wrap into three rows and dwarf every other control */
+  .ctl select{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink);
+    background:var(--panel2);border:1px solid var(--hair);border-radius:9px;
+    padding:9px 11px;cursor:pointer;min-width:210px}
+  .ctl select:focus-visible{outline:2px solid var(--bra);outline-offset:2px}
   .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--hair);border-radius:9px;padding:3px;flex-wrap:wrap}
   .seg button{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--muted);background:transparent;border:0;padding:6px 13px;border-radius:6px;cursor:pointer;letter-spacing:.02em;white-space:nowrap}
   .seg button:hover{color:var(--ink)}
@@ -132,6 +138,9 @@
     </div>
     <div class="ctl"><span>Year</span>
       <div class="seg" id="seg-year" role="group" aria-label="Year"></div>
+    </div>
+    <div class="ctl"><span>Aerodrome</span>
+      <select id="sel-apt" aria-label="Aerodrome"></select>
     </div>
     <div class="ctl"><span>Metric</span>
       <div class="seg" id="seg-metric" role="group" aria-label="Metric">
@@ -231,12 +240,23 @@ const fmtInt = v => (v==null||!isFinite(v)) ? "–" : Math.round(v).toLocaleStri
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 let DATA = null;
-const state = { ring:null, year:null, metric:"add" };
+// apt = null means Brazil as a whole; an ICAO narrows every figure below to it
+const state = { ring:null, year:null, metric:"add", apt:null };
 
 // every lookup goes through the selected ring: C40 and C100 measure different
 // distances (~10 min apart in the source) and must never be pooled
-const ovOf  = y => (DATA.overall[state.ring] || {})[y];
-const moOf  = y => (DATA.monthly[state.ring] || {})[y];
+// With an aerodrome selected these read that aerodrome's branch instead of the
+// national one, so the tiles, the year bars and the trend all narrow together --
+// a page where only one chart honoured the filter would be read as a comparison.
+const ovOf = y => state.apt
+  ? (((DATA.airports[state.apt] || {})[state.ring]) || {})[y]
+  : (DATA.overall[state.ring] || {})[y];
+const moOf = y => state.apt
+  ? ((((DATA.apMonthly || {})[state.apt] || {})[state.ring]) || {})[y]
+  : (DATA.monthly[state.ring] || {})[y];
+const aptLabel = () => state.apt
+  ? (CONFIG.names[state.apt] ? `${state.apt} · ${CONFIG.names[state.apt]}` : state.apt)
+  : "Brazil";
 
 // A month is {add, mvts} (older payloads carry a bare number). Months whose
 // sample is negligible are not plotted: a source extract that ends at midnight
@@ -317,7 +337,7 @@ function aggregate(rows){
     a.add  += num(r.TOT_ADD_TIME);
     a.sup  += num(r.TOT_BRA_KPI08);
   };
-  const byYear = {}, byApt = {}, byMonth = {};
+  const byYear = {}, byApt = {}, byMonth = {}, byAptMonth = {};
   const maxDate = {}, seenRings = new Set();
   for (const r of rows){
     if (!r.DATE) continue;
@@ -326,6 +346,7 @@ function aggregate(rows){
     bump(byYear, g + "|" + y, r);
     bump(byApt, g + "|" + y + "|" + r.ICAO, r);
     bump(byMonth, g + "|" + y + "|" + m, r);
+    bump(byAptMonth, r.ICAO + "|" + g + "|" + y + "|" + m, r);
     if (!maxDate[y] || r.DATE > maxDate[y]) maxDate[y] = r.DATE;
   }
   const leaf = a => ({
@@ -351,11 +372,19 @@ function aggregate(rows){
     const byYr = monthly[g] || (monthly[g] = {});
     (byYr[y] || (byYr[y] = {}))[m] = +(a.add/a.mvts).toFixed(3);
   }
+  const apMonthly = {};
+  for (const [k,a] of Object.entries(byAptMonth)){
+    const [icao,g,y,m] = k.split("|");
+    const byRing = apMonthly[icao] || (apMonthly[icao] = {});
+    const byYr = byRing[g] || (byRing[g] = {});
+    (byYr[y] || (byYr[y] = {}))[m] = {add:+(a.add/a.mvts).toFixed(3), mvts:a.mvts};
+  }
   const partial = {};
   for (const [y,d] of Object.entries(maxDate)) if (d < `${y}-12-31`) partial[y] = d;
   const order = ["C40","C100"];
   const rings = [...seenRings].sort((a,b)=>order.indexOf(a)-order.indexOf(b));
-  return {years:[...years].sort(), rings, overall, airports, monthly, meta:{partial}};
+  return {years:[...years].sort(), rings, overall, airports, monthly, apMonthly,
+          meta:{partial}};
 }
 
 /* ---------------- chart helpers ---------------- */
@@ -445,7 +474,7 @@ function renderKPIs(){
 function renderYear(){
   const host = $("#chart-year");
   const mk = CONFIG.metrics[state.metric];
-  $("#yr-title").textContent = `${mk.label} by year — ${state.ring}`;
+  $("#yr-title").textContent = `${mk.label} by year — ${state.ring} · ${aptLabel()}`;
   $("#yr-note").textContent  = `Average per arrival, in minutes (${mk.desc}).`;
 
   const years = DATA.years;
@@ -483,7 +512,11 @@ function renderRank(){
   const host = $("#chart-rank");
   const mk = CONFIG.metrics[state.metric];
   $("#rk-title").textContent = `Airport ranking — ${mk.label.toLowerCase()}`;
-  $("#rk-note").textContent  = `${state.year} · ${state.ring}, average per arrival (minutes).`;
+  // The ranking compares aerodromes, so it always shows all of them -- narrowing
+  // it to one would leave a chart with a single bar and no comparison. The note
+  // says so, so an unchanged ranking does not read as a filter that failed.
+  $("#rk-note").textContent  = `${state.year} · ${state.ring}, average per arrival (minutes).` +
+    (state.apt ? ` All aerodromes — this chart compares them, so the ${state.apt} filter does not apply.` : "");
 
   const rows = aptEntries().sort((a,b) => b.d[mk.key] - a.d[mk.key]);
 
@@ -525,7 +558,7 @@ function renderRank(){
 // context lines labelled at their end (no extra hues needed)
 function renderTrend(){
   const host = $("#chart-trend");
-  $("#tr-note").textContent = `Average additional time per arrival at ${state.ring}, by month. ${state.year} highlighted; earlier years shown for context.`;
+  $("#tr-note").textContent = `Average additional time per arrival at ${state.ring}, by month, for ${aptLabel()}. ${state.year} highlighted; earlier years shown for context.`;
   const h = 250, padL = 44, padR = 42, padT = 14, padB = 30;
   const {s,w} = svgFor(host,h);
   const x0 = padL, x1 = w - padR, yTop = padT, yBot = h - padB;
@@ -665,6 +698,14 @@ function boot(){
           g => g === "C40" ? "C40 (40 NM)" : g === "C100" ? "C100 (100 NM)" : g);
   segment($("#seg-year"), DATA.years, state.year, v=>{ state.year=v; renderAll(); },
           y => y + (partial[y] ? " *" : ""));
+  // The aerodrome picker. "Brazil" is first and is the default, so the page opens
+  // on the whole country and narrowing is a deliberate act.
+  const icaos = Object.keys(DATA.airports).sort();
+  $("#sel-apt").innerHTML =
+    `<option value="">Brazil — all ${icaos.length}</option>` +
+    icaos.map(a => `<option value="${a}">${a}${CONFIG.names[a] ? " · " + CONFIG.names[a] : ""}</option>`).join("");
+  $("#sel-apt").onchange = e => { state.apt = e.target.value || null; renderAll(); };
+
   $("#seg-metric").onclick = e=>{
     const b = e.target.closest("button"); if (!b) return;
     $$("button",$("#seg-metric")).forEach(x=>x.setAttribute("aria-pressed", String(x===b)));
