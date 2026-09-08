@@ -1,0 +1,237 @@
+#!/usr/bin/env Rscript
+# =============================================================================
+# probe_vra.R
+#
+# ASK THE VRA API WHAT IT IS, BEFORE WRITING A DOWNLOADER FOR IT.
+#
+#   source(here::here("VRA", "probe_vra.R"))
+#   vra_probe(query = vra_window("2024-12-01", "2024-12-01"))   # one day
+#   vra_probe(query = vra_window("2024-12-01", "2024-12-31"))   # one month
+#
+# WHY THIS EXISTS AS A STEP OF ITS OWN
+# Every downloader in this project keys on things that cannot be guessed: which
+# column carries the date, what the month window parameter is called, how many
+# rows a page holds, whether there is a unique id. Guessing them costs hours of
+# wrong download; asking costs one request. odin_probe() does the same job for
+# ODIN, and the two TATIC surprises -- a wide window silently returning one day,
+# and the milestones being CamelCase -- are what a probe is for.
+#
+# It does NOT assume the answer is JSON. The endpoint may serve an HTML
+# documentation page, a CSV, or a JSON envelope with the rows nested inside; the
+# probe reports what actually arrived and only then tries to read it.
+#
+# VRA is ANAC's "Voo Regular Ativo": the scheduled and realised times of the
+# regular flights of Brazilian and foreign operators, filed by the airlines. It
+# is a DIFFERENT KIND of source from the others here -- airline-reported schedule
+# adherence, not ATC-observed movement -- so nothing about its shape should be
+# assumed from dstaxi, kpi08 or TOTALBR.
+# =============================================================================
+
+source(here::here("proxy.R"))
+
+VRA_API_URL <- Sys.getenv("VRA_API_URL",
+                          unset = "https://sas.anac.gov.br/sas/vra_api/vra")
+
+# The window is two dates, and they are DDMMYYYY -- not ISO, not d/m/Y. Written
+# once here so no caller formats a date by hand:
+#   .../vra?dt_referencia1=01122024&dt_referencia2=31122024
+VRA_DATE_FMT <- "%d%m%Y"
+vra_date <- function(x) format(as.Date(x), VRA_DATE_FMT)
+
+# =============================================================================
+# vra_window(from, to)
+#
+# The query for one window, from two dates given in any form R understands.
+# Both bounds are INCLUSIVE, as the endpoint's own example reads: 01122024 to
+# 31122024 is the whole of December.
+# =============================================================================
+vra_window <- function(from, to) {
+  list(dt_referencia1 = vra_date(from), dt_referencia2 = vra_date(to))
+}
+
+.vra_req <- function(url = VRA_API_URL, query = list(), timeout = 120) {
+  for (p in c("httr2", "jsonlite"))
+    if (!requireNamespace(p, quietly = TRUE))
+      stop("Package '", p, "' is required. install.packages('", p, "').")
+  req <- httr2::request(url) |>
+    httr2::req_user_agent("BRA-ingestion/vra") |>
+    httr2::req_timeout(timeout) |>
+    bra_proxy()
+  if (length(query) > 0) req <- do.call(httr2::req_url_query, c(list(req), query))
+  # a 4xx/5xx should be READ, not thrown: the body of an error is usually where
+  # the API says which parameter it wanted
+  httr2::req_error(req, is_error = function(resp) FALSE)
+}
+
+# =============================================================================
+# vra_parse_json(body)
+#
+# THE RESPONSE IS JSON INSIDE JSON. The endpoint answers with a JSON *string*
+# whose content is the array of records -- so one fromJSON() yields a character
+# vector of length one that merely looks like a truncated mess, and the rows only
+# appear on a second decode:
+#
+#   "[{\"sg_empresa_icao\":\"AAL\", ...}]"      <- what arrives
+#    [{ sg_empresa_icao:  AAL , ...}]         <- what it means
+#
+# Unwrapped here, once, so nothing downstream has to know. Written defensively:
+# if ANAC ever stops double-encoding, a single decode already gives the table and
+# the second pass is skipped.
+# =============================================================================
+vra_parse_json <- function(body) {
+  obj <- jsonlite::fromJSON(body, flatten = TRUE)
+  # a single string that itself starts like JSON is the wrapper, not the answer
+  if (is.character(obj) && length(obj) == 1 && grepl("^\\s*[\\[{]", obj)) {
+    message("(double-encoded JSON: decoding the string it wrapped)")
+    obj <- jsonlite::fromJSON(obj, flatten = TRUE)
+  }
+  obj
+}
+
+# =============================================================================
+# vra_probe(url, query, n)
+#
+# Performs one request and reports, in this order: the URL as sent, the status,
+# the content type, the size, and then whatever the body turns out to be --
+# columns and first rows for tabular JSON or CSV, the keys for a JSON envelope,
+# the first lines for HTML or anything unrecognised.
+#
+# Returns the parsed object invisibly when it could parse one, so the result can
+# be inspected further without a second request.
+# =============================================================================
+vra_probe <- function(url = VRA_API_URL, query = list(), n = 5L) {
+  req  <- .vra_req(url, query)
+  message("GET ", req$url)
+  resp <- httr2::req_perform(req)
+
+  status <- httr2::resp_status(resp)
+  ctype  <- tryCatch(httr2::resp_content_type(resp), error = function(e) "unknown")
+  body   <- httr2::resp_body_string(resp)
+  message("status: ", status, " | type: ", ctype, " | ", nchar(body), " bytes")
+
+  if (status >= 400) {
+    message("The API refused the request. Its own words:")
+    cat(substr(body, 1, 1500), "\n")
+    return(invisible(NULL))
+  }
+
+  # ---- JSON ---------------------------------------------------------------
+  if (grepl("json", ctype, ignore.case = TRUE) ||
+      grepl("^\\s*[\\[{]", body)) {
+    obj <- tryCatch(vra_parse_json(body),
+                    error = function(e) { message("Not valid JSON: ",
+                                                  conditionMessage(e)); NULL })
+    if (is.null(obj)) { cat(substr(body, 1, 1000), "\n"); return(invisible(NULL)) }
+
+    if (is.data.frame(obj)) return(invisible(.vra_report_df(obj, n)))
+
+    # NOT a data.frame. Two shapes reach here and they need different words:
+    # an envelope with named keys (the rows sit under one of them), and a plain
+    # unnamed list -- an array jsonlite could not simplify, usually because the
+    # records do not all carry the same fields. The second one printed nothing at
+    # all when this only knew about the first.
+    if (is.null(names(obj)) || !any(nzchar(names(obj)))) {
+      message("An unnamed JSON list of ", length(obj), " element(s).")
+      if (length(obj) > 0) {
+        el <- obj[[1]]
+        message("First element: ", class(el)[1], ", ", length(el), " field(s)")
+        if (!is.null(names(el)))
+          message("Its fields: ", paste(names(el), collapse = ", "))
+        message("The first element in full:")
+        utils::str(el, max.level = 2, list.len = 100)
+      }
+      # do the records share a shape? If they do, one table comes out of them and
+      # the download is simple; if they do not, that is the thing to know now
+      flat <- tryCatch(
+        jsonlite::fromJSON(body, flatten = TRUE, simplifyDataFrame = TRUE),
+        error = function(e) NULL)
+      if (is.data.frame(flat)) {
+        message("They do share a shape -- as a table:")
+        return(invisible(.vra_report_df(flat, n)))
+      }
+      bound <- tryCatch(data.table::rbindlist(obj, fill = TRUE, use.names = TRUE),
+                        error = function(e) NULL)
+      if (!is.null(bound)) {
+        message("Bound into one table with fill = TRUE:")
+        return(invisible(.vra_report_df(as.data.frame(bound), n)))
+      }
+      message("The records do not share a shape. Raw, first 800 characters:")
+      cat(substr(body, 1, 800), "\n")
+      return(invisible(obj))
+    }
+
+    # an envelope: the rows are under one of the keys, and which one is exactly
+    # the sort of thing worth reading rather than assuming
+    message("A JSON object, not a table. Top-level keys: ",
+            paste(names(obj), collapse = ", "))
+    for (k in names(obj)) {
+      el <- obj[[k]]
+      message("  $", k, ": ", class(el)[1],
+              if (is.data.frame(el)) paste0(" [", nrow(el), " x ", ncol(el), "]")
+              else if (is.atomic(el) && length(el) <= 3) paste0(" = ", paste(el, collapse = ", "))
+              else paste0(" (length ", length(el), ")"))
+      if (is.data.frame(el) && nrow(el) > 0) {
+        message("  -> this looks like the rows:")
+        .vra_report_df(el, n)
+      }
+    }
+    return(invisible(obj))
+  }
+
+  # ---- CSV ----------------------------------------------------------------
+  if (grepl("csv|text/plain", ctype, ignore.case = TRUE)) {
+    # the separator is not a given: ANAC's published VRA files are semicolon-
+    # delimited, but an API may well answer with commas
+    sep <- if (lengths(regmatches(body, gregexpr(";", body)))[1] >
+               lengths(regmatches(body, gregexpr(",", body)))[1]) ";" else ","
+    message("Reading as CSV, separator '", sep, "'")
+    d <- tryCatch(data.table::fread(text = body, sep = sep, showProgress = FALSE),
+                  error = function(e) { message("fread failed: ",
+                                                conditionMessage(e)); NULL })
+    if (!is.null(d)) return(invisible(.vra_report_df(as.data.frame(d), n)))
+  }
+
+  # ---- anything else ------------------------------------------------------
+  message("Neither JSON nor CSV. The first lines, so you can see what it is:")
+  cat(paste(utils::head(strsplit(body, "\n")[[1]], 25), collapse = "\n"), "\n")
+  invisible(NULL)
+}
+
+# ---- what a table looks like ------------------------------------------------
+.vra_report_df <- function(d, n = 5L) {
+  message("Rows: ", nrow(d), " | columns: ", ncol(d))
+  message("Columns: ", paste(names(d), collapse = ", "))
+  # the two things a downloader has to be told, so name the candidates
+  dt <- grep("(dat|dt|hora|time|partida|chegada|previst|real)", names(d),
+             value = TRUE, ignore.case = TRUE)
+  if (length(dt) > 0) message("Date-like: ", paste(dt, collapse = ", "))
+  id <- grep("(^id$|_id$|chave|hash|pk|numero|voo)", names(d),
+             value = TRUE, ignore.case = TRUE)
+  if (length(id) > 0) message("Id-like: ", paste(id, collapse = ", "))
+  if (n > 0) print(utils::head(as.data.frame(d), n))
+  invisible(d)
+}
+
+# =============================================================================
+# vra_window_size(from, to)
+#
+# HOW MANY ROWS A WINDOW ACTUALLY RETURNS -- the question that decides whether
+# the download can ask for a month at a time.
+#
+# Ask it for one day, then for the month that day is in. If the month returns
+# about thirty times the day, the window is honoured and months are the unit.
+# If it returns the same as the day, or a suspiciously round number, it is not:
+# TATIC silently answers a wide window with ONLY THE FIRST DAY, and a round
+# number is a page cap rather than an answer. Either way the finding changes the
+# downloader, and it is one request to learn.
+# =============================================================================
+vra_window_size <- function(from, to) {
+  d <- vra_probe(query = vra_window(from, to), n = 0L)
+  n <- if (is.data.frame(d)) nrow(d) else NA_integer_
+  message("Window ", vra_date(from), " -> ", vra_date(to), ": ", n, " row(s)")
+  invisible(n)
+}
+
+# ---- run only when executed as a script (not when sourced) ------------------
+if (sys.nframe() == 0L)
+  vra_probe(query = vra_window(Sys.Date() - 40, Sys.Date() - 40))

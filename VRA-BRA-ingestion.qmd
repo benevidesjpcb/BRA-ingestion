@@ -1,0 +1,266 @@
+# Brazil VRA (ANAC) Data Ingestion
+
+```{r}
+#| label: setup
+#| include: false
+
+source(here::here("_chapter-setup.R"))
+source(here::here("VRA", "download_vra.R"))
+source(here::here("VRA", "check_vra_duplicates.R"))
+```
+
+This note documents the ingestion of **VRA** — *Voo Regular Ativo* — ANAC's record of the
+regular flights operated to, from and within Brazil, for the Brazil–Europe
+operational-efficiency study.
+
+VRA is a **different kind of source** from the others in this repository, and the difference
+matters more than the schema does. `dstaxi`, `kpi08` and TOTALBR are ATC observations: what
+the air navigation system saw happen. VRA is **filed by the airlines** — the scheduled time,
+the realised time, and ANAC's verdict on the difference. When VRA and TOTALBR disagree about
+a flight, that is two measurements differing, not automatically an error in either.
+
+It is also the only source here that answers punctuality **directly**. `ds_situacao_voo`,
+`ds_situacao_partida` and `ds_situacao_chegada` are already computed and carry ANAC's own
+banding (`Pontual`, `Antecipado`, `Atraso 30-60`, `Atraso 60-120`), with
+`ds_justificativa` for the reason. Nothing has to be derived to report delay — which also
+means the definitions are ANAC's, not ours, and must be quoted as such.
+
+## The endpoint
+
+Base: `https://sas.anac.gov.br/sas/vra_api/vra`
+
+```
+.../vra?dt_referencia1=01122024&dt_referencia2=31122024
+```
+
+Four properties of this API are encoded in `VRA/download_vra.R` because none of them is
+guessable, and each was found by probing rather than assumed:
+
+| Property | What it means for the download |
+| --- | --- |
+| The window is `dt_referencia1` / `dt_referencia2`, both **DDMMYYYY**, both **inclusive** | Neither ISO nor `d/m/Y`. A wrong format returns an empty window, not an error. `vra_window()` formats it so no caller does it by hand. |
+| The answer is **JSON inside JSON** | The body is a JSON *string* wrapping the array of records: one decode yields a character vector of length one that looks like corruption. `vra_parse_json()` unwraps it. |
+| **The wide window is honoured** | December 2024 returns 85,919 rows over 31 distinct days, 66 MB — 32× a single day. So a month is one request, not thirty. |
+| There is **no unique key** | No `id`, no hash. Nothing is de-duplicated on download. |
+
+::: {.callout-note}
+## Why the wide window was measured rather than assumed
+TATIC accepts `datai`/`dataf` spanning a month and silently returns **only the first day** —
+no error, no warning. Discovering that after a year had been "downloaded" is expensive, so
+the check is built into the downloader: every month is compared against the days it should
+hold, and a month window that comes back with one day says so and names the fix.
+:::
+
+## Downloading
+
+```{r}
+#| label: download-bra-vra-data
+#| eval: false
+
+source(here::here("VRA", "download_vra.R"))
+
+# The period comes from _chapter-setup.R, and R holds the value it read when the
+# session started. Editing the file does not change a running session -- source
+# it again, and check, before a download that takes hours goes after the wrong
+# years.
+source(here::here("_chapter-setup.R"))
+vra_data_years                        # <- confirm this is the period you meant
+
+download_vra(vra_data_years)
+download_vra(2026)                    # or name the year outright
+```
+
+One file per year in `data-raw/vra/`, with the month parts under `parts/`.
+
+**Each month is written the moment it arrives**, before the next is asked for, so a run
+stopped halfway keeps every month it had. Re-running skips the months already complete, so
+interrupting costs nothing but the month in flight — and completeness is judged by the days
+a part holds, not by a request having returned, so a month that came back short is fetched
+again rather than trusted.
+
+**Completeness is a statement about days present, never about a request having returned.** A
+month fetched while it was still open is short by design and is fetched again once it
+closes. A month that came back truncated is short by fault. Neither is accepted as complete,
+and the two are deliberately not distinguished at this stage — both mean "fetch it again".
+
+## Coverage — the days each month actually holds
+
+```{r}
+#| label: tbl-bra-vra-coverage
+#| tbl-cap: "Days and rows per month, as downloaded"
+
+cov <- vra_coverage(bra_vra_raw_dir)
+if (is.null(cov)) {
+  knitr::kable(tibble::tibble(
+    note = "Nothing downloaded yet — run the chunk above."))
+} else {
+  knitr::kable(cov)
+}
+```
+
+It reads the month **parts**, not the year files. The year file is written only after the
+last month of a year has been fetched, so a run interrupted halfway — the normal way a long
+download ends — leaves months on disk and no year file at all.
+
+A `SHORT` month is either still open or truncated. Read it together with today's date before
+concluding which.
+
+## Is there a key?
+
+VRA carries no id, so any de-duplication needs a key we construct — and a key that looks
+plausible is exactly what costs the most when it is wrong. TOTALBR's `id` is the precedent:
+it reads like an identifier, repeats on every flight of the same route, and de-duplicating on
+it would have deleted almost the entire dataset.
+
+The key is **operator + flight number + origin + destination + `dt_referencia` + scheduled
+departure** — `VRA_KEY_COLS` in `VRA/check_vra_duplicates.R`. It took three passes over the
+data to get there, and each component earned its place by a case that broke the version
+before it:
+
+**A flight number is not a route.** AAL `Z0930` on 14/01/2026 appears as SBGR → KFLL and
+again as KFLL → KMIA — two legs of one number, two movements, two rows.
+
+**`dt_partida_prevista` is often empty.** Those same rows carry `""`: they are `cd_di = 4`,
+non-scheduled services, which have no planned departure. A blank component makes the key
+`AAL|Z0930|`, so every Z0930 collides — including the same route on 14/01 and on 21/02. **A
+key component that can be empty does not divide anything; it merges.** `dt_referencia` is
+the day the API itself partitions on and is never blank, so it carries the date
+unconditionally.
+
+**A route flown twice in one day is two flights.** ACA0090 CYYZ → SBGR on 05/01/2026 is filed
+once for 00:35 and once for 23:00 — same operator, number, route and day, two operations.
+Only the scheduled time separates them, so it comes back into the key alongside
+`dt_referencia` rather than instead of it: a blank scheduled time falls back on the day and
+the route, and a shared day is still split by the scheduled time.
+
+> **What this gives up.** A flight re-filed with a corrected schedule now reads as a separate
+> flight rather than as a copy of the first. That distinction was never observable: VRA
+> carries no submission timestamp, so "the later filing" cannot be identified, only guessed
+> at. Sixteen of the twenty-three repeated groups found under the previous key differed on
+> exactly this column and are now separate rows.
+
+```{r}
+#| label: tbl-bra-vra-key
+#| tbl-cap: "How often the candidate key repeats"
+
+prof <- vra_key_profile(quiet = TRUE)
+if (is.null(prof)) {
+  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
+} else {
+  knitr::kable(prof$summary)
+}
+```
+
+`SURPLUS` is what a naive de-duplication would delete; `IN_A_GROUP` is how many rows are
+involved in a repeat at all — the two differ because a group of three copies contributes
+three rows and two surplus.
+
+### What the repeats ARE
+
+A count says how much would be deleted. It does not say whether deleting is right. Two rows
+under one key are one of three things, and only the last means the key is broken:
+
+| The copies | What they are | What to do |
+| --- | --- | --- |
+| identical everywhere | the same filing received twice | either copy will do |
+| differ on the realised times or the situation | the flight **re-filed** after a change | keep the later filing; fill blanks from the earlier |
+| differ on the aerodromes | **two real flights** the key cannot tell apart | the key is wrong — widen it |
+
+Which of the three it is can be read off directly: for each column, in how many repeated
+groups does its value vary?
+
+```{r}
+#| label: tbl-bra-vra-key-columns
+#| tbl-cap: "Where the copies differ, as a share of the repeated groups"
+
+if (is.null(prof) || nrow(prof$columns) == 0) {
+  knitr::kable(tibble::tibble(note = "No repeated key, or nothing downloaded."))
+} else {
+  knitr::kable(prof$columns)
+}
+```
+
+A column varying in ~0% of groups is carried identically by every copy. A column varying in
+most groups is what the copies exist to record — and is therefore what any collapse has to
+choose between rather than discard.
+
+Then look at the groups themselves rather than inferring from a percentage. `only_col`
+restricts to the groups that differ on one column, which is how a suspicion raised above gets
+confirmed:
+
+```{r}
+#| label: vra-key-examples
+#| eval: false
+
+vra_key_examples(n = 3)                                   # any repeated group
+vra_key_examples(only_col = "dt_partida_real", n = 3)     # re-filed?
+vra_key_examples(only_col = "sg_icao_destino", n = 3)     # two real flights?
+```
+
+**Nothing de-duplicates yet.** The rule follows from what the tables above show, and it is
+written once that is known — collapsing before then would delete a filled field to keep an
+empty one, which is exactly the trap TOTALBR's `pk` collapse exists to avoid.
+
+## Scheduled against realised — the day-shift to watch
+
+`dt_referencia` dates a flight **by its departure** and carries no time of day. A night
+flight therefore lands on the following date, which is normal: AAL0904 leaves SBGL on
+01/12 at 23:51 and reaches KMIA on 02/12 at 08:16.
+
+What is **not** normal, and was found in the first five rows sampled, is a realised time
+almost a full day away from its scheduled one:
+
+| | AAL0905, KMIA → SBGL |
+| --- | --- |
+| `dt_partida_prevista` | 01/12/2024 23:55 |
+| `dt_partida_real` | **01/12/2024 00:55** |
+| `dt_chegada_prevista` | 02/12/2024 09:25 |
+| `dt_chegada_real` | **01/12/2024 09:07** |
+| `ds_situacao_partida` | `Antecipado` |
+
+The realised times are coherent *with each other* — 00:55 to 09:07 is an eight-hour flight —
+so the flight is real. What looks wrong is the pairing: the realised pair appears to belong
+to the previous day's instance of the same service, and ANAC's own verdict reads it as
+23 hours "early". Four of the five rows sampled were clean, so this is not systematic.
+
+```{r}
+#| label: tbl-bra-vra-dayshift
+#| tbl-cap: "Departures whose realised time is more than 6 h from the schedule"
+
+d <- vra_read(cols = c("sg_empresa_icao", "nr_voo", "dt_partida_prevista",
+                       "dt_partida_real", "ds_situacao_partida"),
+              raw_dir = bra_vra_raw_dir)
+
+if (nrow(d) == 0) {
+  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
+} else {
+  p   <- as.POSIXct(d$dt_partida_prevista, format = "%d/%m/%Y %H:%M", tz = "UTC")
+  r   <- as.POSIXct(d$dt_partida_real,     format = "%d/%m/%Y %H:%M", tz = "UTC")
+  gap <- as.numeric(difftime(r, p, units = "hours"))
+
+  knitr::kable(
+    tibble::tibble(SITUACAO = d$ds_situacao_partida, GAP_H = gap) |>
+      dplyr::filter(!is.na(GAP_H), abs(GAP_H) > 6) |>
+      dplyr::count(SITUACAO, sort = TRUE) |>
+      dplyr::mutate(PCT_OF_ALL = round(100 * n / nrow(d), 3)))
+}
+```
+
+Run it before using `dt_partida_real` for anything. If these rows are a handful, exclude and
+note them; if they are a percent of the data, the delay figures ANAC publishes rest on them
+too, and that is a question for ANAC rather than a filter for us.
+
+## Open Points
+
+- **The candidate key is measured but not adopted.** Nothing de-duplicates on it until the
+  repeated rows have been looked at: a leg re-filed is two rows that are not
+  interchangeable, and deleting the wrong one loses a filled field.
+- **The day-shift rows are counted but not handled.** Whether to exclude them, and what that
+  does to a punctuality figure, is open.
+- **`nr_assentos_ofertados` makes VRA a capacity source too** — seats offered per flight,
+  which none of the other datasets carry. Not used yet; worth remembering it is here.
+- **The relationship to TOTALBR is unmeasured.** Both describe the same flights; VRA covers
+  only *regular* flights, so it is a subset, and how large a subset is a number worth having
+  before either is used as a denominator.
+- **The situation bands are ANAC's definitions**, not ours. Before reporting them beside a
+  European figure, confirm the thresholds match what the comparison assumes.
