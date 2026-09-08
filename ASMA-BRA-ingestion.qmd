@@ -532,8 +532,9 @@ Measured over 2024-2026, the answer is stark and it is **one cause**:
 
 | | 2024 | 2025 | 2026 |
 | --- | --- | --- | --- |
-| covered | 80.9% | 79.7% | 83.4% |
-| **no `SECTOR_GROUP`** | **18.9%** | **20.1%** | **16.4%** |
+| movements | 1,423,648 | 1,477,054 | 668,955 |
+| covered | 80.9% | 79.7% | **79.0%** |
+| **no `SECTOR_GROUP`** | **18.9%** | **20.1%** | **20.8%** |
 | no `CLASS` | 0.0% | 0.0% | 0.0% |
 | no `RWY` | 0.1% | 0.1% | 0.1% |
 | no reference for the group | 0.0% | 0.0% | 0.1% |
@@ -549,7 +550,7 @@ likely to be one the surveillance did not track cleanly, and those are not the a
 flights. Two consequences:
 
 1. **Never report an average without `MVTS_VALID` and the coverage beside it.** A reader
-   comparing 2.69 min/mov in 2024 with 2026 is comparing 80.9% of the traffic with 83.4%.
+   comparing 2024 with 2026 is comparing 80.9% of the traffic with 79.0% of it.
 2. **The sector field is the thing to ask ICEA/DECEA about** -- why it is empty for a fifth
    of arrivals, and whether it can be recovered. It is worth more than any other open point
    in this document, because it is the only one that moves the denominator.
@@ -761,14 +762,14 @@ this file has to keep them apart.
 ## Send the coverage with the file
 `N_VALID` is the numerator of the coverage and the file carries no denominator, so the
 recipient cannot work out how much traffic is behind it. Roughly a fifth is not:
-**19.1% excluded in 2024, 20.3% in 2025, 16.6% in 2026**, almost entirely for want of an
+**19.1% excluded in 2024, 20.3% in 2025, 21.0% in 2026**, almost entirely for want of an
 entry sector in the source.
 
 Two years compared without that are two different slices of traffic compared as if they were
 the same one. See [Coverage — how much of the traffic the metric actually covers].
 :::
 
-> **Still in the file:** the ~600 movements on runway designations that match no runway at
+> **Still in the file:** the 621 movements on runway designations that match no runway at
 > the aerodrome (`06L` at SBBR and the like). They are 0.02% and move nothing, but they are
 > there, and their reference was built from themselves. See the open points.
 
