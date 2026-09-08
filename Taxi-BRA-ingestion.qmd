@@ -584,7 +584,7 @@ It is not used in the 2024 GANP 20th percentile PBWG reference calculation.
 
 ## Validation Against the Original Results
 
-`reproduce_txxt.R` rebuilds the daily analytic outputs straight from the raw data and
+`TAXI/reproduce_txxt.R` rebuilds the daily analytic outputs straight from the raw data and
 compares them row by row with the original PBWG results kept in `golden/`. It is the
 regression check that proves this repository's metric reproduces the published figures
 without the private `PBWG` package.
@@ -595,7 +595,7 @@ It reads the raw source, so it is `eval: false` and run on demand.
 #| label: validate-bra-taxi-golden
 #| eval: false
 
-source(here::here("reproduce_txxt.R"))
+source(here::here("TAXI", "reproduce_txxt.R"))
 ```
 
 ```{r}
@@ -625,7 +625,7 @@ It is `eval: false` so rendering this document never rewrites the dashboard by s
 #| label: build-bra-taxi-dashboard
 #| eval: false
 
-source(here::here("build_taxi_dashboard.R"))
+source(here::here("TAXI", "build_taxi_dashboard.R"))
 ```
 
 ```{r}

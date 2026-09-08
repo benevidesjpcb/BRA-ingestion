@@ -18,11 +18,11 @@ suppressPackageStartupMessages({
 })
 
 # ---- CONFIG -----------------------------------------------------------------
-raw_dir <- "data-raw"
+raw_dir <- here::here("data-raw")
 golden_paths <- c(
-  "2023" = "golden/PBWG-BRA-txxt-analytic-2023-ref2024-icao_ganp_p20.csv",
-  "2024" = "golden/PBWG-BRA-txxt-analytic-2024-ref2024-icao_ganp_p20.csv",
-  "2025" = "golden/PBWG-BRA-txxt-analytic-2025-ref2024-icao_ganp_p20.csv"
+  "2023" = here::here("golden", "PBWG-BRA-txxt-analytic-2023-ref2024-icao_ganp_p20.csv"),
+  "2024" = here::here("golden", "PBWG-BRA-txxt-analytic-2024-ref2024-icao_ganp_p20.csv"),
+  "2025" = here::here("golden", "PBWG-BRA-txxt-analytic-2025-ref2024-icao_ganp_p20.csv")
 )
 study_airports <- c("SBGR","SBGL","SBRJ","SBCF","SBBR","SBSV","SBKP","SBSP",
                     "SBCT","SBPA","SBRF","SBEG")

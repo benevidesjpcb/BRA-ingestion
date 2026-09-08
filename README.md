@@ -14,6 +14,31 @@ and daily additional time) is computed in this repository with base tidyverse, s
 
 ## Project layout
 
+### The folders, and what each is for
+
+Every folder of `.R` files is code; the data lives in `data-raw/`, `data/` and `outputs/`.
+There is **one folder per dataset**, plus one shared engine:
+
+| Folder | What it is |
+| --- | --- |
+| `ODIN/` | **Shared, not a dataset.** `download_odin.R` is the download engine for the whole ICEA/DECEA API: one month per request window, resumable, pagination over a total order, JSON array columns flattened. Three thin wrappers supply only what differs — `TAXI/download_taxi.R`, `TOTALBR/download_totalbr.R` and `KPI08/download_kpi08.R`. Nothing here belongs to one dataset. |
+| `TAXI/` | Taxi time (`dstaxi` via ODIN): download, source comparison, the metric's standalone validation, and the dashboard build |
+| `KPI08/` | ASMA (`kpi08` via ODIN): download, golden validation, the PBWG export, the dashboard build |
+| `TOTALBR/` | The national movement table (`total_brasil` via ODIN): download, duplicate measurement, the two-stage pipeline |
+| `API_TATIC/` | TATIC — a **different API** (CGNA, token-authenticated, one day per call): download, JSON ingest, harmonisation to APDF |
+| `VRA/` | VRA — a **different API again** (ANAC): probe, download, duplicate inspection |
+
+At the root, three scripts that belong to no dataset: `_chapter-setup.R` (libraries, paths and
+every analysis parameter), `proxy.R` (corporate-proxy settings for every outbound request) and
+`setup_renviron.R` (writes `.Renviron` on a new machine).
+
+> **TATIC and VRA are not ODIN.** TATIC is the CGNA milestone feed; VRA is ANAC's
+> airline-filed schedule adherence. Different endpoints, different shapes, different meanings
+> — so neither uses the shared engine, and a disagreement between VRA and TOTALBR is two
+> measurements differing rather than an ingestion fault.
+
+### Files
+
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
 | `data-raw/dstaxi/` | **Input** — the raw `dsTaxiYYYY.csv` files (and `parts/` month files) | no (git-ignored) |
@@ -21,11 +46,11 @@ and daily additional time) is computed in this repository with base tidyverse, s
 | `data/apdf/` | Generated harmonised parquet extracts | no |
 | `outputs/` | Generated per-year daily outputs | no (only `.gitkeep`) |
 | `index.html` | Interactive dashboard — reads the CSVs in `data/` live | yes |
-| `index-data.js` | Numbers the dashboard loads, written by `build_taxi_dashboard.R` | no (git-ignored) |
+| `index-data.js` | Numbers the dashboard loads, written by `TAXI/build_taxi_dashboard.R` | no (git-ignored) |
 | `golden/` | Reference result CSVs used to validate the reproduction | yes |
 | `_chapter-setup.R` | Shared libraries, project paths, analysis parameters | yes |
 | `Taxi-BRA-ingestion.qmd` | The documented pipeline | yes |
-| `reproduce_txxt.R` | Standalone validation of the metric against `golden/` | yes |
+| `TAXI/reproduce_txxt.R` | Standalone validation of the metric against `golden/` | yes |
 
 The raw `dsTaxi` files and the parquet extracts are git-ignored; the analytic CSVs in
 `data/` **are** tracked, because both the report and the dashboard read them.
@@ -79,7 +104,7 @@ There are **two**, one per metric. Each has its own page and its own build scrip
 
 | Metric | Page | Build script | Shows |
 | --- | --- | --- | --- |
-| Taxi time | `index.html` | `build_taxi_dashboard.R` | Brazil × Europe, arrivals and departures |
+| Taxi time | `index.html` | `TAXI/build_taxi_dashboard.R` | Brazil × Europe, arrivals and departures |
 | ASMA (KPI08) | `kpi08.html` | `KPI08/build_kpi08_dashboard.R` | Brazil only, arrivals, C40 / C100 rings |
 
 Both pages live at the repository root so GitHub Pages can serve them, and both load
@@ -95,7 +120,7 @@ live in the browser and discovers the available years and airports on its own.
 
 The page loads its numbers from a small generated file beside it, so:
 
-1. Run once: **`Rscript build_taxi_dashboard.R`** — it reads `data/` and writes
+1. Run once: **`Rscript TAXI/build_taxi_dashboard.R`** — it reads `data/` and writes
    **`index-data.js`**. (Needs R with the `jsonlite` package: `install.packages("jsonlite")`.)
 2. **Double-click `index.html`.** It opens in your browser, offline, no server needed.
 
@@ -134,7 +159,7 @@ where `<REGION>` is `BRA` or `EUR`. So:
 | **Add more airports** | Nothing — new ICAO codes in the CSVs appear automatically. Add a label in `CONFIG.names` (in `index.html`) if you want a name instead of the code. |
 
 No code edit is needed for years or airports. After changing files in `data/`, run
-**`Rscript build_taxi_dashboard.R`** to refresh `index-data.js` for the double-click page.
+**`Rscript TAXI/build_taxi_dashboard.R`** to refresh `index-data.js` for the double-click page.
 (A published/served copy reads `data/` live, so it updates on its own once you commit
 and `push`.)
 
@@ -154,7 +179,7 @@ Only these need editing the `CONFIG` block at the top of the script in `index.ht
 
 ## Validating the reproduction
 
-`reproduce_txxt.R` rebuilds the analytic outputs from the raw data and compares them,
+`TAXI/reproduce_txxt.R` rebuilds the analytic outputs from the raw data and compares them,
 row by row, with the CSVs in `golden/`. It is the regression check that proves the
 in-repo metric matches the original PBWG results exactly for 2023–2025.
 
