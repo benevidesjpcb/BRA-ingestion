@@ -21,9 +21,11 @@
 # THIS IS NOT TATIC. TATIC (API_TATIC/) is the CGNA's milestone feed, a
 # different table with a different meaning. This endpoint is `dstaxi` itself:
 #   https://portal.cgna.decea.mil.br/apiv1/dstaxi?token=...&datai=&dataf=
-# Same token as TATIC, same day window. What comes back is the taxi table, so
-# there is nothing to harmonise -- the columns are already the ones the rest of
-# the project reads.
+# Same token as TATIC. NOT the same date format: this endpoint answers
+# "Formato de data invalido. Utilize YYYY-MM-DD ou YYYY-MM-DD HH:MM:SS" to the
+# YYYYMMDD that TATIC requires. What comes back is the taxi table, so there is
+# nothing to harmonise -- the columns are already the ones the rest of the
+# project reads.
 #
 # WHY TWO SOURCES FOR ONE TABLE. The ODIN API (TAXI/download_taxi.R) serves the
 # same `dstaxi`. Whether the two agree movement by movement is a question worth
@@ -32,13 +34,20 @@
 # _chapter-setup.R matches `^dsTaxi20\d{2}\.csv$`, so these files sit in the
 # same folder without ever being picked up as if they were the ODIN download.
 #
-# ONE DAY PER CALL. The window is walked day by day, as with TATIC: this API
-# family has answered a wide window with only its first day. The day asked for
-# is recorded in an added column, CGNA_DAY, rather than inferred from the
-# record -- the source's own stamps describe the MOVEMENT, and a movement can
-# be reported on a day other than the one it is filed under. That column is
-# what makes a re-run resumable at the day: an interrupt costs one day, never a
-# month.
+# ONE DAY PER CALL, AND THE DAY IS CUT LOCALLY. The window is walked day by
+# day, as with TATIC: this API family has answered a wide window with only its
+# first day. Whether `dataf` is inclusive is not documented and not worth
+# guessing -- asked as [d, d+1] an exclusive bound gives the day and an
+# inclusive one gives two, which would file the same movement under two days.
+# So the wide bound is asked for and the answer is TRIMMED to the day, on
+# `dh_bimtra`: the movement stamp, the same column the ODIN download anchors
+# its month windows on. The API's own semantics then cannot produce a duplicate
+# or a hole either way.
+# The day asked for is recorded in an added column, CGNA_DAY, rather than
+# inferred from the record -- the source's stamps describe the MOVEMENT, and a
+# movement can be reported on a day other than the one it is filed under. That
+# column is what makes a re-run resumable at the day: an interrupt costs one
+# day, never a month.
 #
 # The token is read from the environment, never hardcoded -- the same
 # TATIC_TOKEN in .Renviron (git-ignored) that download_tatic() uses.
@@ -73,9 +82,24 @@ cgna_taxi_rename <- function(df) {
 # ---- one day from the API ----------------------------------------------------
 # data.frame (possibly 0 rows) on success, NULL on failure. The difference
 # matters: 0 rows is an answer ("no movements that day"), NULL must be retried.
+# ---- keep only the day we asked for -----------------------------------------
+# Returns the rows whose movement stamp falls on `day`. A row with no usable
+# stamp is KEPT: dropping it would silently lose a movement over a parsing
+# question, and the CGNA_DAY column still records which request it arrived in.
+cgna_taxi_trim_day <- function(df, day) {
+  if (is.null(df) || nrow(df) == 0 || !"dh_bimtra" %in% names(df)) return(df)
+  d <- substr(trimws(df$dh_bimtra), 1, 10)
+  keep <- is.na(d) | !nzchar(d) | d == format(as.Date(day))
+  if (!all(keep))
+    message(sprintf("      (%d row(s) outside %s dropped)",
+                    sum(!keep), format(as.Date(day))))
+  df[keep, , drop = FALSE]
+}
+
 cgna_taxi_fetch_day <- function(day, token, base_url = CGNA_TAXI_URL,
                                 timeout = 300) {
-  fmt <- function(d) format(as.Date(d), "%Y%m%d")
+  # YYYY-MM-DD: this endpoint rejects the YYYYMMDD that TATIC requires
+  fmt <- function(d) format(as.Date(d), "%Y-%m-%d")
   req <- httr2::request(base_url) |>
     httr2::req_url_query(token = token, datai = fmt(day), dataf = fmt(day + 1)) |>
     httr2::req_user_agent("BRA-ingestion/dstaxi-cgna") |>
@@ -84,8 +108,19 @@ cgna_taxi_fetch_day <- function(day, token, base_url = CGNA_TAXI_URL,
     bra_proxy()
 
   resp <- tryCatch(httr2::req_perform(req), error = function(e) e)
-  if (!inherits(resp, "httr2_response")) return(NULL)
-  if (httr2::resp_status(resp) != 200) return(NULL)
+  if (!inherits(resp, "httr2_response")) {
+    message("      transport error: ", conditionMessage(resp))
+    return(NULL)
+  }
+  # The API explains its refusals in the body (a bad date format, an expired
+  # token). Swallowing that leaves "FAILED" and a trip to the API docs to find
+  # out what it already said, so it is shown.
+  if (httr2::resp_status(resp) != 200) {
+    why <- tryCatch(httr2::resp_body_string(resp), error = function(e) "")
+    message(sprintf("      HTTP %d%s", httr2::resp_status(resp),
+                    if (nzchar(why)) paste0(": ", substr(why, 1, 300)) else ""))
+    return(NULL)
+  }
 
   body <- httr2::resp_body_string(resp)
   if (!jsonlite::validate(body)) return(NULL)
@@ -106,6 +141,8 @@ cgna_taxi_fetch_day <- function(day, token, base_url = CGNA_TAXI_URL,
   df <- tatic_flatten_lists(df)      # a nested array cannot be written to CSV
   df[] <- lapply(df, as.character)
   df <- cgna_taxi_rename(df)
+  df <- cgna_taxi_trim_day(df, day)
+  if (nrow(df) == 0) return(data.frame())
   df$CGNA_DAY <- format(as.Date(day))   # the day WE asked for
   df
 }
