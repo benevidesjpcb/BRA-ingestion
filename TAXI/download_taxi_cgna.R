@@ -49,6 +49,14 @@
 # column is what makes a re-run resumable at the day: an interrupt costs one
 # day, never a month.
 #
+# PAGINATED, AND THE ENVELOPE SAYS SO. The answer is not a bare array but an
+# object: the rows, plus `page`, `per_page`, `total` and `total_pages`. Keeping
+# only the first page silently caps every day at per_page (1000) -- a whole year
+# came back the same size as a busy month before this was handled. Every page is
+# fetched, and the rows are counted against the `total` the API itself
+# reported: a day that does not add up is named rather than quietly stored
+# short.
+#
 # The token is read from the environment, never hardcoded -- the same
 # TATIC_TOKEN in .Renviron (git-ignored) that download_tatic() uses.
 # =============================================================================
@@ -59,6 +67,10 @@ source(here::here("API_TATIC", "download_tatic.R"))
 
 CGNA_TAXI_URL <- Sys.getenv("CGNA_TAXI_URL",
                             unset = "https://portal.cgna.decea.mil.br/apiv1/dstaxi")
+
+# Rows per page. 1000 is what the API returns when not asked; raising it (if the
+# endpoint allows) means fewer requests for the same day, nothing more.
+CGNA_TAXI_PAGE_SIZE <- as.integer(Sys.getenv("CGNA_TAXI_PAGE_SIZE", unset = "1000"))
 
 # API spelling -> the spelling already on disk. The ODIN download does the same
 # four renames (see TAXI/download_taxi.R note 3), so a CGNA year is read by
@@ -96,12 +108,39 @@ cgna_taxi_trim_day <- function(df, day) {
   df[keep, , drop = FALSE]
 }
 
-cgna_taxi_fetch_day <- function(day, token, base_url = CGNA_TAXI_URL,
-                                timeout = 300) {
-  # YYYY-MM-DD: this endpoint rejects the YYYYMMDD that TATIC requires
-  fmt <- function(d) format(as.Date(d), "%Y-%m-%d")
+# ---- the paginated envelope -------------------------------------------------
+# Returns the pieces of one page: the rows and what the API says about the whole
+# answer. The rows are found by shape (the one data.frame in the object) rather
+# than by a hardcoded name, because that name is the only part of the contract
+# not visible in the envelope itself.
+.cgna_page_parts <- function(parsed) {
+  num <- function(x) if (is.null(x)) NA_integer_ else suppressWarnings(as.integer(x[[1]]))
+  rows <- NULL
+  if (is.data.frame(parsed)) rows <- parsed
+  else if (is.list(parsed)) {
+    df <- Filter(is.data.frame, parsed)
+    if (length(df) >= 1) rows <- df[[1]]
+    else {
+      lst <- Filter(function(x) is.list(x) && !is.data.frame(x), parsed)
+      if (length(lst) == 1)
+        rows <- tryCatch(as.data.frame(lst[[1]]), error = function(e) NULL)
+    }
+  }
+  list(rows        = rows,
+       page        = num(parsed[["page"]]),
+       per_page    = num(parsed[["per_page"]]),
+       total       = num(parsed[["total"]]),
+       total_pages = num(parsed[["total_pages"]]))
+}
+
+# ---- one page ----------------------------------------------------------------
+# NULL on failure, the parts of the page on success.
+cgna_taxi_fetch_page <- function(day, token, page, base_url = CGNA_TAXI_URL,
+                                 per_page = CGNA_TAXI_PAGE_SIZE, timeout = 300) {
+  fmt <- function(d) format(as.Date(d), "%Y-%m-%d")   # NOT the YYYYMMDD TATIC wants
   req <- httr2::request(base_url) |>
-    httr2::req_url_query(token = token, datai = fmt(day), dataf = fmt(day + 1)) |>
+    httr2::req_url_query(token = token, datai = fmt(day), dataf = fmt(day + 1),
+                         page = page, per_page = per_page) |>
     httr2::req_user_agent("BRA-ingestion/dstaxi-cgna") |>
     httr2::req_timeout(timeout) |>
     httr2::req_retry(max_tries = 4) |>
@@ -124,22 +163,53 @@ cgna_taxi_fetch_day <- function(day, token, base_url = CGNA_TAXI_URL,
 
   body <- httr2::resp_body_string(resp)
   if (!jsonlite::validate(body)) return(NULL)
-  df <- tryCatch(jsonlite::fromJSON(body, simplifyDataFrame = TRUE, flatten = TRUE),
-                 error = function(e) NULL)
-  if (is.null(df)) return(NULL)
-  # some endpoints wrap the rows in an object; take the first data.frame in it
-  if (!is.data.frame(df) && is.list(df)) {
-    inner <- Filter(function(x) is.data.frame(x) || is.list(x), df)
-    if (length(inner) == 1) df <- inner[[1]]
+  parsed <- tryCatch(jsonlite::fromJSON(body, simplifyDataFrame = TRUE, flatten = TRUE),
+                     error = function(e) NULL)
+  if (is.null(parsed)) return(NULL)
+  .cgna_page_parts(parsed)
+}
+
+# ---- one whole day, every page ----------------------------------------------
+# data.frame (possibly 0 rows) on success, NULL on failure. The difference
+# matters: 0 rows is an answer ("no movements that day"), NULL must be retried.
+cgna_taxi_fetch_day <- function(day, token, base_url = CGNA_TAXI_URL,
+                                per_page = CGNA_TAXI_PAGE_SIZE, timeout = 300) {
+  pages <- list()
+  page  <- 1L
+  total <- NA_integer_
+  n_pages <- NA_integer_
+  repeat {
+    pp <- cgna_taxi_fetch_page(day, token, page, base_url, per_page, timeout)
+    if (is.null(pp)) return(NULL)          # a failed page fails the day: a day
+                                            # stored half-complete would look
+                                            # finished to the resume logic
+    if (page == 1L) { total <- pp$total; n_pages <- pp$total_pages }
+    rows <- pp$rows
+    if (is.null(rows) || nrow(rows) == 0) break
+    rows <- tatic_flatten_lists(rows)      # a nested array cannot be written to CSV
+    rows[] <- lapply(rows, as.character)
+    pages[[length(pages) + 1L]] <- rows
+
+    # Stop on what the envelope says when it says it, and on a short page when
+    # it does not: an API that stops reporting total_pages must not turn into an
+    # endless loop, and one that reports it must not be probed for a page past
+    # the end on every single day.
+    if (!is.na(n_pages) && page >= n_pages) break
+    if (is.na(n_pages) && nrow(rows) < per_page) break
+    page <- page + 1L
+    if (page > 1000L) {                     # a guard, not an expectation
+      message("      stopped at 1000 pages -- the envelope never ended")
+      break
+    }
   }
-  if (!is.data.frame(df)) {
-    if (length(df) == 0) return(data.frame())
-    df <- tryCatch(as.data.frame(df), error = function(e) NULL)
-    if (is.null(df)) return(NULL)
-  }
-  if (nrow(df) == 0) return(data.frame())
-  df <- tatic_flatten_lists(df)      # a nested array cannot be written to CSV
-  df[] <- lapply(df, as.character)
+
+  df <- tatic_rbind_fill(pages)
+  if (is.null(df)) return(data.frame())
+  # The API told us how many rows the day has. Checking costs nothing and is the
+  # difference between a short day that is noticed and one that is not.
+  if (!is.na(total) && nrow(df) != total)
+    message(sprintf("      WARNING: %d row(s) fetched, API reported total=%d",
+                    nrow(df), total))
   df <- cgna_taxi_rename(df)
   df <- cgna_taxi_trim_day(df, day)
   if (nrow(df) == 0) return(data.frame())

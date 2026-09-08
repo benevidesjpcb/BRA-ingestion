@@ -176,9 +176,19 @@ download_taxi_cgna(2026)                                  # a whole year
 download_taxi_cgna(2026, from = "20260310", to = "20260310")   # one day, to inspect
 ```
 
-`box` (the stand) is what to look at first in a fresh download. The PBWG reference key is
-`(ICAO, PHASE, STND, RWY)`, so a source without a stand yields no reference group at all
-and can only cross-check the ODIN taxi times.
+The answer is **paginated**, in an envelope carrying `page`, `per_page` (1000), `total` and
+`total_pages`; the downloader walks every page and checks what it stored against the
+`total` the API itself reported. This is worth knowing because keeping only the first page
+fails silently: it caps each day at 1000 rows, and a whole year comes back the size of a
+busy month with nothing in the output saying so.
+
+`box` (the stand) **is** populated here, so a CGNA year is not limited to cross-checking:
+the PBWG reference key `(ICAO, PHASE, STND, RWY)` can be built from it.
+
+Whether the two sources actually agree is measured, not assumed —
+`TAXI/compare_taxi_cgna.R` pairs them movement by movement, with `taxi_cgna_daily()` for
+the per-day profile that separates a truncation from a coverage gap from a scope
+difference.
 
 ```{r}
 #| label: check-bra-taxi-data
