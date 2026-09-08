@@ -8,9 +8,16 @@
 #
 #   source(here::here("TAXI", "compare_taxi_cgna.R"))
 #   taxi_cgna_daily(2026)              # START HERE -- rows per day, both sides
-#   compare_taxi_cgna(2026)            # the summary
+#   compare_taxi_cgna(2026)            # the summary, over the common window
 #   taxi_cgna_field_diffs(2026)        # same movement, different values
 #   taxi_cgna_examples(2026)           # rows only one side has
+#   compare_taxi_cgna(2026, from = "2026-01-01", to = "2026-01-31")   # narrower
+#
+# THE WINDOW. Everything except taxi_cgna_daily() compares only the days the
+# CGNA file holds, because a half-downloaded year is the normal state and its
+# missing months are not a difference between the sources. taxi_cgna_daily() is
+# deliberately NOT windowed: seeing which days exist on one side only is the
+# whole point of it.
 #
 # The comparison itself is the one in compare_taxi_sources.R -- same key, same
 # normalisation, same field-by-field diff. Only the pair of files changes. What
@@ -31,36 +38,96 @@
 
 source(here::here("TAXI", "compare_taxi_sources.R"))
 
-# left = ODIN, right = CGNA. The comparator's own vocabulary is api/old; the
-# labels in what it returns are renamed below so no one has to remember which
-# of the two "old" means here.
+# left = ODIN, right = CGNA. The comparator's own vocabulary is api/old; what
+# is returned here says ODIN/CGNA, so nobody has to remember which of the two
+# "old" means in this pairing.
 taxi_cgna_paths <- function(year, dir = here::here("data-raw", "dstaxi")) {
   list(api = file.path(dir, sprintf("dsTaxi%d.csv", year)),
        old = file.path(dir, sprintf("dsTaxi%dcgna.csv", year)))
 }
 
-.cgna_relabel <- function(x) {
-  names(x) <- sub("_API$", "_ODIN", sub("_OLD$", "_CGNA", names(x)))
-  names(x) <- sub("^ONLY_API$", "ONLY_ODIN", sub("^ONLY_OLD$", "ONLY_CGNA",
-                                                 names(x)))
-  x
+# ---- the period the two files have in common --------------------------------
+# A partial download is the normal state while a year is being filled in, and
+# comparing January of one source against a whole year of the other reports the
+# months not downloaded yet as a difference between the sources. They are not.
+# So the comparison is confined to a window, and the DEFAULT window is the span
+# of days the CGNA file actually holds -- what both sides can be expected to
+# have. Pass from/to ("YYYY-MM-DD") to narrow it further.
+taxi_cgna_window <- function(year, from = NULL, to = NULL,
+                             paths = taxi_cgna_paths(year), quiet = FALSE) {
+  load1 <- function(path, what) {
+    if (!file.exists(path)) stop(what, " not found: ", path)
+    if (!quiet) message("Reading ", what, ": ", path)
+    d <- .taxi_prep(path)
+    d[, DAY := substr(taxi_norm_time(dh_bimtra), 1, 10)]
+    d[]
+  }
+  a <- load1(paths$api, "ODIN")
+  b <- load1(paths$old, "CGNA")
+
+  lo <- if (is.null(from)) min(b$DAY, na.rm = TRUE) else as.character(from)
+  hi <- if (is.null(to))   max(b$DAY, na.rm = TRUE) else as.character(to)
+  if (!quiet) message(sprintf("Window: %s -> %s (%s)", lo, hi,
+                              if (is.null(from) && is.null(to))
+                                "the days the CGNA file holds" else "given"))
+  list(a = a[!is.na(DAY) & DAY >= lo & DAY <= hi],
+       b = b[!is.na(DAY) & DAY >= lo & DAY <= hi],
+       from = lo, to = hi)
 }
 
 # ---- the summary -------------------------------------------------------------
-compare_taxi_cgna <- function(year, quiet = FALSE) {
-  .cgna_relabel(compare_taxi_sources(year, paths = taxi_cgna_paths(year),
-                                     quiet = quiet))
+# ROWS/KEYS/DUP per side, then the set arithmetic on the movement key:
+#   BOTH        movements both sources report
+#   ONLY_ODIN   reported by ODIN, absent from the CGNA file
+#   ONLY_CGNA   the reverse
+#   FIELD_DIFF  movements in both whose compared fields disagree
+compare_taxi_cgna <- function(year, from = NULL, to = NULL, quiet = FALSE) {
+  w <- taxi_cgna_window(year, from, to, quiet = quiet)
+  ka <- w$a$KEY; kb <- w$b$KEY
+  ua <- unique(ka); ub <- unique(kb)
+
+  fd <- tryCatch(nrow(taxi_field_diffs(year, summary_only = FALSE,
+                                       .a = w$a, .b = w$b)),
+                 error = function(e) NA_integer_)
+
+  tibble::tibble(
+    YEAR       = year,
+    FROM       = w$from,
+    TO         = w$to,
+    ROWS_ODIN  = length(ka),
+    ROWS_CGNA  = length(kb),
+    KEYS_ODIN  = length(ua),
+    KEYS_CGNA  = length(ub),
+    DUP_ODIN   = length(ka) - length(ua),
+    DUP_CGNA   = length(kb) - length(ub),
+    BOTH       = length(intersect(ua, ub)),
+    ONLY_ODIN  = length(setdiff(ua, ub)),
+    ONLY_CGNA  = length(setdiff(ub, ua)),
+    FIELD_DIFF = fd
+  )
 }
 
-taxi_cgna_examples <- function(year, n = 10)
-  taxi_source_examples(year, n = n, paths = taxi_cgna_paths(year))
-
-taxi_cgna_field_diffs <- function(year, cols = TAXI_CMP_COLS, summary_only = TRUE)
+# same movement, different values -- restricted to the same window
+taxi_cgna_field_diffs <- function(year, cols = TAXI_CMP_COLS, summary_only = TRUE,
+                                  from = NULL, to = NULL) {
+  w <- taxi_cgna_window(year, from, to, quiet = TRUE)
   taxi_field_diffs(year, cols = cols, summary_only = summary_only,
-                   paths = taxi_cgna_paths(year))
+                   .a = w$a, .b = w$b)
+}
 
-taxi_cgna_field_values <- function(year, field, n = 15)
-  taxi_field_values(year, field, n = n, paths = taxi_cgna_paths(year))
+# rows one side only, in time order
+taxi_cgna_examples <- function(year, n = 10, from = NULL, to = NULL) {
+  w <- taxi_cgna_window(year, from, to, quiet = TRUE)
+  cols <- intersect(c("indicativo", "mov", "adpartida", "addestino",
+                      "dh_bimtra", "dh_vra", "matricula", "box", "pista"),
+                    names(w$a))
+  rbind(
+    utils::head(w$a[!KEY %in% w$b$KEY][order(dh_bimtra)], n)[, cols, with = FALSE][
+      , SOURCE := "ODIN"],
+    utils::head(w$b[!KEY %in% w$a$KEY][order(dh_bimtra)], n)[, cols, with = FALSE][
+      , SOURCE := "CGNA"]
+  )[]
+}
 
 taxi_cgna_lookup <- function(year, callsign, day = NULL)
   taxi_lookup(year, callsign, day = day, paths = taxi_cgna_paths(year))
@@ -133,17 +200,16 @@ taxi_cgna_daily <- function(year, paths = taxi_cgna_paths(year)) {
 # =============================================================================
 taxi_cgna_scope <- function(year, by = c("airport", "mov", "tipovoo",
                                          "vra_tipo_linha", "companhia"),
-                            paths = taxi_cgna_paths(year), n = 25) {
+                            from = NULL, to = NULL, n = 25) {
   by <- match.arg(by)
-  grab <- function(path) {
-    if (!file.exists(path)) return(character(0))
-    d <- taxi_read(path)
+  w <- taxi_cgna_window(year, from, to, quiet = TRUE)
+  grab <- function(d) {
     if (by == "airport")
       taxi_norm(ifelse(taxi_norm(d$mov) == "ARR", d$addestino, d$adpartida))
     else if (by %in% names(d)) taxi_norm(d[[by]])
     else character(0)
   }
-  va <- grab(paths$api); vb <- grab(paths$old)
+  va <- grab(w$a); vb <- grab(w$b)
   ta <- table(va, useNA = "ifany"); tb <- table(vb, useNA = "ifany")
   lv <- union(names(ta), names(tb))
   out <- data.table::data.table(
