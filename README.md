@@ -22,7 +22,7 @@ There is **one folder per dataset**, plus one shared engine:
 | Folder | What it is |
 | --- | --- |
 | `ODIN/` | **Shared, not a dataset.** `download_odin.R` is the download engine for the whole ICEA/DECEA API: one month per request window, resumable, pagination over a total order, JSON array columns flattened. Three thin wrappers supply only what differs — `TAXI/download_taxi.R`, `TOTALBR/download_totalbr.R` and `KPI08/download_kpi08.R`. Nothing here belongs to one dataset. |
-| `TAXI/` | Taxi time: download from ODIN (`dstaxi`) **and from the CGNA** (`download_taxi_cgna.R`), source comparison, the metric's standalone validation, and the dashboard build |
+| `TAXI/` | Taxi time (`dstaxi`) from **two APIs** — ODIN (`download_taxi.R`) and the CGNA (`download_taxi_cgna.R`) — plus source comparison, the metric's standalone validation, and the dashboard build |
 | `KPI08/` | ASMA (`kpi08` via ODIN): download, golden validation, the PBWG export, the dashboard build |
 | `TOTALBR/` | The national movement table (`total_brasil` via ODIN): download, duplicate measurement, the two-stage pipeline |
 | `API_TATIC/` | TATIC — a **different API** (CGNA, token-authenticated, one day per call): download, JSON ingest, harmonisation to APDF |
@@ -256,7 +256,7 @@ percentile; it is the volume/denominator dataset.
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
 | `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dstaxi/dsTaxiYYYY.csv` | yes |
-| `TAXI/download_taxi_cgna.R` | Builds the SAME shape from the CGNA/TATIC feed into `data-raw/dstaxi/dsTaxiYYYYcgna.csv` (months under `parts/`). `box` (stand) is empty — the CGNA does not carry it — so a CGNA year cross-checks the ODIN taxi times but produces no PBWG reference group on its own | yes |
+| `TAXI/download_taxi_cgna.R` | Downloads the same `dstaxi` table from the **CGNA** API (`apiv1/dstaxi`, token-authenticated, one day per call) into `data-raw/dstaxi/dsTaxiYYYYcgna.csv`, months under `parts/`. Not TATIC — a different endpoint of the same portal. Kept under its own name so the two sources can be compared instead of assumed equal | yes |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
