@@ -141,6 +141,45 @@ The zip route still works and needs no API: set `BRA_TAXI_ZIP` to an archive hol
 `dsTaxiYYYY.csv` files, and the preparation reads the members directly without unpacking
 anything into the project tree.
 
+### The same table from the CGNA {#sec-taxi-cgna}
+
+`dstaxi` is served by **two** APIs. ODIN is the one everything above uses; the CGNA serves
+the same table at `apiv1/dstaxi`, token-authenticated, and `TAXI/download_taxi_cgna.R`
+downloads it into `data-raw/dstaxi/dsTaxi<year>cgna.csv`, months under `parts/`.
+
+Three differences from the ODIN download, all of them in the fetching and none in the
+result:
+
+- **one day per call**, walked day by day. The dates go as `YYYY-MM-DD` here and as
+  `YYYYMMDD` in the TATIC endpoint of the same portal — the same token, a different
+  format.
+- **the day is cut locally**, on `dh_bimtra`. Whether `dataf` is inclusive is
+  undocumented, so the wide bound is requested and the answer trimmed to the day: the
+  API's semantics then cannot produce a duplicate or a hole either way.
+- **the token** is `TATIC_TOKEN` in `.Renviron`, shared with the TATIC download. Do not
+  confuse the two datasets: TATIC (`API_TATIC/`) is the CGNA's milestone feed, a different
+  table with a different meaning. This is `dstaxi` itself.
+
+The file name carries `cgna` so the two sources sit in the same folder without ever being
+mistaken for one another: the inventory below matches `^dsTaxi20\d{2}\.csv$`, so a CGNA
+year is never picked up as if it were the ODIN download. Whether the two agree movement by
+movement is a question to be measured rather than assumed, which is the whole reason for
+keeping them apart.
+
+```{r}
+#| label: download-bra-taxi-data-cgna
+#| eval: false
+
+source(here::here("TAXI", "download_taxi_cgna.R"))
+
+download_taxi_cgna(2026)                                  # a whole year
+download_taxi_cgna(2026, from = "20260310", to = "20260310")   # one day, to inspect
+```
+
+`box` (the stand) is what to look at first in a fresh download. The PBWG reference key is
+`(ICAO, PHASE, STND, RWY)`, so a source without a stand yields no reference group at all
+and can only cross-check the ODIN taxi times.
+
 ```{r}
 #| label: check-bra-taxi-data
 
