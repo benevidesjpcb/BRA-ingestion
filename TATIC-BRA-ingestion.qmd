@@ -271,26 +271,6 @@ them, and a plausible-looking difference of two timestamps is exactly the kind o
 survives review while being wrong. This document ends where the raw data is complete and
 verified.
 
-```{r}
-#| label: tbl-bra-tatic-milestones
-#| tbl-cap: "How often each milestone is populated"
-
-if (length(year_files) == 0) {
-  knitr::kable(tibble::tibble(note = "Nothing downloaded yet."))
-} else {
-  d <- data.table::fread(file = year_files[1], sep = ";", colClasses = "character",
-                         showProgress = FALSE, fill = Inf, header = TRUE)
-  ms <- intersect(TATIC_MILESTONES, names(d))
-  knitr::kable(tibble::tibble(
-    Milestone = ms,
-    Populated = vapply(ms, function(x) sum(!is.na(d[[x]]) & nzchar(d[[x]])), integer(1)),
-    Records   = nrow(d)
-  ) |>
-    dplyr::mutate(`%` = round(100 * Populated / pmax(Records, 1), 1)) |>
-    dplyr::arrange(dplyr::desc(Populated)))
-}
-```
-
 ## The Pipeline End to End
 
 1. **Token** — `TATIC_TOKEN` in `.Renviron`, never in a script, never in the repository.
