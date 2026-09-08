@@ -108,6 +108,15 @@ TOTALBR_UNION_COLS <- c("li_orgaos", "li_tipovoo", "li_regravoo",
 # not reconcile. Change it here, having looked at totalbr_cluster_profile().
 TOTALBR_GAP_MIN <- 60
 
+# How far apart two records listing the SAME units may be and still be one
+# flight. A unit does report one passage twice -- PRATC's APPRJ filed 06:07:03
+# and 06:07:04, one second apart -- but a second leg of the same aircraft on the
+# same route is tens of minutes away: PRMES's APPPS hops are 10 to 45 minutes
+# apart. Seconds against tens of minutes, with nothing in between, so this
+# tolerance is deliberately tight. It is NOT a turnaround time and must not be
+# raised towards one; totalbr_edge_profile() shows the gap it sits in.
+TOTALBR_SAME_UNIT_MIN <- 1
+
 .union_values <- function(x) {
   v <- if (is.list(x)) unlist(x) else as.character(x)
   # the two sources separate differently: the API download pipe-separates after
@@ -119,6 +128,16 @@ TOTALBR_GAP_MIN <- 60
   v <- v[nzchar(v)]
   if (length(v) == 0) return(NA_character_)
   paste(sort(v), collapse = "|")
+}
+
+# Rows that were not merged in THIS pass still need N_MERGED and MERGED_PK -- but
+# only if they do not already carry them from an earlier one. Setting them
+# unconditionally is how a second pass forgets what the first one did.
+.keep_provenance <- function(x) {
+  if (!"MERGED_PK" %in% names(x))
+    x[, MERGED_PK := if ("pk" %in% names(x)) as.character(pk) else NA_character_]
+  if (!"N_MERGED" %in% names(x)) x[, N_MERGED := 1L]
+  x
 }
 
 # =============================================================================
@@ -144,7 +163,7 @@ totalbr_merge_duplicates <- function(d, pairs,
   dt <- data.table::as.data.table(d)
   n  <- nrow(dt)
   if (!nrow(pairs)) {
-    dt[, `:=`(N_MERGED = 1L, MERGED_PK = if ("pk" %in% names(dt)) pk else NA_character_)]
+    dt <- .keep_provenance(dt)
     return(if (as_tibble && requireNamespace("tibble", quietly = TRUE))
              tibble::as_tibble(dt) else dt[])
   }
@@ -170,8 +189,14 @@ totalbr_merge_duplicates <- function(d, pairs,
              .IS_PLAN = as.integer(is_plan))]      # 0 first = row with a span
   data.table::setorderv(grp, c("GRP_ID", ".HAS_REG", ".IS_PLAN", start_col))
 
+  # The columns the merge PRODUCES must not also be carried in as values. On raw
+  # data they do not exist and this is a no-op; on a second pass -- which is what
+  # totalbr_bind_months() runs over the monthly files -- they are already there,
+  # and taking them through .first_filled() as well produced a frame with
+  # N_MERGED and MERGED_PK twice, which fwrite refuses to write.
   val_cols <- setdiff(names(grp),
-                      c("GRP_ID", "ROW_ID", ".HAS_REG", ".IS_PLAN"))
+                      c("GRP_ID", "ROW_ID", ".HAS_REG", ".IS_PLAN",
+                        "N_MERGED", "MERGED_PK"))
 
   merged <- grp[, c(
     lapply(.SD, .first_filled),
@@ -222,8 +247,11 @@ totalbr_merge_duplicates <- function(d, pairs,
                     uni, by = "GRP_ID")
   }
 
-  rest[, `:=`(N_MERGED = 1L,
-              MERGED_PK = if ("pk" %in% names(rest)) pk else NA_character_)]
+  # A row this pass did not touch keeps whatever provenance it arrived with. On a
+  # second pass most rows are untouched, and overwriting MERGED_PK with the row's
+  # own pk erased the records behind a flight already merged in a previous pass:
+  # a January flight built from four records came out of the bind claiming one.
+  rest <- .keep_provenance(rest)
   rest[, c("GRP_ID") := NULL]
   merged[, c("GRP_ID") := NULL]
   if ("ROW_ID" %in% names(merged)) merged[, ROW_ID := NULL]
@@ -258,9 +286,16 @@ totalbr_merge_duplicates <- function(d, pairs,
 # HOW THE GROUPING WORKS
 # Records sharing callsign + departure + destination are sorted by start time.
 # A record joins the group being built when it starts within `gap_min` of the
-# LATEST END so far in that group; otherwise it opens a new flight. Chaining on
-# the running end, not on the first record, is what lets a 05:43 instant, a
-# 06:07-06:59 track and anything between them form one flight.
+# LATEST END so far in that group AND lists no unit already in it; otherwise it
+# opens a new flight. Chaining on the running end, not on the first record, is
+# what lets a 05:43 instant, a 06:07-06:59 track and anything between them form
+# one flight.
+#
+# The tolerance is not one number. A record listing the SAME units as the one
+# before it is the same observer reporting again, which happens seconds apart,
+# so it gets `same_unit_min` instead of `gap_min`. That is what keeps a
+# helicopter shuttle apart while a flight crossing sectors stays whole. See
+# totalbr_flight_edges().
 #
 # CHOOSING gap_min
 # It is the shortest turnaround that still separates two real flights of the same
@@ -275,8 +310,11 @@ totalbr_merge_flights <- function(d, gap_min = TOTALBR_GAP_MIN,
                                   start_col = "dh_inicio",
                                   end_col   = "dh_fim",
                                   key_cols  = c("co_indicativo", "co_addep", "co_addes"),
+                                  unit_col  = "li_orgaos",
+                                  same_unit_min = TOTALBR_SAME_UNIT_MIN,
                                   ...) {
-  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols)
+  edges <- totalbr_flight_edges(d, gap_min, start_col, end_col, key_cols,
+                                unit_col, same_unit_min)
   totalbr_merge_duplicates(d, edges, start_col = start_col, end_col = end_col, ...)
 }
 
@@ -286,7 +324,9 @@ totalbr_merge_flights <- function(d, gap_min = TOTALBR_GAP_MIN,
 totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
                                  start_col = "dh_inicio",
                                  end_col   = "dh_fim",
-                                 key_cols  = c("co_indicativo", "co_addep", "co_addes")) {
+                                 key_cols  = c("co_indicativo", "co_addep", "co_addes"),
+                                 unit_col  = "li_orgaos",
+                                 same_unit_min = TOTALBR_SAME_UNIT_MIN) {
   empty <- data.table::data.table(ROW_ID = integer(), PARTNER_ID = integer(),
                                   GAP_MIN = numeric(), KIND = character())
   dt <- data.table::as.data.table(d)
@@ -313,11 +353,116 @@ totalbr_flight_edges <- function(d, gap_min = TOTALBR_GAP_MIN,
   ok[, .RUN_END := data.table::shift(cummax(.E)), by = .KEY]
   ok[, .GAP     := (.S - .RUN_END) / 60]
 
-  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= gap_min,
+  # THE SAME OBSERVER REPORTS ONE PASSAGE TWICE, SECONDS APART -- NOT TWICE AN HOUR.
+  # PRATC on 2026-01-01 is four records: APPSP at 05:43:04, APPRJ at 06:07:03,
+  # APPRJ again at 06:07:04, then ACCCW|APPVT tracking 06:21-06:59. One flight.
+  # PRMES the same day is 115 records all listing APPPS alone, a helicopter
+  # shuttling SBPS <-> SD49, its hops 10 to 45 minutes apart. Separate flights,
+  # which the chaining merged into one: each hop starts within gap_min of the one
+  # before, and a zero-duration row makes the group's running end its last START,
+  # so nothing broke the chain.
+  #
+  # WHAT SEPARATES THEM IS THE SCALE. Two captures of ONE passage by the SAME
+  # units are seconds apart; two legs are tens of minutes apart. One second
+  # against ten minutes leaves no ambiguity to resolve.
+  #
+  # So the tolerance depends on WHO reported. Records listing DIFFERENT units are
+  # a flight crossing sectors and keep the full gap_min -- that is the case it was
+  # built for. Records listing the SAME units get same_unit_min, which is the
+  # width of a duplicate report, not of a turnaround.
+  #
+  # EQUAL SETS, not overlapping ones. A record is not one unit's view -- many
+  # carry two to six -- and a unit covering successive sectors appears in
+  # consecutive records of one flight. Refusing every overlapping pair split
+  # PRATC in two.
+  ok[, .SAME_SET := FALSE]
+  if (!is.null(unit_col) && unit_col %in% names(d)) {
+    # sorted and de-duplicated, so this compares SETS: the same units in another
+    # order, or listed twice, must not read as a different observer
+    units <- strsplit(as.character(d[[unit_col]]), "[|,]")
+    units <- vapply(units, function(u) {
+      u <- unique(trimws(u[!is.na(u) & nzchar(trimws(u))]))
+      if (length(u) == 0) NA_character_ else paste(sort(u), collapse = "|")
+    }, character(1))
+    # a record listing no unit says nothing about who saw it, so it is never held
+    # to the tight tolerance -- two blanks are not evidence of one observer
+    ok[!is.na(.PREV), .SAME_SET := !is.na(units[ROW_ID]) & !is.na(units[.PREV]) &
+                                    units[ROW_ID] == units[.PREV]]
+  }
+  ok[, .TOL := data.table::fifelse(.SAME_SET, same_unit_min, gap_min)]
+
+  e <- ok[!is.na(.PREV) & !is.na(.RUN_END) & .GAP <= .TOL,
           list(ROW_ID, PARTNER_ID = .PREV, GAP_MIN = round(.GAP, 1),
                KIND = "same flight")]
   if (nrow(e) == 0) return(empty)
   e[]
+}
+
+# =============================================================================
+# totalbr_edge_profile(d, gap_min, unit_col)
+#
+# EVERY LINK THE GROUPING WOULD MAKE, split by whether the two records share a
+# unit, and by how far apart they are.
+#
+# WHAT THE QUESTION IS
+# The records of one flight are supposed to come from DIFFERENT units -- one per
+# unit that saw it. So a link between two records of the SAME unit is suspect: a
+# unit does not report one flight twice, which would make those two records two
+# flights. PRMES on 2026-01-01 is the case that raised it: ten APPPS records of a
+# helicopter shuttling SBPS <-> SD49, chained into one flight because each hop
+# starts within gap_min of the previous one and a zero-duration row makes the
+# group's running end its last START.
+#
+# BUT THE RULE CANNOT BE ADOPTED ON THAT ONE CASE. If a unit sometimes emits two
+# records of the SAME flight, refusing to link them splits real flights instead.
+# The data says which: shared-unit links concentrated at tiny gaps are two views
+# of one flight, and separating them would be wrong; shared-unit links spread
+# over tens of minutes are separate legs, and linking them is the error.
+#
+# Reports, decides nothing. Run it before changing how the grouping works.
+# =============================================================================
+totalbr_edge_profile <- function(d, gap_min = TOTALBR_GAP_MIN,
+                                 unit_col  = "li_orgaos",
+                                 start_col = "dh_inicio",
+                                 end_col   = "dh_fim",
+                                 breaks    = c(0, 1/60, 0.25, 0.5, 1, 2, 5,
+                                               10, 15, 30, 45, 60)) {
+  e <- totalbr_flight_edges(d, gap_min, start_col, end_col)
+  if (nrow(e) == 0) { message("No link at gap_min = ", gap_min); return(tibble::tibble()) }
+  if (!unit_col %in% names(d))
+    stop("No column '", unit_col, "' to judge the units by.")
+
+  # the units of a row, as a set; the two separators are both in play because the
+  # archive comma-separates and the download pipe-separates
+  units <- strsplit(as.character(d[[unit_col]]), "[|,]")
+  units <- lapply(units, function(u) unique(trimws(u[!is.na(u) & nzchar(trimws(u))])))
+
+  key <- vapply(units, function(u)
+    if (length(u) == 0) NA_character_ else paste(sort(u), collapse = "|"),
+    character(1))
+
+  dt <- data.table::as.data.table(e)
+  # EQUAL sets, which is what the grouping now keys on -- not mere overlap. A
+  # unit covering successive sectors appears in consecutive records of one
+  # flight, so overlap says nothing.
+  dt[, SAME_SET := key[ROW_ID] == key[PARTNER_ID]]
+  # a row with no unit listed cannot answer the question either way
+  dt[, KNOWN := !is.na(key[ROW_ID]) & !is.na(key[PARTNER_ID])]
+  dt[, BUCKET := cut(GAP_MIN, breaks = unique(c(breaks, Inf)),
+                     include.lowest = TRUE, right = TRUE)]
+
+  # PER MINUTE, not per bucket. The buckets are deliberately uneven -- the
+  # interesting structure is in the first minutes -- so raw counts across them
+  # are not comparable, and reading them as if they were says a distribution is
+  # flat when its density peaks tenfold at zero.
+  wid <- diff(unique(c(breaks, Inf)))
+  out <- dt[KNOWN == TRUE, list(LINKS = .N), by = list(SAME_SET, BUCKET)]
+  out[, WIDTH   := wid[as.integer(BUCKET)]]
+  out[, PER_MIN := round(LINKS / WIDTH, 1)]
+  data.table::setorderv(out, c("SAME_SET", "BUCKET"))
+  if (any(!dt$KNOWN))
+    message(sum(!dt$KNOWN), " link(s) left out: one of the two rows lists no unit.")
+  tibble::as_tibble(out)
 }
 
 # ---- what the grouping does at different tolerances --------------------------

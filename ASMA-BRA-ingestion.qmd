@@ -483,6 +483,78 @@ ring**. Two things can break that, and both have bitten this pipeline:
 The table below is the guard. It reports the transit level per year **and ring**; every
 year should sit close to the reference year within its own ring.
 
+### Coverage — how much of the traffic the metric actually covers
+
+A movement only enters the metric when its group has a reference. Everything else is counted
+as `MVTS_NA` and silently sits outside every average. **About one movement in five is
+outside**, and the share moves between years — so an average for 2024 and one for 2026 are
+taken over differently sized slices of the same traffic.
+
+This decomposes the exclusion by cause, which is what says whether it is neutral. It is
+derived from the analytic table alone: a row with no `SECTOR_GROUP` was excluded for want of
+a sector, one with no `CLASS` or no `RWY` for want of those, and a row with all three present
+but still not valid had no reference for its group -- `min_n` unmet in the reference year, or
+the group absent from it altogether.
+
+```{r}
+#| label: tbl-bra-asma-coverage-causes
+#| tbl-cap: "Where the excluded movements go"
+
+asma_daily_path <- here::here("data", bra_asma_analytic_file)
+
+if (!file.exists(asma_daily_path)) {
+  knitr::kable(tibble::tibble(note = "Run the `prepare-bra-asma-data` chunk first."))
+} else {
+  blank <- function(x) is.na(x) | x == "" | x == "NA"
+  readr::read_csv(asma_daily_path, show_col_types = FALSE) |>
+    dplyr::mutate(
+      YEAR  = lubridate::year(DATE),
+      CAUSE = dplyr::case_when(
+        blank(SECTOR_GROUP) ~ "no SECTOR_GROUP",
+        blank(CLASS)        ~ "no CLASS",
+        blank(RWY)          ~ "no RWY",
+        TRUE                ~ "no reference for the group")) |>
+    dplyr::group_by(YEAR) |>
+    dplyr::summarise(
+      MOVEMENTS = sum(MVTS_VALID) + sum(MVTS_NA),
+      VALID     = sum(MVTS_VALID),
+      NO_SECTOR = sum(MVTS_NA[CAUSE == "no SECTOR_GROUP"]),
+      NO_CLASS  = sum(MVTS_NA[CAUSE == "no CLASS"]),
+      NO_RWY    = sum(MVTS_NA[CAUSE == "no RWY"]),
+      NO_REF    = sum(MVTS_NA[CAUSE == "no reference for the group"]),
+      .groups   = "drop") |>
+    dplyr::mutate(COVERED = round(100 * VALID / MOVEMENTS, 1)) |>
+    knitr::kable()
+}
+```
+
+Measured over 2024-2026, the answer is stark and it is **one cause**:
+
+| | 2024 | 2025 | 2026 |
+| --- | --- | --- | --- |
+| covered | 80.9% | 79.7% | 83.4% |
+| **no `SECTOR_GROUP`** | **18.9%** | **20.1%** | **16.4%** |
+| no `CLASS` | 0.0% | 0.0% | 0.0% |
+| no `RWY` | 0.1% | 0.1% | 0.1% |
+| no reference for the group | 0.0% | 0.0% | 0.1% |
+
+`asma_min_n` and the richer reference key are **not** the cause -- together they account for
+0.05%. Nor are the implausible runway designations, at 0.1%. A missing entry sector is the
+whole of it, and the swing in coverage between years is the swing in how often it is missing.
+
+::: {.callout-warning}
+## What this means for any figure taken from here
+The excluded fifth is not a random fifth. A movement lacking its ring-crossing sector is
+likely to be one the surveillance did not track cleanly, and those are not the average
+flights. Two consequences:
+
+1. **Never report an average without `MVTS_VALID` and the coverage beside it.** A reader
+   comparing 2.69 min/mov in 2024 with 2026 is comparing 80.9% of the traffic with 83.4%.
+2. **The sector field is the thing to ask ICEA/DECEA about** -- why it is empty for a fifth
+   of arrivals, and whether it can be recovered. It is worth more than any other open point
+   in this document, because it is the only one that moves the denominator.
+:::
+
 ```{r}
 #| label: tbl-bra-asma-comparability
 
@@ -642,6 +714,63 @@ Before treating the output as final, confirm with DECEA/ICEA:
    affected — only the `MVTS_NA` count and the number of rows written.
 4. Whether any DEP/DSMA (departure) evidence exists; these files are arrival-only, so a
    separate DSMA source is still needed for the departure side.
+
+## The PBWG Deliverable
+
+One file per year, in the columns PBWG asks for and named the way the other members name
+theirs (`SIN-airport-xsma-2026.csv`):
+
+```
+outputs/asma/BRA-airport-xsma-2024.csv
+outputs/asma/BRA-airport-xsma-2025.csv
+outputs/asma/BRA-airport-xsma-2026.csv
+```
+
+| Column | What it holds |
+| --- | --- |
+| `ICAO`, `DATE`, `PHASE`, `RWY` | the aerodrome, the day, the phase, the runway |
+| `RANGE` | the ASMA ring — see below |
+| `N_VALID` | movements with a reference, i.e. the ones the other three columns are over |
+| `TOTAL_TIME` | observed ASMA transit, summed |
+| `TOTAL_REF_TIME` | **our** recomputed reference, summed |
+| `TOTAL_ADD_TIME` | `TOTAL_TIME` − `TOTAL_REF_TIME` |
+
+```{r}
+#| label: export-bra-asma-pbwg
+#| eval: false
+
+source(here::here("KPI08", "export_asma_pbwg.R"))
+export_asma_pbwg()            # every year present in the analytic table
+
+# ---- variants, when you need them --------------------------------------------
+# export_asma_pbwg(2026)                                  # a single year
+# export_asma_pbwg(out_dir = here::here("outputs", "pbwg"))
+```
+
+**The numbers are the ones recomputed here.** Brazil's supplied `desimp` and `kpi08` stay in
+the analytic table as `TOT_BRA_REF` / `TOT_BRA_KPI08` for validation and reach none of these
+columns. The two references are built on different keys — ours includes `CLASS`, the supplied
+one does not — so a file mixing them could not be reconciled by whoever receives it.
+
+**The rings share a file but never a row.** `RANGE` stays in the grouping because C40 and
+C100 are about ten minutes apart in this source: a row summing both would make a year whose
+traffic shifted between rings look like a year whose performance changed. Anyone aggregating
+this file has to keep them apart.
+
+::: {.callout-important}
+## Send the coverage with the file
+`N_VALID` is the numerator of the coverage and the file carries no denominator, so the
+recipient cannot work out how much traffic is behind it. Roughly a fifth is not:
+**19.1% excluded in 2024, 20.3% in 2025, 16.6% in 2026**, almost entirely for want of an
+entry sector in the source.
+
+Two years compared without that are two different slices of traffic compared as if they were
+the same one. See [Coverage — how much of the traffic the metric actually covers].
+:::
+
+> **Still in the file:** the ~600 movements on runway designations that match no runway at
+> the aerodrome (`06L` at SBBR and the like). They are 0.02% and move nothing, but they are
+> there, and their reference was built from themselves. See the open points.
 
 ## Dashboard
 

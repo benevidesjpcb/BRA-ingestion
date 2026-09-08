@@ -59,6 +59,21 @@ TOTALBR_DUP_COLS <- c("pk", "co_matricula", "co_addep", "co_addes",
 # absence skips the file.
 TOTALBR_CONTEXT_COLS <- c("ds_rota", "li_orgaos")
 
+# ---- which files can possibly hold the years asked for ----------------------
+# The downloader writes one file per year, <prefix>_<year>.csv, so the name is a
+# reliable statement about the contents. A path whose name carries no year says
+# nothing and is therefore KEPT -- the row filter still applies to it.
+totalbr_paths_for_years <- function(paths, years = NULL) {
+  if (is.null(years) || length(paths) == 0) return(paths)
+  in_name <- sub("^.*_(\\d{4})\\.csv$", "\\1", basename(paths))
+  named   <- in_name != basename(paths)          # the pattern actually matched
+  keep    <- !named | in_name %in% as.character(years)
+  if (any(!keep))
+    message("  skipping ", sum(!keep), " file(s) for other year(s): ",
+            paste(basename(paths[!keep]), collapse = ", "))
+  paths[keep]
+}
+
 # ---- read the columns the check needs, from either source kind --------------
 totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL,
                                   month = NULL) {
@@ -125,8 +140,12 @@ totalbr_read_dup_cols <- function(path, date_col = "dt_dia", years = NULL,
   }
 
   if (is.null(d) || nrow(d) == 0) return(NULL)
-  # one shape for MONTH whichever branch produced it
-  if (!is.null(d$MONTH)) d$MONTH <- sprintf("%02d", as.integer(d$MONTH))
+  # one shape for MONTH whichever branch produced it.
+  # Tested by NAME, not with d$MONTH: on a tibble, reaching for a column that is
+  # not there warns ("Unknown or uninitialised column"), and MONTH is absent
+  # whenever no month filter was asked for -- so the ordinary call printed a
+  # warning about a column it had deliberately not created.
+  if ("MONTH" %in% names(d)) d$MONTH <- sprintf("%02d", as.integer(d$MONTH))
   d <- totalbr_normalise(d)
   d$SOURCE <- basename(path)
   d
@@ -302,6 +321,17 @@ check_totalbr_duplicates <- function(years    = NULL,
   if (length(paths) == 0) {
     message("No ", source, " source in ", raw_dir); return(tibble::tibble())
   }
+  # A year file is named for the year it holds, so a year outside `years` can be
+  # skipped WITHOUT OPENING IT. The row filter downstream is not enough: fread
+  # takes no row predicate, so a CSV is read whole into memory and then thrown
+  # away -- asking for 2026 read every row of 2024 and 2025 first. Only names
+  # that actually carry a year are judged; anything else (the parquet archive,
+  # a file named by hand) is left in and filtered by row as before.
+  paths <- totalbr_paths_for_years(paths, years)
+  if (length(paths) == 0) {
+    message("No source file holds ", paste(years, collapse = ", "), " in ", raw_dir)
+    return(tibble::tibble())
+  }
   # The pk test also reads the per-month PARTS, which are the API's: the merge
   # de-duplicates on pk, so by the time a year file exists it can no longer show
   # whether the API repeated a row.
@@ -359,17 +389,38 @@ check_totalbr_duplicates <- function(years    = NULL,
   pk_parts <- if (use_parts && length(src$parts) > 0) {
     message("Reading the month parts for the pk test ...")
     purrr::map(src$parts, function(f) {
-      x <- data.table::fread(file = f, sep = ";", select = c("pk", date_col),
+      # Look at the header BEFORE selecting. fread(select=) only warns about a
+      # column it cannot find -- "Column name 'pk' not found ... skipping" -- and
+      # then returns the rest, so a part written in another shape produced an
+      # empty pk test that read as "no duplicates" rather than as "not tested".
+      hdr  <- names(data.table::fread(file = f, sep = ";", nrows = 0L,
+                                      showProgress = FALSE))
+      want <- c("pk", date_col)
+      miss <- setdiff(want, hdr)
+      if (length(miss) > 0) {
+        message("  skipping ", basename(f), ": no column(s) ",
+                paste(miss, collapse = ", "),
+                ". It holds: ", paste(utils::head(hdr, 8), collapse = ", "),
+                if (length(hdr) > 8) ", ..." else "")
+        return(NULL)
+      }
+      x <- data.table::fread(file = f, sep = ";", select = want,
                              colClasses = "character", na.strings = "",
                              showProgress = FALSE)
       tibble::tibble(YEAR  = substr(x[[date_col]], 1, 4),
                      MONTH = substr(x[[date_col]], 6, 7),
                      pk    = x$pk)
-    }) |> purrr::list_rbind()
+    }) |> purrr::compact() |> purrr::list_rbind()
   } else NULL
 
   # a pk repeated ACROSS two month files is what an overlapping request window
   # produces, so the parts are pooled before the test rather than checked one by one
+  # NOT TESTED is not the same as NO DUPLICATES. If every part was skipped, say so
+  # rather than reporting a zero that means nothing.
+  if (use_parts && (is.null(pk_parts) || nrow(pk_parts) == 0))
+    message("SAME_PK_PARTS could not be measured: no month part carried both ",
+            "pk and ", date_col, ". The figure below is NA, not zero.")
+
   parts_pk <- if (!is.null(pk_parts) && nrow(pk_parts) > 0) {
     p <- pk_parts
     if (!is.null(years)) p <- p[p$YEAR %in% as.character(years), ]
