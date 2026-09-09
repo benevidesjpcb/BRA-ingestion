@@ -79,19 +79,17 @@
 # Since the dates carry no time, THE DAY CANNOT BE SPLIT: there is no narrower
 # question to ask. Two levers remain, and both are used, in this order:
 #
-#   1. ASK FOR ONE DATE, NOT TWO. datai=d dataf=d+1 is a two-day span if dataf
-#      is inclusive, which doubles the work behind a front end that is already
-#      timing out. datai=d dataf=d is unambiguous and cannot cost more. The
-#      answer is still trimmed to the day locally, so an inclusive and an
-#      exclusive dataf produce the same file either way.
-#   2. RETRY, SMALLER, WITH A PAUSE. A 502 from an overloaded backend is the one
-#      failure that repeating can fix, and it is now the only tool left. Each
-#      attempt waits longer and asks for fewer rows per page (1000, then 250,
-#      then 50): if the backend applies the page limit in the query it does less
-#      work per request, and if it does not, nothing is lost but the attempt.
+# Measured, so that nobody spends an afternoon on it again: per_page is NOT a
+# lever (the same day answered 502 at 61s at per_page 5 and 50 alike, so the
+# backend assembles the result before paging touches it), the range is not one
+# either, and the endpoint has answered 502 in a browser as readily as here.
+# This is the CGNA's service being down or degraded, and the only thing a client
+# can do about it is come back later: the day is retried immediately, after 20s
+# and after 60s, then left for the next run.
 #
-# When both fail the day is left alone and named. It is not stored short and not
-# silently skipped -- a re-run picks it up, because CGNA_DAY never recorded it.
+# A day that fails every attempt is left alone and named. It is not stored short
+# and not silently skipped -- a re-run picks it up, because CGNA_DAY never
+# recorded it.
 #
 # PAGINATED, AND THE ENVELOPE SAYS SO. The answer is not a bare array but an
 # object: the rows, plus `page`, `per_page`, `total` and `total_pages`. Keeping
@@ -306,8 +304,8 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
 # cgna_totalbr_check(day, span, per_page) -- ONE request, everything it answered
 #
 #   source(here::here("TOTALBR", "download_totalbr_cgna.R"))
-#   cgna_totalbr_check("2026-01-15")                  # datai = dataf = that day
-#   cgna_totalbr_check("2026-01-15", span = 1)        # dataf = the next day
+#   cgna_totalbr_check("2026-01-15")                  # dataf = the next day
+#   cgna_totalbr_check("2026-01-15", span = 0)        # datai = dataf
 #   cgna_totalbr_check("2026-01-15", per_page = 50)   # a smaller page
 #
 # Run this first, and whenever a download comes back empty or refused. It asks
@@ -319,12 +317,12 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
 # day and a rejected request look identical from the outside; this is what
 # separates them.
 #
-# `span` is days: 0 sends datai = dataf (the default, and the cheapest question
-# for the portal), 1 sends dataf = the next day. It exists to measure two
-# things that cannot be assumed -- whether dataf is inclusive, and whether the
-# two-day span is what makes the backend time out.
+# `span` is days: 1 sends dataf = the next day (the default, and what the
+# download does), 0 sends datai = dataf. It is there to settle whether dataf is
+# inclusive, which is not documented -- run both on a day that answers and
+# compare the row counts.
 # =============================================================================
-cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
+cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 1L,
                                base_url = CGNA_TOTALBR_URL,
                                per_page = CGNA_TOTALBR_PAGE_SIZE) {
   token <- Sys.getenv("TATIC_TOKEN", unset = "")
@@ -449,10 +447,20 @@ cgna_totalbr_fetch_day <- function(day, token, base_url = CGNA_TOTALBR_URL,
       message(sprintf("      waiting %ds before asking again ...", w))
       Sys.sleep(w)
     }
-    # ONE date, not a span: datai=d dataf=d+1 is two days if dataf is inclusive,
-    # and doubling the work behind a front end that is already timing out is the
-    # opposite of what is wanted. The trim below makes both readings equivalent.
-    res <- cgna_totalbr_fetch_range(day, day, token, base_url, per_page, timeout)
+    # datai=d dataf=d+1, NOT datai=dataf=d. Whether dataf is inclusive is not
+    # documented, and the two readings fail in opposite ways: asked as [d, d+1]
+    # an inclusive bound returns a day too many, which the trim below removes;
+    # asked as [d, d] an EXCLUSIVE bound returns nothing, which is
+    # indistinguishable from a day with no flights and would be stored as one.
+    # A superset that is trimmed cannot lose a day; an empty answer that looks
+    # like an answer can lose every day, silently. So the wider bound is asked
+    # for and cut locally.
+    #
+    # It was briefly the other way round, on the theory that one date was
+    # cheaper for a backend that kept timing out. That theory is dead -- the
+    # 502s turned out to be the endpoint being down, reproducing in a browser --
+    # and it was never worth a silent-emptiness risk even while it was alive.
+    res <- cgna_totalbr_fetch_range(day, day + 1, token, base_url, per_page, timeout)
     if (isTRUE(res$ok)) return(.cgna_totalbr_finish(res$df, day))
     if (!isTRUE(res$retryable)) return(NULL)
   }
@@ -602,8 +610,16 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
           # A day with no flights is an answer, not a failure. Recorded as one
           # row carrying only the day, so the resume logic knows it was asked
           # for and does not request it again on every run.
+          #
+          # But say it loudly: this is the NATIONAL table, and a day of Brazilian
+          # traffic with no flights at all is not a thing that happens. One such
+          # day is a curiosity; a run of them means the request is wrong rather
+          # than the sky empty -- most likely the range, if dataf turns out to be
+          # exclusive. The placeholder is what would otherwise make that mistake
+          # permanent, since a stored day is never asked for again.
           df <- data.frame(CGNA_DAY = need[i], stringsAsFactors = FALSE)
-          message(sprintf("    %s  no records", need[i]))
+          message(sprintf("    %s  NO RECORDS -- implausible for the national table; %s",
+                          need[i], "check the range before trusting it"))
         } else {
           message(sprintf("    %s  %d record(s)", need[i], nrow(df)))
         }

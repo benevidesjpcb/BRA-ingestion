@@ -215,22 +215,27 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   the result as a whole, so **a short page is the only end-of-result signal there is**. A
   full page means ask for the next one. (There is consequently no `total` to check a day
   against — a check the ODIN download does have, and this one cannot.)
-- **A day the portal refuses is asked for one date at a time, then smaller, then later.**
-  Asked for a day, the portal has answered `HTTP 502 ... Error reading from remote server`:
-  the CGNA's own Apache in front of the application, giving up on a backend that took longer
-  than it would wait. It is neither the token nor our proxy. Because the dates carry no
-  time, **the day cannot be split** — there is no narrower question to ask — so two levers
-  remain, and both are used in order. First, `datai=d dataf=d` instead of `dataf=d+1`: the
-  latter is a two-day span if `dataf` is inclusive, and doubling the work behind a front end
-  that is already timing out is the opposite of what is wanted. (The answer is trimmed to
-  the day locally either way, so both readings of `dataf` produce the same file.) Then a
-  retry after a pause — immediately, then 20s, then 60s. `per_page` is **not** a lever, and
-  it was worth measuring rather than assuming: the same day answered 502 at 61 seconds at
-  `per_page` 5 and at 50 alike, which says the backend assembles the whole result before
-  paging touches it, behind a fixed 60-second gateway. A 401 stops at once, because waiting
-  does not fix a token. A day that fails every attempt is **named and left
-  alone** — never stored short, never silently skipped; `CGNA_DAY` never recorded it, so the
-  next run asks for it again.
+- **A day the portal refuses is retried, then left for the next run.** Asked for a day, the
+  endpoint has answered `HTTP 502 ... Error reading from remote server` at exactly 61
+  seconds — the CGNA's own gateway giving up on a backend that took longer than it would
+  wait. Three things were measured before concluding anything, and each killed a plausible
+  theory: `per_page` is not a lever (the same day answered 502 at `per_page` 5 and at 50
+  alike, so the result is assembled before paging touches it); the period is not one either
+  (a September day failed exactly as a January day did); and **the same request fails in a
+  browser**. So it is the CGNA's service being degraded, not our request, and the only
+  client-side answer is to come back later — immediately, after 20s, after 60s, then the day
+  is named and left for the next run. A 401 stops at once, because waiting does not fix a
+  token.
+- **`datai=d dataf=d+1`, and the answer trimmed to the day locally.** Whether `dataf` is
+  inclusive is not documented, and the two readings fail in *opposite* ways. Asked as
+  `[d, d+1]`, an inclusive bound returns one day too many — which the trim removes. Asked as
+  `[d, d]`, an **exclusive** bound returns nothing — which is indistinguishable from a day
+  with no flights and would be stored as one, and never asked for again. A superset that is
+  trimmed cannot lose a day; an empty answer that looks like an answer can lose every day,
+  silently. So the wider bound is asked for and cut here, and **a zero-row day is reported
+  loudly**: this is the national table, and a day of Brazilian traffic with no flights at
+  all is not a thing that happens. One such day is a curiosity; a run of them means the
+  request is wrong rather than the sky empty.
 - **The window is walked one day at a time**, and the answer trimmed to that day on `dt_dia`.
   Whether `dataf` is inclusive is not documented: asked as `[d, d+1]`, an exclusive bound
   gives the day and an inclusive one gives two, which would file the same flight under two

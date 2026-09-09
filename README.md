@@ -348,21 +348,22 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   several pages. The envelope is `{"count": N, "data": [...]}` — `count` is the rows *in
   that page*, and there is no field describing the result as a whole, so **a short page is
   the only end-of-result signal**: a full page means ask for the next one.
-- **A day the portal refuses is asked for one date at a time, then smaller, then later.**
-  The endpoint has answered a whole day with `HTTP 502 ... Error reading from remote server`
-  — the CGNA's own Apache giving up on its backend, not our proxy and not the token. Since
-  the dates carry no time, the day cannot be split, so two levers remain and both are used:
-  `datai=d dataf=d` rather than `dataf=d+1` (a two-day span if `dataf` is inclusive, which
-  doubles the work behind a front end that is already timing out), then a retry after a
-  pause — immediately, then 20s, then 60s. `per_page` is **not** a lever: the same day
-  answered 502 at 61s at `per_page` 5 and 50 alike, so the backend assembles the result
-  before paging touches it. A 401 stops at once. A day that fails every attempt is named and
-  left alone — never stored short, and a re-run asks for it again.
-
-> **The period matters more than any of this.** A recent day is served where an older one
-> times out. If a whole month fails while `cgna_totalbr_check(Sys.Date() - 7)` answers, that
-> is not a retry problem: the endpoint cannot assemble that period inside the CGNA's own
-> 60-second gateway, and it is theirs to fix.
+- **A day the portal refuses is retried, then left for the next run.** The endpoint has
+  answered `HTTP 502 ... Error reading from remote server` at exactly 61s — the CGNA's own
+  gateway giving up on its backend. Three things were measured before concluding anything:
+  `per_page` is not a lever (502 at `per_page` 5 and 50 alike, so the result is assembled
+  before paging touches it), the date range is not one either, and **the same request fails
+  in a browser**. It is their service being degraded, and the only client-side answer is to
+  come back later: immediately, after 20s, after 60s, then the day is named and left. A 401
+  stops at once. A day that fails every attempt is never stored short — `CGNA_DAY` did not
+  record it, so a re-run asks again.
+- **`datai=d dataf=d+1`, trimmed locally.** Whether `dataf` is inclusive is not documented,
+  and the two readings fail in opposite ways: asked as `[d, d+1]`, an inclusive bound
+  returns a day too many, which the trim removes; asked as `[d, d]`, an *exclusive* bound
+  returns nothing — indistinguishable from a day with no flights, and stored as one. A
+  superset that is trimmed cannot lose a day; an empty answer that looks like an answer can
+  lose every day, silently. A zero-row day is therefore reported loudly: the national table
+  having no flights at all is not a thing that happens.
 - **The window is walked one day at a time** and the answer trimmed to that day on `dt_dia`,
   with the day recorded in an added `CGNA_DAY` column. That is what makes a re-run resumable
   at the day — an interrupt costs one day, never a month.
