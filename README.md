@@ -271,6 +271,8 @@ percentile; it is the volume/denominator dataset.
 | `TOTALBR/run_totalbr.R` | Download, check, prepare per month and bind — the whole cycle up to a cut-off date | yes |
 | `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs ODIN download: what matches, what is one-sided, where they disagree | yes |
 | `TOTALBR/compare_totalbr_cgna.R` | **ODIN vs CGNA**: rows per day, the set arithmetic under three keys, field-by-field diffs, scope | yes |
+| `TOTALBR/classify_totalbr_daio.R` | Six fields per flight plus `DAIO` — internal, departing, arriving, overflight | yes |
+| `data/oa-patch-bra.csv` | Aerodromes the OurAirports extract lacks or gets wrong | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
 | `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
 
@@ -306,6 +308,48 @@ and re-binds** — nothing else changes.
 > The bind re-runs the flight merge on purpose. A flight whose records straddle
 > 31 January → 1 February was split into two incomplete halves by the per-month
 > preparation, and only a pass over the joined data puts it back together.
+
+### Classifying flights against Brazil (`DAIO`)
+
+TOTALBR reduced to what a traffic profile needs, with each flight classified by how it
+touches Brazil: **I** both ends in Brazil, **D** departing to abroad, **A** arriving from
+abroad, **O** overflight — neither end in Brazil, which is why it is in the national table
+at all.
+
+```r
+source(here::here("TOTALBR", "classify_totalbr_daio.R"))
+
+d <- totalbr_daio()                  # or totalbr_daio(years = 2024:2026)
+totalbr_daio_summary(d)              # flights per class per year
+totalbr_daio_unresolved(d)           # the codes still costing flights
+totalbr_daio_write(d)                # -> outputs/totalbr-daio-<years>.parquet
+```
+
+The country of each end is decided in four steps, and **which step decided it is kept in the
+table** (`ADEP_SRC`, `ADES_SRC`) — a classification nobody can audit is a number nobody
+should quote:
+
+| Step | Source | `_SRC` |
+| --- | --- | --- |
+| 1 | the OurAirports extract, `data/oa-<yyyymm>.csv` | `lookup` |
+| 2 | `data/oa-patch-bra.csv`, for what it lacks or gets wrong | `lookup` |
+| 3 | a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`) | `prefix` |
+| 4 | `ZZZZ`, `AFIL` or a numeric code, **assumed** Brazilian | `assumed` |
+| — | nothing matched: country `NA`, `DAIO` `NA` | `unresolved` |
+
+Step 4 is a modelling decision, not a lookup: `ZZZZ` means "aerodrome unknown" and `AFIL`
+means the plan was filed in the air. Run `totalbr_daio(assume_unknown_is_br = FALSE)` to
+leave them unclassified and compare the two before deciding which the study uses.
+
+> The prefix rule is deliberately narrow. A draft version used
+> `grepl("^S[BDNSWISJ]|9|^Z|AFIL|NI", ADEP)`, whose alternation binds loosely — `9` and `NI`
+> match *anywhere*, so `SANI`, `LFNI` and `CYNI` all become Brazilian on the strength of two
+> letters in the middle, and `^Z` is the ICAO prefix for **China**. The patterns here are
+> anchored, and unresolved codes are listed rather than absorbed.
+
+`totalbr_daio_unresolved()` is the to-do list for the patch file, worst first: every row is
+flights that cannot be counted. A code on thousands of flights is worth ten minutes with a
+chart; one appearing twice is not.
 
 ### The national table from both APIs (ODIN and CGNA)
 

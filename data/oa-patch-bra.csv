@@ -1,0 +1,53 @@
+# Aerodromes missing from the OurAirports extract, or wrong in it.
+# ICAO,CNTRY_ISO,NOTE  -- NOTE carries only what the author wrote.
+# Edit this file rather than the script: it is data, and it grows every time a
+# new code turns up in totalbr_daio_unresolved().
+ICAO,CNTRY_ISO,NOTE
+SBCO,BR,
+SBJD,BR,
+SBJI,BR,
+SBMI,BR,
+SBMT,BR,
+SBPO,BR,
+SBRD,BR,
+SBSG,BR,
+SBSI,BR,
+SBSO,BR,
+SBUY,BR,
+SBVC,BR,
+SDAG,BR,
+SDIY,BR,
+SDJV,BR,
+SDLO,BR,
+SDVZ,BR,
+SIFC,BR,
+SIRI,BR,
+SIUA,BR,
+SIXE,BR,
+SJZA,BR,
+SN6L,BR,
+SNAB,BR,
+SNBA,BR,
+SNCL,BR,
+SNEB,BR,
+SNIG,BR,
+SNJM,BR,
+SNLN,BR,
+SNRJ,BR,
+SNSM,BR,
+SNSS,BR,
+SNTS,BR,
+SNWS,BR,
+SNZR,BR,
+SSBN,BR,
+SSGG,BR,
+SSQO,BR,
+SSRS,BR,
+SSVL,BR,
+SWBE,BR,
+SWKQ,BR,
+SWYN,BR,
+GQNN,MR,Mauritania
+SYEC,GN,CHECK: SY.. is a Guyana prefix; GN is Guinea (Guyana is GY)
+SADF,AG,CHECK: author wrote 'argentina'; AG is Antigua and Barbuda (Argentina is AR)
+FOAR,ZA,CHECK: author wrote 'South africa'; FO.. is a Gabon prefix (South Africa is ZA)
