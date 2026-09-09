@@ -23,8 +23,10 @@
 # result, because a classification nobody can audit is a number nobody should
 # quote:
 #
-#   1. the OurAirports extract (data/oa-<yyyymm>.csv), ICAO -> iso_country
-#   2. data/oa-patch-bra.csv, for what that extract lacks or gets wrong
+#   1. an aerodrome database -- data-raw/world-airports.csv, or an OurAirports
+#      extract in data/. The schema is detected, not assumed; see
+#      totalbr_country_lookup()
+#   2. data/oa-patch-bra.csv, for what that database lacks or gets wrong
 #   3. a PREFIX RULE for codes neither knows, kept deliberately narrow -- see
 #      TOTALBR_BR_PREFIX below
 #   4. anything still unknown stays NA, and DAIO stays NA with it
@@ -71,27 +73,122 @@ TOTALBR_BR_PREFIX    <- "^S[BDIJNSW]"
 TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|AFIL|[0-9])"
 
 # =============================================================================
-# totalbr_oa_lookup() -- ICAO -> ISO2 country, from the extract plus the patch
+# totalbr_country_lookup() -- ICAO -> ISO2 country, from whatever file you have
 #
-# THE JOIN MUST NOT MULTIPLY ROWS. A left join on a lookup holding an ICAO twice
-# duplicates every flight through that aerodrome, and the result still looks
-# plausible -- the row count is simply wrong, in a direction nobody checks. So
-# duplicates are collapsed here and reported, never carried into the join.
+#   totalbr_country_lookup()                                   # auto-detect
+#   totalbr_country_lookup("data-raw/world-airports.csv")
+#
+# THE SCHEMA IS DETECTED, NOT ASSUMED. Two aerodrome databases have already been
+# used here and they disagree on both column names and contents:
+#
+#   OurAirports          icao_code, iso_country ("BR")
+#   world-airport-db     icao, country ("Brazil"), iso_country ENTIRELY EMPTY
+#
+# That last one is the trap worth naming. readr types a column of nothing as
+# `lgl`, so world-airports.csv reads with `iso_country` as logical NA -- and a
+# lookup built on it joins successfully, returns NA for every aerodrome, and
+# leaves every flight unclassified without one error. So a column is used only
+# if it actually holds values, and what was chosen is printed.
+#
+# A country given as a NAME rather than a code is translated through
+# data/country-icao-iso-etc.csv (country.name.en -> iso2c). Names that file does
+# not know are reported rather than dropped: they are aerodromes that will go
+# unclassified, and that is a number worth seeing before trusting the output.
 # =============================================================================
-totalbr_oa_lookup <- function(
-    oa_file    = totalbr_oa_file(),
+TOTALBR_ICAO_COLS    <- c("icao", "icao_code", "ident", "gps_code")
+TOTALBR_ISO_COLS     <- c("iso_country", "iso2c", "country_iso", "cntry_iso")
+TOTALBR_CNTRY_COLS   <- c("country", "country_name", "iso_country")
+
+# a column that exists AND holds at least one value
+.tb_usable <- function(df, candidates) {
+  for (nm in candidates) {
+    hit <- which(tolower(names(df)) == nm)
+    if (length(hit) && any(!is.na(df[[hit[1]]])) &&
+        any(nzchar(trimws(as.character(df[[hit[1]]]))), na.rm = TRUE))
+      return(names(df)[hit[1]])
+  }
+  NULL
+}
+
+# ISO2 codes are two letters; a country name is not. Deciding by the CONTENT
+# rather than the column name is what lets one function read both databases.
+.tb_looks_iso2 <- function(x) {
+  v <- toupper(trimws(as.character(x)))
+  v <- v[!is.na(v) & nzchar(v)]
+  length(v) > 0 && mean(grepl("^[A-Z]{2}$", v)) > 0.9
+}
+
+# country name -> ISO2, from the reference table the project already carries
+totalbr_iso_from_name <- function(
+    file = here::here("data", "country-icao-iso-etc.csv")) {
+  if (!file.exists(file)) return(NULL)
+  d <- readr::read_csv(file, show_col_types = FALSE, progress = FALSE)
+  nm <- .tb_usable(d, c("country.name.en", "country_name_en", "cntry_name", "country"))
+  is <- .tb_usable(d, c("iso2c", "cntry_iso", "iso_country"))
+  if (is.null(nm) || is.null(is)) return(NULL)
+  stats::setNames(toupper(trimws(d[[is]])), toupper(trimws(d[[nm]])))
+}
+
+totalbr_country_lookup <- function(
+    file       = totalbr_lookup_file(),
     patch_file = here::here("data", "oa-patch-bra.csv"),
     quiet      = FALSE) {
 
-  if (!file.exists(oa_file))
-    stop("OurAirports extract not found: ", oa_file,
-         "\nPut it in data/ as oa-<yyyymm>.csv, or pass oa_file =.")
+  if (!file.exists(file))
+    stop("Aerodrome database not found: ", file,
+         "\nPut one in data-raw/ (world-airports.csv) or data/ (oa-<yyyymm>.csv),",
+         "\nor pass file =.")
 
-  oa <- readr::read_csv(oa_file, show_col_types = FALSE, progress = FALSE) |>
-    dplyr::filter(!is.na(.data$icao_code), !is.na(.data$iso_country)) |>
-    dplyr::transmute(ICAO = toupper(trimws(.data$icao_code)),
-                     CNTRY_ISO = toupper(trimws(.data$iso_country)),
-                     SOURCE = "oa")
+  raw <- readr::read_csv(file, show_col_types = FALSE, progress = FALSE)
+
+  icao_col <- .tb_usable(raw, TOTALBR_ICAO_COLS)
+  if (is.null(icao_col))
+    stop(basename(file), " has no usable ICAO column. Looked for: ",
+         paste(TOTALBR_ICAO_COLS, collapse = ", "), ".\nIt has: ",
+         paste(names(raw), collapse = ", "))
+
+  # A code column first; a name column only if no code column holds values.
+  iso_col  <- .tb_usable(raw, TOTALBR_ISO_COLS)
+  if (!is.null(iso_col) && !.tb_looks_iso2(raw[[iso_col]])) iso_col <- NULL
+  name_col <- if (is.null(iso_col)) .tb_usable(raw, TOTALBR_CNTRY_COLS) else NULL
+  # A column called `country` may hold codes rather than names -- databases
+  # differ, and the name of the column is not evidence. Decide by the content:
+  # two letters is a code, whatever the header says.
+  if (!is.null(name_col) && .tb_looks_iso2(raw[[name_col]])) {
+    iso_col <- name_col; name_col <- NULL
+  }
+  if (is.null(iso_col) && is.null(name_col))
+    stop(basename(file), " has no usable country column: the ones it has are ",
+         "empty or unrecognised. It has: ", paste(names(raw), collapse = ", "))
+
+  icao <- toupper(trimws(as.character(raw[[icao_col]])))
+
+  if (!is.null(iso_col)) {
+    iso <- toupper(trimws(as.character(raw[[iso_col]])))
+    if (!quiet) message(sprintf("Lookup: %s -> %s (ISO2 codes) from %s",
+                                icao_col, iso_col, basename(file)))
+  } else {
+    nm  <- toupper(trimws(as.character(raw[[name_col]])))
+    map <- totalbr_iso_from_name()
+    if (is.null(map))
+      stop(basename(file), " gives the country as a NAME (", name_col, "), and ",
+           "data/country-icao-iso-etc.csv is missing or unreadable, so it ",
+           "cannot be turned into a code. Add that file, or use a database ",
+           "that carries iso_country.")
+    iso <- unname(map[nm])
+    if (!quiet) {
+      message(sprintf("Lookup: %s -> %s (country NAMES) from %s, via %s",
+                      icao_col, name_col, basename(file),
+                      "data/country-icao-iso-etc.csv"))
+      lost <- sort(unique(nm[!is.na(nm) & nzchar(nm) & is.na(iso)]))
+      if (length(lost) > 0)
+        message(sprintf("  %d country name(s) not in the reference table: %s",
+                        length(lost), paste(utils::head(lost, 12), collapse = ", ")))
+    }
+  }
+
+  base <- tibble::tibble(ICAO = icao, CNTRY_ISO = iso, SOURCE = "db") |>
+    dplyr::filter(!is.na(.data$ICAO), nzchar(.data$ICAO), !is.na(.data$CNTRY_ISO))
 
   patch <- if (file.exists(patch_file)) {
     readr::read_csv(patch_file, comment = "#", show_col_types = FALSE,
@@ -101,37 +198,47 @@ totalbr_oa_lookup <- function(
                        CNTRY_ISO = toupper(trimws(.data$CNTRY_ISO)),
                        SOURCE = "patch")
   } else {
-    if (!quiet) message("No patch file at ", patch_file, " -- using the extract alone.")
+    if (!quiet) message("No patch file at ", patch_file, " -- using the database alone.")
     NULL
   }
 
-  # The patch wins where both have the code: it exists precisely to correct the
-  # extract, so letting the extract win would make it a no-op on its main job.
-  lk <- dplyr::bind_rows(patch, oa)
+  # THE JOIN MUST NOT MULTIPLY ROWS. A lookup holding an ICAO twice duplicates
+  # every flight through that aerodrome, and the result still looks plausible --
+  # the row count is simply wrong, in a direction nobody checks. The patch is
+  # bound first, so it wins where both have the code: it exists to correct the
+  # database, and letting the database win would make it a no-op on its main job.
+  lk  <- dplyr::bind_rows(patch, base)
   dup <- lk$ICAO[duplicated(lk$ICAO)]
   lk  <- lk[!duplicated(lk$ICAO), ]
 
   if (!quiet) {
-    message(sprintf("Lookup: %d aerodrome(s) (%d from the patch, %d from %s)",
-                    nrow(lk), sum(lk$SOURCE == "patch"), sum(lk$SOURCE == "oa"),
-                    basename(oa_file)))
-    if (length(dup) > 0) {
-      # A code the patch also holds is an intended override, not a conflict; a
-      # code the extract holds twice is a duplicate to know about.
-      inner <- unique(dup[dup %in% oa$ICAO & !(dup %in% patch$ICAO)])
-      if (length(inner) > 0)
-        message(sprintf("  %d code(s) repeated WITHIN the extract, first kept: %s",
-                        length(inner), paste(utils::head(inner, 10), collapse = ", ")))
-    }
+    message(sprintf("  %d aerodrome(s): %d from the patch, %d from the database",
+                    nrow(lk), sum(lk$SOURCE == "patch"), sum(lk$SOURCE == "db")))
+    inner <- unique(dup[!(dup %in% patch$ICAO)])
+    if (length(inner) > 0)
+      message(sprintf("  %d code(s) repeated WITHIN the database, first kept: %s",
+                      length(inner), paste(utils::head(inner, 10), collapse = ", ")))
   }
   lk
 }
 
-# the newest data/oa-<yyyymm>.csv on disk
-totalbr_oa_file <- function(dir = here::here("data")) {
-  f <- list.files(dir, pattern = "^oa-[0-9]{6}\\.csv$", full.names = TRUE)
-  if (length(f) == 0) return(file.path(dir, "oa-202603.csv"))  # named, so the error says what to add
-  sort(f, decreasing = TRUE)[1]
+# Kept under the old name: it is what the earlier draft called, and renaming a
+# function is not a reason to break a script someone already has open.
+totalbr_oa_lookup <- totalbr_country_lookup
+
+# The aerodrome database, wherever it is. world-airports.csv holds around 9,000
+# aerodromes and an OurAirports extract around 80,000 -- a difference that shows
+# up directly in totalbr_daio_unresolved(), so the file in use is always named.
+totalbr_lookup_file <- function() {
+  env <- Sys.getenv("BRA_AIRPORT_DB", unset = "")
+  if (nzchar(env)) return(env)
+  cand <- c(here::here("data-raw", "world-airports.csv"),
+            here::here("data", "world-airports.csv"),
+            sort(list.files(here::here("data"), pattern = "^oa-[0-9]{6}\\.csv$",
+                            full.names = TRUE), decreasing = TRUE))
+  hit <- cand[file.exists(cand)]
+  if (length(hit) > 0) return(hit[1])
+  here::here("data-raw", "world-airports.csv")   # named, so the error says what to add
 }
 
 # =============================================================================
@@ -146,7 +253,7 @@ totalbr_oa_file <- function(dir = here::here("data")) {
 # =============================================================================
 totalbr_daio <- function(src   = totalbr_daio_source(),
                          years = NULL,
-                         lookup = totalbr_oa_lookup(),
+                         lookup = totalbr_country_lookup(),
                          assume_unknown_is_br = TRUE,
                          quiet = FALSE) {
 

@@ -341,7 +341,7 @@ should quote:
 
 | Step | Source | `_SRC` |
 | --- | --- | --- |
-| 1 | the OurAirports extract, `data/oa-<yyyymm>.csv` | `lookup` |
+| 1 | an aerodrome database — `data-raw/world-airports.csv`, or `data/oa-<yyyymm>.csv` | `lookup` |
 | 2 | `data/oa-patch-bra.csv`, for what it lacks or gets wrong | `lookup` |
 | 3 | a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`) | `prefix` |
 | 4 | `ZZZZ`, `AFIL` or a numeric code, **assumed** Brazilian | `assumed` |
@@ -350,6 +350,18 @@ should quote:
 Step 4 is a modelling decision, not a lookup: `ZZZZ` means "aerodrome unknown" and `AFIL`
 means the plan was filed in the air. Run `totalbr_daio(assume_unknown_is_br = FALSE)` to
 leave them unclassified and compare the two before deciding which the study uses.
+
+> **The schema is detected, not assumed.** Two databases have been used here and they
+> disagree on both names and contents: OurAirports gives `icao_code` + `iso_country` (`"BR"`),
+> world-airport-database gives `icao` + `country` (`"Brazil"`) with **`iso_country` entirely
+> empty**. That last one is the trap: readr types a column of nothing as `lgl`, so a lookup
+> built on `iso_country` joins cleanly, returns `NA` for every aerodrome, and leaves every
+> flight unclassified without raising one error. So a column is used only if it holds
+> values, a country given as a *name* is translated through
+> `data/country-icao-iso-etc.csv`, and what was chosen is printed on every run.
+
+> Coverage differs a lot between them — around 9,000 aerodromes against around 80,000 — and
+> it lands directly in `totalbr_daio_unresolved()`. Set `BRA_AIRPORT_DB` to pick the file.
 
 > The prefix rule is deliberately narrow. A draft version used
 > `grepl("^S[BDNSWISJ]|9|^Z|AFIL|NI", ADEP)`, whose alternation binds loosely — `9` and `NI`
