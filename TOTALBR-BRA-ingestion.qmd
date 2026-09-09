@@ -284,7 +284,57 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   source's stamps describe the *flight*, and a flight can be reported on a day other than
   the one it is filed under. That column is what makes a re-run resumable at the day.
 
-### ODIN against CGNA
+### The archive against the ODIN download
+
+The two sources of the *dataset* — the parquet archive and the ODIN download — overlap
+wherever both hold a year, and `totalbr_count_by()` already reports how far apart they are
+when it picks one:
+
+```
+2024: parquet=1,959,619  csv=1,948,449  -> parquet
+2025: parquet=2,109,623  csv=2,108,473  -> parquet
+2026: csv=1,230,454      parquet=      285  -> csv
+```
+
+Eleven thousand flights in 2024 and twelve hundred in 2025. Small against two million, and
+not nothing: this is where you find out whether they are flights one source missed, or the
+same flights counted differently.
+
+```{r}
+#| label: compare-bra-totalbr-sources
+#| eval: false
+
+source(here::here("TOTALBR", "compare_totalbr_sources.R"))
+
+compare_totalbr_sources(2024)                   # the counts, per key
+compare_totalbr_examples(2024, "only_parquet")  # rows the download lacks
+compare_totalbr_examples(2024, "only_csv")      # rows the archive lacks
+compare_totalbr_fields(2024)                    # where they disagree on shared rows
+```
+
+**Read the match rate of each key before reading anything else.** The comparison offers
+three, and a low rate is a finding about the *key*, not about the data:
+
+| Key | What it is |
+| --- | --- |
+| `pk` | the row hash, case-folded — it matches only if both sides compute it the same way |
+| `eobt` | callsign + aerodrome pair + filed off-block time, which survives a shift in the observed stamps |
+| `eobt_seq` | the same plus the rotation number within the day, so a side holding three flights of a route and a side holding two stop "matching" |
+
+::: {.callout-warning}
+## The two sources do not stamp `dh_inicio` alike
+They sit about ten minutes apart, so any key finer than a day fails on `dh_inicio` while
+the data is in fact the same. `TOTALBR_SHIFT_MIN` records the measured offset, and
+`compare_totalbr_time_shift()` re-measures it — **re-measure before trusting any matching
+built on it**, because the figure was first taken while the archive's `Europe/Paris` label
+was being read at face value and carried an hour of error.
+:::
+
+Nothing here merges or corrects. Which source wins is a decision about the study, not about
+the files — `totalbr_count_by(source = )` pins it for a count, and
+`totalbr_daio(src = )` for a classification.
+
+### The ODIN download against the CGNA download
 
 Two APIs serving one table is not the same question as the archive against ODIN, and it
 starts from a clean slate: assume nothing about a shift between them, measure it, and only
