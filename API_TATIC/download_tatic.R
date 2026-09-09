@@ -47,27 +47,19 @@ suppressPackageStartupMessages({
       stop("Package '", p, "' is required. install.packages('", p, "')")
 })
 
-# Corporate proxy, shared with the ODIN downloader: on a network where
-# everything external goes through a proxy, this API fails exactly like ODIN did
-# (407 on the CONNECT tunnel, surfacing as a transport error). See proxy.R.
-source(here::here("proxy.R"))
+# The shared CGNA plumbing: the proxy, the CSV conventions, the JSON
+# flattening. Sourcing only defines functions.
+source(here::here("CGNA", "cgna_common.R"))
 
-TATIC_SEP <- ";"   # same delimiter as every other raw file in data-raw/
-
-# ---- JSON arrays -> one string ----------------------------------------------
-# A record can carry a nested array (a list of sectors, say). A list column
-# cannot be written to CSV, so it is collapsed to a pipe-separated string — the
-# same convention the ODIN downloader uses for its own array columns.
-tatic_flatten_lists <- function(df) {
-  for (nm in names(df)) {
-    if (is.list(df[[nm]]))
-      df[[nm]] <- vapply(df[[nm]], function(v) {
-        if (is.null(v) || length(v) == 0) NA_character_
-        else paste(unlist(v), collapse = "|")
-      }, character(1))
-  }
-  df
-}
+# This file's own vocabulary, kept as it was. The definitions moved to
+# CGNA/cgna_common.R when the second CGNA downloader appeared and started
+# sourcing THIS file for them -- one dataset's downloader pulling in another's
+# was the wrong dependency, and these four lines are what it cost to undo it.
+TATIC_SEP          <- CGNA_SEP
+tatic_flatten_lists <- cgna_flatten_lists
+tatic_read_csv      <- cgna_read_csv
+tatic_write_csv     <- cgna_write_csv
+tatic_rbind_fill    <- cgna_rbind_fill
 
 # ---- one day from the API ----------------------------------------------------
 # Returns a data.frame (possibly 0 rows) or NULL when the request failed. The
@@ -101,27 +93,6 @@ tatic_fetch_day <- function(day, token, base_url, timeout = 300) {
   df[] <- lapply(df, as.character)
   df$TATIC_DAY <- format(as.Date(day))             # the day WE asked for
   df
-}
-
-# ---- part files --------------------------------------------------------------
-tatic_read_csv <- function(path) {
-  as.data.frame(data.table::fread(file = path, sep = TATIC_SEP,
-                                  colClasses = "character", na.strings = "",
-                                  showProgress = FALSE, fill = Inf,
-                                  header = TRUE))
-}
-tatic_write_csv <- function(df, path) {
-  data.table::fwrite(df, path, sep = TATIC_SEP, na = "", quote = TRUE)
-}
-tatic_rbind_fill <- function(lst) {
-  lst  <- Filter(function(d) !is.null(d) && nrow(d) > 0, lst)
-  if (length(lst) == 0) return(NULL)
-  cols <- unique(unlist(lapply(lst, names)))
-  lst  <- lapply(lst, function(d) {
-    for (m in setdiff(cols, names(d))) d[[m]] <- NA_character_
-    d[cols]
-  })
-  do.call(rbind, lst)
 }
 
 # which days does a month part already hold?

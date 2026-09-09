@@ -109,9 +109,17 @@
 # TATIC_TOKEN in .Renviron (git-ignored) that download_tatic() uses.
 # =============================================================================
 
-# The CGNA day-walk helpers (the fetch conventions, the CSV read/write, the
-# proxy) live with the other CGNA downloaders; sourcing only defines functions.
-source(here::here("API_TATIC", "download_tatic.R"))
+# The shared CGNA plumbing: the proxy, the CSV conventions, the JSON flattening.
+# Sourcing only defines functions.
+#
+# NOT API_TATIC/download_tatic.R, which is where these helpers used to live and
+# which this file used to source for them. TATIC is a different endpoint with a
+# different contract and nothing to do with the national table; pulling in one
+# dataset's downloader to borrow four utilities made it look as though TOTALBR
+# depended on TATIC, which it does not. The one thing they genuinely share is
+# TATIC_TOKEN -- the token authenticates a person against the portal, not
+# against an endpoint.
+source(here::here("CGNA", "cgna_common.R"))
 
 CGNA_TOTALBR_URL <- Sys.getenv(
   "CGNA_TOTALBR_URL",
@@ -272,7 +280,7 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
       return(list(ok = FALSE, retryable = isTRUE(pp$retryable), status = pp$status))
     rows <- pp$rows
     if (is.null(rows) || nrow(rows) == 0) break
-    rows <- tatic_flatten_lists(rows)      # a nested array cannot be written to CSV
+    rows <- cgna_flatten_lists(rows)      # a nested array cannot be written to CSV
     rows[] <- lapply(rows, as.character)
     pages[[length(pages) + 1L]] <- rows
 
@@ -289,7 +297,7 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
     }
   }
 
-  df <- tatic_rbind_fill(pages)
+  df <- cgna_rbind_fill(pages)
   if (is.null(df)) df <- data.frame()
   list(ok = TRUE, df = df, pages = length(pages))
 }
@@ -480,7 +488,7 @@ cgna_totalbr_trim_day <- function(df, day, date_cols = CGNA_TOTALBR_DATE_COLS) {
 cgna_totalbr_days_in_part <- function(path) {
   if (!file.exists(path) || file.info(path)$size == 0) return(character(0))
   d <- tryCatch(
-    data.table::fread(file = path, sep = TATIC_SEP, select = "CGNA_DAY",
+    data.table::fread(file = path, sep = CGNA_SEP, select = "CGNA_DAY",
                       colClasses = "character", showProgress = FALSE,
                       fill = Inf, header = TRUE)[[1]],
     error = function(e) NULL)
@@ -576,7 +584,7 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
       # rows already in the part, minus any day we are refetching
       keep <- NULL
       if (file.exists(part_csv)) {
-        old  <- tatic_read_csv(part_csv)
+        old  <- cgna_read_csv(part_csv)
         keep <- old[!(old$CGNA_DAY %in% need), , drop = FALSE]
       }
 
@@ -603,10 +611,10 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
 
         # persist as we go: an interrupt costs one day, not the month
         if (i %% 5 == 0 || i == length(need)) {
-          part <- tatic_rbind_fill(c(list(keep), fetched))
+          part <- cgna_rbind_fill(c(list(keep), fetched))
           if (!is.null(part)) {
             part <- part[order(part$CGNA_DAY), , drop = FALSE]
-            tatic_write_csv(part, part_csv)
+            cgna_write_csv(part, part_csv)
           }
         }
       }
@@ -622,7 +630,7 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
     if (length(part_files) == 0) {
       message(sprintf("Year %d: no month on disk; nothing merged.", yr)); next
     }
-    combined <- tatic_rbind_fill(lapply(sort(part_files), tatic_read_csv))
+    combined <- cgna_rbind_fill(lapply(sort(part_files), cgna_read_csv))
     if (is.null(combined)) {
       message(sprintf("Year %d: months are empty; nothing written.", yr)); next
     }
@@ -632,7 +640,7 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
     real <- real[order(real$CGNA_DAY), , drop = FALSE]
 
     out_csv <- file.path(out_dir, sprintf("totalbr_%dcgna.csv", yr))
-    tatic_write_csv(real, out_csv)
+    cgna_write_csv(real, out_csv)
     written <- c(written, out_csv)
     message(sprintf("Year %d: merged %d month(s) -> %d record(s), %d column(s) -> %s",
                     yr, length(part_files), nrow(real), ncol(real), out_csv))

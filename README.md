@@ -25,8 +25,14 @@ There is **one folder per dataset**, plus one shared engine:
 | `TAXI/` | Taxi time (`dstaxi` via ODIN): download, source comparison, the metric's standalone validation, and the dashboard build |
 | `KPI08/` | ASMA (`kpi08` via ODIN): download, golden validation, the PBWG export, the dashboard build |
 | `TOTALBR/` | The national movement table: download from **both APIs that serve it** (`total_brasil` via ODIN, `voossisceab` via the CGNA), duplicate measurement, the two-stage pipeline, and the source comparisons |
+| `CGNA/` | **Shared, not a dataset.** `cgna_common.R` is the plumbing every CGNA downloader needs and none owns: the proxy, the CSV conventions, the JSON flattening. There is no shared *engine* here, because the CGNA endpoints do not share a contract — `/apiv1/tatic` wants `YYYYMMDD` and returns a bare array, `/apiv1/voossisceab` refuses `YYYYMMDD` and returns `{"count": N, "data": [...]}`. |
 | `API_TATIC/` | TATIC — a **different API** (CGNA, token-authenticated, one day per call): download, JSON ingest, harmonisation to APDF |
 | `VRA/` | VRA — a **different API again** (ANAC): probe, download, duplicate inspection |
+
+> **One token, several endpoints.** Every CGNA downloader reads `TATIC_TOKEN`. The token
+> authenticates a *person* against the portal, not against one endpoint — which is the only
+> reason the variable's name says TATIC, and not a reason for one dataset's downloader to
+> source another's.
 
 At the root, three scripts that belong to no dataset: `_chapter-setup.R` (libraries, paths and
 every analysis parameter), `proxy.R` (corporate-proxy settings for every outbound request) and
