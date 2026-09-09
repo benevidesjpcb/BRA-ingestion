@@ -39,9 +39,12 @@
 # loudly, printing the status and the body, says what is wrong on the first
 # attempt. cgna_totalbr_check() below is that request, on its own.
 #
-# NOT THE SAME DATE FORMAT AS TATIC. This API family answers
-# "Formato de data invalido. Utilize YYYY-MM-DD ou YYYY-MM-DD HH:MM:SS" to the
-# YYYYMMDD that /apiv1/tatic requires, so the dates are sent as YYYY-MM-DD.
+# DATES ARE YYYY-MM-DD, AND ONLY THAT. /apiv1/tatic requires YYYYMMDD and
+# refuses anything else; this endpoint refuses YYYYMMDD in turn, with
+# {"error":"Formato inv\u00e1lido. Utilize YYYY-MM-DD."} -- and it refuses a
+# time as well. "YYYY-MM-DD HH:MM:SS" is what the TATIC endpoint accepts, NOT
+# this one, so the day is the finest window that exists here. That is not a
+# detail: it decides what can be done about the 502 below.
 #
 # ONE DAY PER CALL, AND THE DAY IS CUT LOCALLY. The window is walked day by
 # day, as with TATIC and the CGNA taxi download: this API family has answered a
@@ -64,6 +67,31 @@
 # 1000 -- so paging is not an optimisation here, it is the only way to get a
 # whole day. Its default is 1, which means an omitted per_page fetches a day one
 # row at a time; it is always sent.
+#
+# THE 502, AND THE TWO THINGS THAT CAN BE DONE ABOUT IT. Asked for a day, the
+# portal has answered
+#
+#   HTTP 502 ... The proxy server received an invalid response from an upstream
+#   server. Reason: Error reading from remote server
+#
+# That is the CGNA's own Apache in front of the application -- not our proxy,
+# not the token -- giving up on a backend that took longer than it would wait.
+# Since the dates carry no time, THE DAY CANNOT BE SPLIT: there is no narrower
+# question to ask. Two levers remain, and both are used, in this order:
+#
+#   1. ASK FOR ONE DATE, NOT TWO. datai=d dataf=d+1 is a two-day span if dataf
+#      is inclusive, which doubles the work behind a front end that is already
+#      timing out. datai=d dataf=d is unambiguous and cannot cost more. The
+#      answer is still trimmed to the day locally, so an inclusive and an
+#      exclusive dataf produce the same file either way.
+#   2. RETRY, SMALLER, WITH A PAUSE. A 502 from an overloaded backend is the one
+#      failure that repeating can fix, and it is now the only tool left. Each
+#      attempt waits longer and asks for fewer rows per page (1000, then 250,
+#      then 50): if the backend applies the page limit in the query it does less
+#      work per request, and if it does not, nothing is lost but the attempt.
+#
+# When both fail the day is left alone and named. It is not stored short and not
+# silently skipped -- a re-run picks it up, because CGNA_DAY never recorded it.
 #
 # PAGINATED, AND THE ENVELOPE SAYS SO. The answer is not a bare array but an
 # object: the rows, plus `page`, `per_page`, `total` and `total_pages`. Keeping
@@ -145,54 +173,34 @@ CGNA_TOTALBR_DATE_COLS <- c("dt_dia", "dhinicio", "dh_inicio")
 }
 
 # =============================================================================
-# ONE PAGE OF ONE WINDOW
-#
-# The window, not the day, is the unit of a request. The endpoint accepts
-# "YYYY-MM-DD HH:MM:SS" as well as a bare date -- which is what makes it
-# possible to ask for an hour, and that turns out to matter: the portal answers
-# a whole day of the national table with
-#
-#   HTTP 502 ... The proxy server received an invalid response from an upstream
-#   server. Reason: Error reading from remote server
-#
-# That is the CGNA's own Apache in front of the application, not our proxy and
-# not the token: the backend takes longer to assemble the answer than the front
-# end will wait. It happens with per_page=5 as readily as with 1000, because the
-# cost is in building the result set, before paging touches it. A narrower
-# window is the only thing that reduces it, so a 502 is not a failure to report
-# and give up on -- it is the signal to ask for less at a time. See
-# cgna_totalbr_fetch_day().
+# ONE PAGE
 #
 # Returns a list, always, because "it failed" and "why it failed" have to travel
-# together: the day-splitter retries a 502 by halving the window and must not
-# retry a 401 at all.
+# together: the caller retries a 502 and must not retry a 401 at all.
 #
 #   ok = TRUE   rows, page, per_page, total, total_pages
 #   ok = FALSE  status (HTTP code, or NA for a transport error) and
 #               retryable (TRUE for 5xx, a timeout and a transport error --
-#               the failures a smaller window can fix)
+#               the failures a pause and a smaller page can fix)
+#
+# Both dates are formatted YYYY-MM-DD. There is no time component to give: the
+# endpoint refuses one, which is why there is no narrower window than a day.
 # =============================================================================
-CGNA_TOTALBR_DT_FMT <- "%Y-%m-%d %H:%M:%S"
-
 cgna_totalbr_fetch_page <- function(from, to, token, page,
                                     base_url = CGNA_TOTALBR_URL,
                                     per_page = CGNA_TOTALBR_PAGE_SIZE,
                                     timeout = 300, quiet = FALSE) {
-  # A whole day is sent as two bare dates, the form the endpoint documents and
-  # the one that has worked elsewhere in this API family; anything narrower
-  # carries the time. Sending "00:00:00" for a day would change the request that
-  # is made in the ordinary case for no reason.
-  fmt <- function(x) if (inherits(x, "Date")) format(x, "%Y-%m-%d")
-                     else format(as.POSIXct(x, tz = "UTC"), CGNA_TOTALBR_DT_FMT, tz = "UTC")
+  fmt <- function(d) format(as.Date(d), "%Y-%m-%d")
 
   req <- httr2::request(base_url) |>
     httr2::req_url_query(token = token, datai = fmt(from), dataf = fmt(to),
                          page = page, per_page = per_page) |>
     httr2::req_user_agent("BRA-ingestion/totalbr-cgna") |>
     httr2::req_timeout(timeout) |>
-    # NOT req_retry: a 502 from an overloaded upstream is not fixed by asking
-    # the same question again four times, it is fixed by asking a smaller one.
-    # Retrying here only multiplies the wait before the splitter gets its turn.
+    # NOT req_retry: the retry that matters here changes the question (a smaller
+    # page, after a longer pause) and lives in cgna_totalbr_fetch_day(), where
+    # it can also tell a 502 from a 401. Retrying identically inside the page
+    # fetch would only multiply the wait before that gets its turn.
     httr2::req_error(is_error = function(resp) FALSE) |>
     bra_proxy()
 
@@ -226,11 +234,18 @@ cgna_totalbr_fetch_page <- function(from, to, token, page,
     if (!quiet) message("      JSON that could not be parsed into a table.")
     return(list(ok = FALSE, status = st, retryable = FALSE))
   }
+  # The endpoint reports a refusal as a 200 with {"error": "..."} as readily as
+  # with a status code. Read as an envelope that is simply short of rows, that
+  # would store an empty day and never ask again.
+  if (!is.null(parsed[["error"]])) {
+    if (!quiet) message("      the API returned an error: ", parsed[["error"]][[1]])
+    return(list(ok = FALSE, status = st, retryable = FALSE))
+  }
   c(list(ok = TRUE), .cgna_totalbr_page_parts(parsed))
 }
 
 # =============================================================================
-# EVERY PAGE OF ONE WINDOW
+# EVERY PAGE OF ONE REQUEST
 #
 # list(ok = TRUE, df) or list(ok = FALSE, retryable = ...). A failed page fails
 # the window: a window stored half-complete would look finished to the resume
@@ -279,38 +294,33 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
 }
 
 # =============================================================================
-# cgna_totalbr_check(day, hours) -- ONE request, everything it answered
+# cgna_totalbr_check(day, span, per_page) -- ONE request, everything it answered
 #
 #   source(here::here("TOTALBR", "download_totalbr_cgna.R"))
-#   cgna_totalbr_check("2026-01-15")             # the whole day
-#   cgna_totalbr_check("2026-01-15", hours = 1)  # 00:00 -> 01:00 only
+#   cgna_totalbr_check("2026-01-15")                  # datai = dataf = that day
+#   cgna_totalbr_check("2026-01-15", span = 1)        # dataf = the next day
+#   cgna_totalbr_check("2026-01-15", per_page = 1000) # the real page size
 #
-# `hours` is the diagnostic for a 502: if the day is refused and an hour is
-# served, the portal's front end is timing out on its own backend and the
-# download's window-narrowing will get through. If an hour is refused too, the
-# endpoint is down and no amount of narrowing helps.
+# Run this first, and whenever a download comes back empty or refused. It asks
+# for a single page and prints the URL, the query with the token redacted, the
+# HTTP status, the first of the raw body, and what the envelope was understood
+# to contain -- the row count, the column names, the page/total fields. An empty
+# day and a rejected request look identical from the outside; this is what
+# separates them.
 #
-# Run this first, and whenever a download comes back empty. It asks for a single
-# page of one day and prints the URL (with the token redacted), the HTTP status,
-# the first of the raw body, and what the envelope was understood to contain --
-# the row count, the column names, and the page/total fields. An empty year and
-# a rejected request look identical from the outside; this is what separates
-# them, and it is why nothing here guesses at a URL.
+# `span` is days: 0 sends datai = dataf (the default, and the cheapest question
+# for the portal), 1 sends dataf = the next day. It exists to measure two
+# things that cannot be assumed -- whether dataf is inclusive, and whether the
+# two-day span is what makes the backend time out.
 # =============================================================================
-cgna_totalbr_check <- function(day = Sys.Date() - 30, hours = NULL,
+cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
                                base_url = CGNA_TOTALBR_URL, per_page = 5L) {
   token <- Sys.getenv("TATIC_TOKEN", unset = "")
   if (!nzchar(token))
     stop("TATIC_TOKEN is not set. Put it in .Renviron (git-ignored) and restart R.")
   day <- as.Date(day)
-  if (is.null(hours)) {
-    from <- day; to <- day + 1
-    fmt  <- function(d) format(d, "%Y-%m-%d")
-  } else {
-    from <- as.POSIXct(paste0(format(day), " 00:00:00"), tz = "UTC")
-    to   <- from + hours * 3600
-    fmt  <- function(d) format(d, CGNA_TOTALBR_DT_FMT, tz = "UTC")
-  }
+  from <- day; to <- day + span
+  fmt <- function(d) format(d, "%Y-%m-%d")
 
   message("URL      : ", base_url)
   message("Query    : token=<", nchar(token), " chars> datai=", fmt(from),
@@ -320,38 +330,37 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, hours = NULL,
     httr2::req_url_query(token = token, datai = fmt(from), dataf = fmt(to),
                          page = 1L, per_page = per_page) |>
     httr2::req_user_agent("BRA-ingestion/totalbr-cgna") |>
-    httr2::req_timeout(120) |>
+    httr2::req_timeout(300) |>
     httr2::req_error(is_error = function(resp) FALSE) |>   # report it, do not throw
     bra_proxy()
 
+  t0   <- Sys.time()
   resp <- tryCatch(httr2::req_perform(req), error = function(e) e)
+  secs <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1)
   if (!inherits(resp, "httr2_response")) {
-    message("Transport: FAILED -- ", conditionMessage(resp))
+    message("Transport: FAILED after ", secs, "s -- ", conditionMessage(resp))
     message("  A proxy that is not configured looks exactly like this. See proxy.R.")
     return(invisible(NULL))
   }
   st <- httr2::resp_status(resp)
-  message("Status   : HTTP ", st)
+  message("Status   : HTTP ", st, "  (", secs, "s)")
   body <- tryCatch(httr2::resp_body_string(resp), error = function(e) "")
   message("Body[1:400]:\n", substr(body, 1, 400))
 
-  # A 5xx here is the CGNA's own front end, not us. Say so, and say what to try,
-  # rather than leaving an HTML error page to be interpreted.
+  # A 5xx here is the CGNA's own front end, not us. Say so, and say what it
+  # means, rather than leaving an HTML error page to be interpreted.
   if (st >= 500) {
     message("\nThat is the CGNA's front end giving up on its own backend, not the\n",
-            "token and not our proxy. The usual cause is the window: the national\n",
-            "table for a whole day takes longer to assemble than the front end\n",
-            "waits, and per_page does not help because the cost is in building the\n",
-            "result set before paging touches it.")
-    if (is.null(hours))
-      message("  Try one hour:  cgna_totalbr_check(\"", format(day), "\", hours = 1)\n",
-              "  If that is served, download_totalbr_cgna() will get through on its\n",
-              "  own: it narrows a refused day to 6-hour, then 1-hour, then 15-minute\n",
-              "  windows before giving up.")
-    else
-      message("  An hour was refused too, so narrowing will not help. The endpoint is\n",
-              "  down or the day is beyond what it can serve; try another day, and\n",
-              "  report it to the CGNA if a recent day fails the same way.")
+            "token and not our proxy. The seconds above say which: a 502 after ~30-60s\n",
+            "is an upstream timeout; an immediate one is the application refusing or\n",
+            "restarting.")
+    message("  The day is the finest window this endpoint has -- it takes no time of\n",
+            "  day -- so there is nothing narrower to ask for. What is left is\n",
+            "  span = 0 (already the default here), a smaller per_page, and time:\n",
+            "    cgna_totalbr_check(\"", format(day), "\", per_page = 50)\n",
+            "  and the same day again in a few minutes. download_totalbr_cgna()\n",
+            "  does exactly that on its own -- 1000, then 250 after 20s, then 50\n",
+            "  after 60s -- before leaving the day for the next run.")
     return(invisible(NULL))
   }
 
@@ -361,6 +370,10 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, hours = NULL,
   }
   parsed <- jsonlite::fromJSON(body, simplifyDataFrame = TRUE, flatten = TRUE)
   message("\nTop-level: ", paste(names(parsed), collapse = ", "))
+  if (!is.null(parsed[["error"]])) {
+    message("The API returned an error: ", parsed[["error"]][[1]])
+    return(invisible(parsed))
+  }
   pp <- .cgna_totalbr_page_parts(parsed)
   message("Envelope : page=", pp$page, " per_page=", pp$per_page,
           " total=", pp$total, " total_pages=", pp$total_pages)
@@ -377,113 +390,6 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, hours = NULL,
     print(utils::head(as.data.frame(lapply(pp$rows, as.character)), 1))
   }
   invisible(pp)
-}
-
-# ---- keep only the day we asked for -----------------------------------------
-# Returns the rows whose date column falls on `day`. A row with no usable stamp
-# is KEPT: dropping it would silently lose a flight over a parsing question, and
-# the CGNA_DAY column still records which request it arrived in.
-cgna_totalbr_trim_day <- function(df, day, date_cols = CGNA_TOTALBR_DATE_COLS) {
-  if (is.null(df) || nrow(df) == 0) return(df)
-  col <- intersect(date_cols, names(df))
-  if (length(col) == 0) return(df)
-  d <- substr(trimws(df[[col[1]]]), 1, 10)
-  keep <- is.na(d) | !nzchar(d) | d == format(as.Date(day))
-  if (!all(keep))
-    message(sprintf("      (%d row(s) outside %s dropped, on %s)",
-                    sum(!keep), format(as.Date(day)), col[1]))
-  df[keep, , drop = FALSE]
-}
-
-# =============================================================================
-# ONE WHOLE DAY -- narrowing the window until the portal can answer
-#
-# data.frame (possibly 0 rows) on success, NULL on failure. The difference
-# matters: 0 rows is an answer ("no flights that day"), NULL must be retried.
-#
-# The day is asked for as one request first, because when that works it is one
-# request instead of twenty-four. When it comes back 502 -- the CGNA front end
-# giving up on its own backend -- the SAME day is asked for in smaller windows:
-# 6 hours, then 1 hour, then 15 minutes. Each step is a different question, not
-# the same one repeated, which is why this succeeds where a retry loop cannot.
-#
-# The steps stop at 15 minutes on purpose. A day the portal cannot serve in
-# quarter-hour slices is not a window problem, and grinding on to the minute
-# would turn one bad day into 1440 requests and an afternoon.
-#
-# The windows tile the day back to back, [t, t+step), so no flight is fetched
-# twice and none falls between two of them. The answer is still trimmed to the
-# day on dt_dia afterwards, exactly as for a single-request day.
-# =============================================================================
-CGNA_TOTALBR_STEPS <- c(24, 6, 1, 0.25)    # hours per request, in order
-
-cgna_totalbr_fetch_day <- function(day, token, base_url = CGNA_TOTALBR_URL,
-                                   per_page = CGNA_TOTALBR_PAGE_SIZE,
-                                   timeout = 300,
-                                   steps = CGNA_TOTALBR_STEPS) {
-  day <- as.Date(day)
-  t0  <- as.POSIXct(paste0(format(day), " 00:00:00"), tz = "UTC")
-
-  for (k in seq_along(steps)) {
-    step <- steps[k]
-    if (step >= 24) {
-      # the ordinary case: the whole day, as two bare dates
-      res <- cgna_totalbr_fetch_range(day, day + 1, token, base_url, per_page, timeout)
-      if (isTRUE(res$ok)) return(.cgna_totalbr_finish(res$df, day))
-      if (!isTRUE(res$retryable)) return(NULL)   # a 401 is not fixed by asking less
-      message(sprintf("      the whole day was refused (HTTP %s); retrying in %g-hour windows",
-                      as.character(res$status), steps[k + 1L]))
-      next
-    }
-
-    edges <- t0 + seq(0, 24 * 3600, by = step * 3600)
-    parts <- list()
-    ok    <- TRUE
-    for (i in seq_len(length(edges) - 1L)) {
-      res <- cgna_totalbr_fetch_range(edges[i], edges[i + 1L], token, base_url,
-                                      per_page, timeout)
-      if (!isTRUE(res$ok)) {
-        if (!isTRUE(res$retryable)) return(NULL)
-        ok <- FALSE
-        if (k < length(steps))
-          message(sprintf("      %s refused at %g-hour windows; narrowing to %g",
-                          format(edges[i], "%H:%M"), step, steps[k + 1L]))
-        break
-      }
-      if (nrow(res$df) > 0) parts[[length(parts) + 1L]] <- res$df
-    }
-    if (ok) {
-      df <- tatic_rbind_fill(parts)
-      if (is.null(df)) df <- data.frame()
-      message(sprintf("      (assembled from %d window(s) of %g hour(s))",
-                      length(edges) - 1L, step))
-      return(.cgna_totalbr_finish(df, day))
-    }
-  }
-
-  message("      still refused at the narrowest window; the portal cannot serve this day now")
-  NULL
-}
-
-# trim to the day, then stamp the day we asked for
-.cgna_totalbr_finish <- function(df, day) {
-  if (is.null(df) || nrow(df) == 0) return(data.frame())
-  df <- cgna_totalbr_trim_day(df, day)
-  if (nrow(df) == 0) return(data.frame())
-  df$CGNA_DAY <- format(as.Date(day))   # the day WE asked for
-  df
-}
-
-# which days does a month part already hold?
-cgna_totalbr_days_in_part <- function(path) {
-  if (!file.exists(path) || file.info(path)$size == 0) return(character(0))
-  d <- tryCatch(
-    data.table::fread(file = path, sep = TATIC_SEP, select = "CGNA_DAY",
-                      colClasses = "character", showProgress = FALSE,
-                      fill = Inf, header = TRUE)[[1]],
-    error = function(e) NULL)
-  if (is.null(d)) return(character(0))
-  unique(d[!is.na(d)])
 }
 
 # =============================================================================

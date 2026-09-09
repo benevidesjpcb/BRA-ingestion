@@ -311,6 +311,7 @@ asking rather than assuming — exactly as for `dstaxi`. The CGNA serves it at
 source(here::here("TOTALBR", "download_totalbr_cgna.R"))
 
 cgna_totalbr_check("2026-01-15")           # one request, everything it answered
+cgna_totalbr_check("2026-01-15", per_page = 50)   # if that came back 502
 download_totalbr_cgna(2026, month = 1)     # ONE MONTH first
 ```
 
@@ -333,19 +334,23 @@ without ever being read as if it were the ODIN download.
 
 Three things this endpoint does differently from ODIN, each handled in the downloader:
 
-- **Dates are `YYYY-MM-DD`**, not the `YYYYMMDD` that `/apiv1/tatic` requires.
+- **Dates are `YYYY-MM-DD`, and only that.** `/apiv1/tatic` requires `YYYYMMDD` and refuses
+  anything else; this endpoint refuses `YYYYMMDD` in turn, and refuses a time of day as well
+  (`{"error":"Formato inválido. Utilize YYYY-MM-DD."}`). **The day is the finest window that
+  exists here** — which is what decides the 502 below.
 - **`per_page` defaults to 1 and caps at 1000.** Omitting it fetches a day one row at a
   time; the cap means a day of the national table is always several pages, so every page of
   the envelope (`page`, `per_page`, `total`, `total_pages`) is fetched and the rows are
   counted against the `total` the API itself reported.
-- **A day the portal refuses is asked for in smaller windows.** The endpoint answers a
-  whole day of the national table with `HTTP 502 ... Error reading from remote server` —
-  the CGNA's own Apache giving up on its backend, which takes longer to assemble the answer
-  than the front end waits. `per_page` does not help, because the cost is in building the
-  result set before paging touches it. Since the dates accept `YYYY-MM-DD HH:MM:SS`, a
-  refused day is re-asked as 6-hour, then 1-hour, then 15-minute windows, tiled back to
-  back. Each step is a *different question*, which is why it succeeds where a retry loop
-  cannot; a 401 is never retried this way, because asking for less does not fix it.
+- **A day the portal refuses is asked for one date at a time, then smaller, then later.**
+  The endpoint has answered a whole day with `HTTP 502 ... Error reading from remote server`
+  — the CGNA's own Apache giving up on its backend, not our proxy and not the token. Since
+  the dates carry no time, the day cannot be split, so two levers remain and both are used:
+  `datai=d dataf=d` rather than `dataf=d+1` (a two-day span if `dataf` is inclusive, which
+  doubles the work behind a front end that is already timing out), then a retry that asks
+  for fewer rows per page after a pause — 1000, then 250 after 20s, then 50 after 60s. A
+  401 stops at once: asking for less does not fix a token. A day that fails every attempt is
+  named and left alone — never stored short, and a re-run asks for it again.
 - **The window is walked one day at a time** and the answer trimmed to that day on `dt_dia`,
   with the day recorded in an added `CGNA_DAY` column. That is what makes a re-run resumable
   at the day — an interrupt costs one day, never a month.
