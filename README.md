@@ -338,6 +338,14 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   time; the cap means a day of the national table is always several pages, so every page of
   the envelope (`page`, `per_page`, `total`, `total_pages`) is fetched and the rows are
   counted against the `total` the API itself reported.
+- **A day the portal refuses is asked for in smaller windows.** The endpoint answers a
+  whole day of the national table with `HTTP 502 ... Error reading from remote server` —
+  the CGNA's own Apache giving up on its backend, which takes longer to assemble the answer
+  than the front end waits. `per_page` does not help, because the cost is in building the
+  result set before paging touches it. Since the dates accept `YYYY-MM-DD HH:MM:SS`, a
+  refused day is re-asked as 6-hour, then 1-hour, then 15-minute windows, tiled back to
+  back. Each step is a *different question*, which is why it succeeds where a retry loop
+  cannot; a 401 is never retried this way, because asking for less does not fix it.
 - **The window is walked one day at a time** and the answer trimmed to that day on `dt_dia`,
   with the day recorded in an added `CGNA_DAY` column. That is what makes a re-run resumable
   at the day — an interrupt costs one day, never a month.

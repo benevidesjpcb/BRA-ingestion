@@ -187,7 +187,8 @@ source(here::here("TOTALBR", "download_totalbr_cgna.R"))
 
 # one request, printed in full: the URL, the HTTP status, the raw body, the
 # columns. Run it first, and again whenever a download comes back empty.
-cgna_totalbr_check("2026-01-15")
+cgna_totalbr_check("2026-01-15")             # the whole day
+cgna_totalbr_check("2026-01-15", hours = 1)  # and one hour, if the day is refused
 
 download_totalbr_cgna(2026, month = 1)   # -> data-raw/totalbr/totalbr_2026cgna.csv
 ```
@@ -209,6 +210,17 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   not an optimisation here, it is the only way to get a whole day. Every page of the
   envelope is fetched and the rows are counted against the `total` the API itself reports; a
   day that does not add up is named rather than quietly stored short.
+- **A day the portal refuses is asked for in smaller windows.** Asking for a whole day of
+  the national table is answered with `HTTP 502 ... Error reading from remote server`: the
+  CGNA's own Apache giving up on its backend, which takes longer to assemble the answer than
+  the front end waits. It is neither the token nor our proxy, and `per_page` does not help —
+  the cost is in building the result set, before paging touches it. The dates accept
+  `YYYY-MM-DD HH:MM:SS`, so a refused day is re-asked as 6-hour, then 1-hour, then 15-minute
+  windows, tiled back to back so nothing is fetched twice and nothing falls between two of
+  them. Each step is a *different question*, which is why it gets through where a retry loop
+  cannot. A 401 is never retried this way: asking for less does not fix it. The steps stop
+  at fifteen minutes — a day that cannot be served in quarter-hour slices is not a window
+  problem, and grinding on to the minute would turn one bad day into 1440 requests.
 - **The window is walked one day at a time**, and the answer trimmed to that day on `dt_dia`.
   Whether `dataf` is inclusive is not documented: asked as `[d, d+1]`, an exclusive bound
   gives the day and an inclusive one gives two, which would file the same flight under two
