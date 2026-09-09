@@ -1145,6 +1145,20 @@ A first look at what the table actually contains, once a year is complete: the m
 flight rules and flight types, and the busiest aerodromes. This is the sanity check that
 the file describes Brazilian traffic and not a filtered subset of it.
 
+::: {.callout-important}
+## One source per year, or the count doubles
+The archive and the API download are both legitimate and **both may hold the same year** —
+this document suggests downloading a year beside the archive precisely so the two can be
+compared. Summing them then counts that year twice, and it does not look like a bug: it
+looks like traffic doubling. It showed as 2024 and 2025 at ~3.9M and ~4.2M movements against
+~1.6M for years only the archive holds.
+
+`totalbr_count_by()` therefore takes one source per year — the archive where it covers the
+year, the download elsewhere, the same rule `totalbr_missing_years()` uses — and **names any
+year held by both**. Pass `source = "both"` to get the old summed behaviour, `"parquet"` or
+`"csv"` to pin it.
+:::
+
 ```{r}
 #| label: tbl-bra-totalbr-profile
 
@@ -1160,17 +1174,32 @@ if (length(files) == 0) {
     ))
   } else {
     prof |>
-      # the li_* columns are pipe-separated after the CSV round-trip; the first
-      # value is the flight's own rule/type, further values are later changes
-      dplyr::mutate(RULE = sub("\\|.*$", "", li_regravoo),
-                    TYPE = sub("\\|.*$", "", li_tipovoo)) |>
+      # The li_* columns are a LIST collapsed to a string, and the collapse
+      # character depends on which source wrote the file -- the ODIN engine uses
+      # "|", other exports use ",". Splitting on only one of them leaves the
+      # whole string ("I,I,I") as the value, which matches no code and silently
+      # reports 0% for everything. Both are accepted.
+      #
+      # The first value is the flight's own rule/type; further values are later
+      # changes in the plan.
+      dplyr::mutate(RULE = sub("[|,].*$", "", li_regravoo),
+                    TYPE = sub("[|,].*$", "", li_tipovoo)) |>
       dplyr::group_by(YEAR) |>
+      # %in%, NOT ==. A single NA in RULE makes MOVEMENTS[RULE == "I"] carry an
+      # NA, and one NA makes the whole sum NA -- which is how every percentage
+      # in this table came back NA while the movement counts were fine. %in%
+      # treats NA as "not this code", which is what is meant.
       dplyr::summarise(
         MOVEMENTS = sum(MOVEMENTS),
-        `IFR (%)` = round(100 * sum(MOVEMENTS[RULE == "I"]) / sum(MOVEMENTS), 1),
-        `VFR (%)` = round(100 * sum(MOVEMENTS[RULE == "V"]) / sum(MOVEMENTS), 1),
-        `Scheduled (%)`   = round(100 * sum(MOVEMENTS[TYPE == "S"]) / sum(MOVEMENTS), 1),
-        `General av. (%)` = round(100 * sum(MOVEMENTS[TYPE == "G"]) / sum(MOVEMENTS), 1),
+        `IFR (%)` = round(100 * sum(MOVEMENTS[RULE %in% "I"]) / sum(MOVEMENTS), 1),
+        `VFR (%)` = round(100 * sum(MOVEMENTS[RULE %in% "V"]) / sum(MOVEMENTS), 1),
+        `Scheduled (%)`   = round(100 * sum(MOVEMENTS[TYPE %in% "S"]) / sum(MOVEMENTS), 1),
+        `General av. (%)` = round(100 * sum(MOVEMENTS[TYPE %in% "G"]) / sum(MOVEMENTS), 1),
+        # what the four columns above do NOT account for: an unclassified or
+        # unexpected code. If this is large, the codes are not S/G/I/V and the
+        # table below says what they actually are.
+        `Other (%)` = round(100 * sum(MOVEMENTS[!(RULE %in% c("I", "V"))]) /
+                              sum(MOVEMENTS), 1),
         .groups = "drop"
       ) |>
       dplyr::mutate(MOVEMENTS = format(MOVEMENTS, big.mark = ",")) |>
@@ -1239,6 +1268,21 @@ if (length(files) == 0 || !exists("movements") || nrow(movements) == 0) {
     tidyr::pivot_wider(names_from = END, values_from = `No aerodrome (%)`) |>
     knitr::kable()
 }
+```
+
+If `Other (%)` above is not near zero, the codes in this source are not the `S`/`G` and
+`I`/`V` this table assumes. Look at what they actually are before reading anything into the
+percentages:
+
+```{r}
+#| label: tbl-bra-totalbr-profile-codes
+#| eval: false
+
+prof |>
+  dplyr::mutate(RULE = sub("[|,].*$", "", li_regravoo),
+                TYPE = sub("[|,].*$", "", li_tipovoo)) |>
+  dplyr::count(RULE, TYPE, wt = MOVEMENTS, sort = TRUE) |>
+  head(15)
 ```
 
 `AFIL` and `ZZZZ` are legitimate values, not errors: a flight plan filed airborne has no

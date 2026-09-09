@@ -537,6 +537,13 @@ one dataset, so `totalbr_missing_years()` asks the API only for what the archive
 > rows in total. That is the source answering truthfully, not a broken filter. Judge
 > coverage by the day counts in the qmd, never by the fact that a download ran.
 
+> **Counting across two sources double counts the years both hold.** `totalbr_count_by()`
+> takes one source per year — the archive where it covers the year, the API download
+> elsewhere — and names any year held by both. Summing them showed 2024 and 2025 at roughly
+> twice the movements of the years only the archive covers, which reads as traffic doubling
+> rather than as a bug. `source = "both"` restores the sum where you know they do not
+> overlap.
+
 ICEA/DECEA have reported duplication in the ODIN data. `check_totalbr_duplicates()`
 measures it under a strict, operational definition: a repeated `pk` (the row hash — the
 same row twice), or the **same registration at the same aerodrome pair with `dh_inicio` or
