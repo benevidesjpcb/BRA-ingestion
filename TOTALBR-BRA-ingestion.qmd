@@ -1246,6 +1246,117 @@ departure aerodrome, and `ZZZZ` marks an end that is not an ICAO aerodrome. They
 because any count of "flights between two aerodromes" that ignores them is wrong, and any
 airport-level use of this table has to decide what to do with them.
 
+## Classifying Flights Against Brazil — `DAIO`
+
+The traffic profile above says what the table contains. This says how each flight **touches
+Brazil**, which is the first thing any use of the national table needs:
+
+| `DAIO` | |
+| --- | --- |
+| `I` | internal — both ends in Brazil |
+| `D` | departing — from Brazil to abroad |
+| `A` | arriving — from abroad into Brazil |
+| `O` | overflight — neither end in Brazil, which is why it is in the *national* table at all |
+
+```{r}
+#| label: classify-bra-totalbr-daio
+#| eval: false
+
+source(here::here("TOTALBR", "classify_totalbr_daio.R"))
+
+d <- totalbr_daio_month(2026, 1)     # one month, from data-raw/totalbr/parts/
+totalbr_daio_summary(d)
+totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-2026-01.parquet
+```
+
+It keeps six fields per flight — `FLTID`, `ADEP`, `ADES`, `TYPE`, `DATE`, `SVC` — plus the
+two countries, the `DAIO` class, and **how each end was decided**. That last part is the
+point: a classification nobody can audit is a number nobody should quote.
+
+### How a country is decided
+
+Six steps, in order, each visible in the result as `ADEP_SRC` / `ADES_SRC`:
+
+| `_SRC` | How the country was found |
+| --- | --- |
+| `lookup` | the OurAirports dump, `data-raw/airports.csv` (<https://ourairports.com/data/>) |
+| `patch` | `data/oa-patch-bra.csv` — the hand-kept list, for what the dump lacks |
+| `prefix` | **no database knows the code**, but its first two letters are a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`) |
+| `platform` | a Brazilian **offshore platform** (`9P..`) — not an aerodrome, in no database, but its location is not in doubt |
+| `assumed` | the code is **not an aerodrome** (`ZZZZ`, `XXXX`, `AFIL`, other numeric) and is *assumed* Brazilian |
+| `unresolved` | nothing matched — country `NA`, and `DAIO` `NA` with it |
+
+The aerodrome dump has 86k rows but only ~22k carry a four-letter code; the rest are
+heliports and fields with local identifiers no flight is matched against. Within it, the
+ICAO code lives in three columns — `icao_code` is filled for a subset, while `ident` and
+`gps_code` carry it for many of the rest — so all three are used, taking the latter two only
+where they look like an ICAO code. That more than doubles the lookup: **10,457 aerodromes on
+`icao_code` alone against 22,452 on all three.**
+
+::: {.callout-note}
+## Judge a database by traffic, not by size
+`totalbr_lookup_coverage(d = d)` reports coverage two ways, and they say different things.
+For January 2026 the dump knows **69.8%** of the distinct aerodrome codes and resolves
+**99.99%** of the flight ends — because the codes it misses are almost all aerodromes seen
+once or twice. Quoting the first as "coverage" would be wrong by orders of magnitude in what
+it implies.
+:::
+
+### What rests on an assumption
+
+`assumed` is the only step that *invents* an answer, so it is the only one that can be wrong
+without anything looking wrong. It is defensible — **an international flight plan requires a
+defined aerodrome**, so `ZZZZ` is filed for fields not in the ICAO list (private strips, farm
+runways), which sit at the ends of domestic legs and essentially never at the ends of
+international ones; `AFIL` says the same from another angle, a plan opened in the air having
+departed outside controlled airspace. But defensible is not the same as free, so it is
+priced rather than trusted:
+
+```{r}
+#| label: cost-bra-totalbr-daio-assumption
+#| eval: false
+
+totalbr_daio_assumption_cost(d)   # every class, as classed vs lookup-only
+totalbr_daio_assumed(d)           # which codes it fired on
+totalbr_daio_unresolved(d)        # the codes still costing flights
+```
+
+January 2026, 179,836 flights, 17 unclassified (0.01%):
+
+| `DAIO` | as classed | lookup only | rests on the assumption |
+| --- | ---: | ---: | ---: |
+| I | 153,365 | 136,243 | 11.2% |
+| D | 10,045 | 10,039 | 0.1% |
+| A | 9,882 | 9,876 | 0.1% |
+| O | 6,527 | 6,527 | 0% |
+
+**D, A and O are effectively assumption-free** — the international figures rest on lookups at
+both ends. The exposure runs the other way: `I` is an **upper** bound and `D + A` a **lower**
+one, because a flight from an unstated aerodrome to a Brazilian one is counted as internal,
+and would be an arrival if that aerodrome were in fact abroad.
+
+Of 18,477 assumed ends, `ZZZZ` was 11,328 (61%) and `AFIL` 1,022 (6%). The remaining 6,127
+(33%) were offshore platforms, which are **not** assumptions and report as `platform` —
+counting known installations as guesswork made the guesswork look three times worse than it
+was.
+
+::: {.callout-warning}
+## Platforms are helicopter shuttles, not airline movements
+The `9P..` codes are the oil installations off Rio and Espírito Santo, flown to from Macaé
+and Vitória. They are correctly *internal*, but they are not airline traffic. For anything
+comparing airports or networks, filter them out:
+
+```r
+d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]
+```
+:::
+
+> The prefix rule is deliberately narrow. A draft used
+> `grepl("^S[BDNSWISJ]|9|^Z|AFIL|NI", ADEP)`, whose alternation binds loosely — `9` and `NI`
+> match *anywhere*, so `SANI`, `LFNI` and `CYNI` all become Brazilian on the strength of two
+> letters in the middle, and `^Z` is the ICAO prefix for **China**. The patterns here are
+> anchored, and what nothing resolves is listed rather than absorbed.
+
 ## Open Points
 
 1. **What a "movement" is in this table.** Each row is a flight, with `co_addep` and
@@ -1266,9 +1377,13 @@ airport-level use of this table has to decide what to do with them.
    are populated for later years before any analysis depends on them.
 5. **Harmonisation to APDF is not defined yet.** Unlike taxi-time and ASMA, this table has
    no metric attached; what it gets harmonised into depends on what it is used for
-   (traffic volumes, an IFR/VFR split, a national denominator). That step is deliberately
-   left out of this document until the use is fixed, so nothing here bakes in a wrong
-   assumption.
+   (traffic volumes, an IFR/VFR split, a national denominator). The `DAIO` classification
+   above is the first step taken in that direction — it splits the table by how a flight
+   touches Brazil, which every one of those uses needs — but it is not itself a harmonised
+   product, and the rest is deliberately left out until the use is fixed.
+6. **Whether `dataf` is inclusive on the CGNA endpoint** is unmeasured; the downloader is
+   correct under either reading, and `cgna_totalbr_check(day, span = 0)` against
+   `span = 1` on a day that answers would settle it.
 
 
 ## Function Reference
@@ -1346,6 +1461,21 @@ undefined, or at whatever version the session happened to hold.
 | `totalbr_lookup(callsign, day)` | One flight in both sources, side by side — is it absent, or present with a different stamp? |
 | `totalbr_pk_overlap()` | Whether the same `pk` appears in both sources at all. |
 
+### Classifying against Brazil: `TOTALBR/classify_totalbr_daio.R`
+
+| Function | What it does |
+| --- | --- |
+| `totalbr_daio_month(year, month)` | One month, from the raw part on disk — the cheapest way to work. |
+| `totalbr_daio(src, years)` | Any `.csv` month part, `.parquet` archive, or data frame already in memory. |
+| `totalbr_country_lookup(file)` | ICAO → ISO2, from the aerodrome dump plus `data/oa-patch-bra.csv`. Finds its columns rather than assuming them, and de-duplicates so the join cannot multiply rows. |
+| `totalbr_lookup_coverage(files, d)` | Which database resolves more of *your* traffic — `ENDS_PCT`, not file size. |
+| `totalbr_daio_summary(d)` | Flights per class per year. |
+| `totalbr_daio_provenance(d)` | How each end of each flight was decided — the audit of the rules. |
+| `totalbr_daio_assumed(d)` | Which codes the Brazil assumption fired on. |
+| `totalbr_daio_assumption_cost(d)` | Every class counted twice, with and without that assumption. |
+| `totalbr_daio_unresolved(d)` | The codes still costing flights, worst first — the to-do list for the patch file. |
+| `totalbr_daio_write(d)` | → `outputs/totalbr/totalbr-daio-<months>.parquet`. |
+
 ### Constants worth knowing
 
 | Constant | Where | Meaning |
@@ -1355,3 +1485,7 @@ undefined, or at whatever version the session happened to hold.
 | `TOTALBR_NEAR_MIN` | `check_totalbr_duplicates.R` | The near test's tolerance, in minutes. |
 | `TOTALBR_DUP_COLS` | `check_totalbr_duplicates.R` | The columns the checks need; a source missing one is skipped. |
 | `TOTALBR_CONTEXT_COLS` | `check_totalbr_duplicates.R` | `ds_rota`, `li_orgaos` — read when present, for reading the result. |
+| `TOTALBR_BR_PREFIX` | `classify_totalbr_daio.R` | `^S[BDIJNSW]` — the Brazilian ICAO prefixes, anchored. |
+| `TOTALBR_BR_PLATFORM` | `classify_totalbr_daio.R` | `^9P` — the offshore platforms, known rather than assumed. |
+| `TOTALBR_UNKNOWN_ADEP` | `classify_totalbr_daio.R` | `ZZZZ`, `XXXX`, `AFIL`, numeric — not aerodromes; the only assumption. |
+| `TOTALBR_OUT_DIR` | `classify_totalbr_daio.R` | `outputs/totalbr/` — one folder per dataset. |
