@@ -12,8 +12,9 @@
 #                  is why it is in the national table at all
 #
 #   source(here::here("TOTALBR", "classify_totalbr_daio.R"))
+#   d <- totalbr_daio_month(2026, 1)          # ONE MONTH -- start here
 #   d <- totalbr_daio()                       # the whole parquet
-#   d <- totalbr_daio(years = 2024:2026)      # a slice
+#   d <- totalbr_daio(years = 2024:2026)      # a slice of it
 #   totalbr_daio_summary(d)                   # counts by class and year
 #   totalbr_daio_unresolved(d)                # the codes still unclassified
 #   totalbr_daio_write(d)                     # -> outputs/
@@ -156,25 +157,47 @@ totalbr_daio <- function(src   = totalbr_daio_source(),
                      DATE  = .data$dt_dia,        SVC  = .data$li_tipovoo)
   } else {
     if (!file.exists(src))
-      stop("TOTALBR parquet not found: ", src,
-           "\nPass src =, or set BRA_TOTALBR_PARQUET.")
+      stop("TOTALBR source not found: ", src,
+           "\nPass src = (a .csv month part or a .parquet), or set ",
+           "BRA_TOTALBR_PARQUET.")
     if (!quiet) message("Reading ", src)
-    ds <- arrow::open_dataset(src)
     want <- c("co_indicativo", "co_addep", "co_addes", "co_modelo",
               "dt_dia", "li_tipovoo")
-    missing <- setdiff(want, names(ds))
-    if (length(missing) > 0)
-      stop("The parquet lacks: ", paste(missing, collapse = ", "))
-    ds |>
-      dplyr::select(dplyr::all_of(want)) |>
-      dplyr::collect() |>
-      dplyr::rename(FLTID = "co_indicativo", ADEP = "co_addep",
-                    ADES  = "co_addes",      TYPE = "co_modelo",
-                    DATE  = "dt_dia",        SVC  = "li_tipovoo")
+
+    if (grepl("\\.csv$", src, ignore.case = TRUE)) {
+      # A raw download, semicolon-separated and quoted, read as text. Only the
+      # six wanted columns are selected, so a month part costs its own six
+      # columns and not its forty.
+      head1 <- data.table::fread(file = src, sep = ";", nrows = 0,
+                                 showProgress = FALSE)
+      missing <- setdiff(want, names(head1))
+      if (length(missing) > 0)
+        stop(basename(src), " lacks: ", paste(missing, collapse = ", "))
+      d <- data.table::fread(file = src, sep = ";", select = want,
+                             colClasses = "character", na.strings = "",
+                             showProgress = FALSE, fill = Inf, header = TRUE)
+      # fwrite wrote the stamps as text; they are UTC, whatever a parquet
+      # column's label may claim elsewhere (see totalbr_sources.R on that trap).
+      d[, dt_dia := as.POSIXct(dt_dia, tz = "UTC")]
+      d <- as.data.frame(d)
+    } else {
+      ds <- arrow::open_dataset(src)
+      missing <- setdiff(want, names(ds))
+      if (length(missing) > 0)
+        stop("The parquet lacks: ", paste(missing, collapse = ", "))
+      d <- ds |> dplyr::select(dplyr::all_of(want)) |> dplyr::collect()
+    }
+    dplyr::rename(d, FLTID = "co_indicativo", ADEP = "co_addep",
+                  ADES  = "co_addes",      TYPE = "co_modelo",
+                  DATE  = "dt_dia",        SVC  = "li_tipovoo")
   }
 
   if (!is.null(years)) {
-    yr  <- as.integer(format(as.Date(ndf$DATE), "%Y"))
+    # format() on the object's own clock, NOT as.Date(), which reads a POSIXct in
+    # UTC and shifts a stamp whose column is labelled with another zone -- the
+    # trap totalbr_sources.R documents, where a row written 00:59 landed in the
+    # previous year.
+    yr  <- as.integer(format(ndf$DATE, "%Y"))
     ndf <- ndf[!is.na(yr) & yr %in% as.integer(years), ]
   }
   if (!quiet) message(sprintf("Flights: %s", format(nrow(ndf), big.mark = ",")))
@@ -239,10 +262,43 @@ totalbr_daio_source <- function() {
 }
 
 # =============================================================================
+# totalbr_daio_month(year, month) -- ONE MONTH, from the raw download
+#
+#   totalbr_daio_month(2026, 1)
+#
+# The month parts under data-raw/totalbr/parts/ are the cheapest way to work:
+# one month is a few hundred megabytes of CSV against a gigabyte of parquet, it
+# is already on disk, and it is the same rows the parquet holds for that month.
+# Start here, and only reach for the whole archive once the rules and the patch
+# file are settled on a month you have actually looked at.
+#
+# The part is the RAW download, before the duplicate handling in
+# prepare_totalbr.R. That is deliberate for a traffic profile -- every record
+# the source served, classified as it stands -- but it means a flight reported
+# twice is counted twice. Run totalbr_prepare(year, month) first and pass its
+# result as `src` when the count itself has to be right.
+# =============================================================================
+totalbr_daio_month <- function(year, month, raw_dir = here::here("data-raw", "totalbr"),
+                               ...) {
+  mm   <- sprintf("%02d", as.integer(month))
+  part <- file.path(raw_dir, "parts", sprintf("totalbr_%d-%s.csv", year, mm))
+  if (!file.exists(part)) {
+    have <- list.files(file.path(raw_dir, "parts"),
+                       pattern = "^totalbr_[0-9]{4}-[0-9]{2}\\.csv$")
+    stop("Not found: ", part,
+         if (length(have)) paste0("\nMonths on disk: ",
+                                  paste(sub("^totalbr_|\\.csv$", "", have),
+                                        collapse = ", "))
+         else "\nNo month parts in that folder at all.")
+  }
+  totalbr_daio(src = part, ...)
+}
+
+# =============================================================================
 # totalbr_daio_summary(d) -- flights per class per year, and what decided them
 # =============================================================================
 totalbr_daio_summary <- function(d) {
-  yr   <- format(as.Date(d$DATE), "%Y")
+  yr   <- format(d$DATE, "%Y")   # the written clock; see totalbr_daio()
   daio <- ifelse(is.na(d$DAIO), "unclassified", d$DAIO)
   # table() -> matrix -> data.frame, rather than reshape(): the column names are
   # then exactly the class letters, in a known order, whichever classes the data
@@ -292,7 +348,7 @@ totalbr_daio_write <- function(d, out_dir = here::here("outputs"),
                                format = c("parquet", "csv"), file = NULL) {
   format <- match.arg(format)
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
-  yrs <- range(format(as.Date(d$DATE), "%Y"), na.rm = TRUE)
+  yrs <- range(format(d$DATE, "%Y"), na.rm = TRUE)
   tag <- if (yrs[1] == yrs[2]) yrs[1] else paste(yrs, collapse = "-")
   path <- if (!is.null(file)) file
           else file.path(out_dir, sprintf("totalbr-daio-%s.%s", tag, format))

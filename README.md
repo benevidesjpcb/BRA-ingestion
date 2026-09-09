@@ -319,11 +319,21 @@ at all.
 ```r
 source(here::here("TOTALBR", "classify_totalbr_daio.R"))
 
-d <- totalbr_daio()                  # or totalbr_daio(years = 2024:2026)
+d <- totalbr_daio_month(2026, 1)     # ONE MONTH, from data-raw/totalbr/parts/
 totalbr_daio_summary(d)              # flights per class per year
 totalbr_daio_unresolved(d)           # the codes still costing flights
 totalbr_daio_write(d)                # -> outputs/totalbr-daio-<years>.parquet
 ```
+
+Start with a month. `totalbr_daio_month()` reads the raw part already on disk — a few
+hundred megabytes against a gigabyte of parquet, and the same rows the archive holds for
+that month. The whole archive is `totalbr_daio()`, once the prefix rule and the patch file
+are settled on a month you have actually looked at.
+
+> The month part is the **raw** download, before the duplicate handling in
+> `prepare_totalbr.R`. For a traffic profile that is the point — every record the source
+> served — but a flight reported twice is counted twice. When the count itself has to be
+> right, run `totalbr_prepare(year, month)` first and pass its result as `src`.
 
 The country of each end is decided in four steps, and **which step decided it is kept in the
 table** (`ADEP_SRC`, `ADES_SRC`) — a classification nobody can audit is a number nobody
