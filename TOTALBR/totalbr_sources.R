@@ -625,9 +625,16 @@ totalbr_count_by <- function(cols,
   # So each part is tagged with where it came from, and a year present in both is
   # taken from ONE of them:
   #
-  #   "auto"     the archive where it covers the year, the download elsewhere.
-  #              The archive is the reference for the history -- the same rule
-  #              totalbr_missing_years() applies when deciding what to fetch.
+  #   "auto"     per year, whichever source HOLDS MORE OF IT.
+  #
+  #              Not "the archive wins", which was the first attempt and was
+  #              wrong in both directions. Each source carries a token sample of
+  #              the other's period: the API returns a few dozen rows for 2019,
+  #              and the archive turned out to hold 285 rows of 2026 -- so
+  #              preferring the archive silently replaced 1.2 million downloaded
+  #              2026 flights with those 285. Choosing by size gets both ends
+  #              right without knowing where either source's coverage stops,
+  #              and the choice is printed.
   #   "parquet"  archive only
   #   "csv"      download only
   #   "both"     the old behaviour, summed. Only meaningful when you know the
@@ -652,19 +659,30 @@ totalbr_count_by <- function(cols,
   overlap <- names(yrs)[vapply(yrs, length, integer(1)) > 1]
   if (length(overlap) > 0)
     message("  Year(s) held by BOTH sources: ", paste(sort(overlap), collapse = ", "),
-            " -- counted from the ", source,
-            if (source == "both") " (SUMMED: these years are double counted)"
-            else " source only.")
+            if (source == "both") " -- SUMMED: these years are double counted."
+            else if (source == "auto") " -- taking whichever holds more:"
+            else paste0(" -- counted from the ", source, " source only."))
 
   keep <- switch(source,
     parquet = all[all$SOURCE == "parquet", ],
     csv     = all[all$SOURCE == "csv", ],
     both    = all,
     auto    = {
-      # per year: the archive if it has that year, otherwise the download
-      has_pq <- unique(all$YEAR[all$SOURCE == "parquet"])
-      all[(all$YEAR %in% has_pq & all$SOURCE == "parquet") |
-          (!(all$YEAR %in% has_pq) & all$SOURCE == "csv"), ]
+      by_yr <- stats::aggregate(MOVEMENTS ~ YEAR + SOURCE, data = all, FUN = sum)
+      by_yr <- by_yr[order(by_yr$YEAR, -by_yr$MOVEMENTS), ]
+      win   <- by_yr[!duplicated(by_yr$YEAR), c("YEAR", "SOURCE")]
+      if (length(overlap) > 0) {
+        shown <- by_yr[by_yr$YEAR %in% overlap, ]
+        for (y in sort(overlap)) {
+          r <- shown[shown$YEAR == y, ]
+          message(sprintf("    %s: %s", y,
+                          paste(sprintf("%s=%s", r$SOURCE,
+                                        format(r$MOVEMENTS, big.mark = ",")),
+                                collapse = "  ")),
+                  "  -> ", win$SOURCE[win$YEAR == y])
+        }
+      }
+      merge(all, win, by = c("YEAR", "SOURCE"))
     })
 
   keep |>
