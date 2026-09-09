@@ -30,6 +30,14 @@ TOTALBR reaches this project two ways, and both are first-class:
 | --- | --- | --- |
 | **parquet archive** | the history, all airports, up to 2025 | `data-raw/totalbr/*.parquet` (or `BRA_TOTALBR_PARQUET`) |
 | **ODIN API** | whatever the archive does not cover | downloaded to `data-raw/totalbr/totalbr_<year>.csv` |
+| **CGNA API** | the same table, served by the other authority | downloaded to `data-raw/totalbr/totalbr_<year>cgna.csv` |
+
+The first two are the *dataset*. The third is a **cross-check, not a third slice of it**:
+the CGNA serves the same national table at `/apiv1/voossisceab`, and whether the two APIs
+agree flight by flight is a question worth asking rather than assuming — the same question
+already asked of `dstaxi`. Its files are written under their own name and are never read as
+if they were the ODIN download; the comparison has its own section at the end of this
+document.
 
 Every check below reads both through `TOTALBR/totalbr_sources.R`, so a year is judged
 covered by the days it actually holds regardless of which source holds them. That is what
@@ -164,6 +172,75 @@ truthfully, not a broken filter: `total_brasil` holds only a token sample for th
 years. The history comes from the parquet archive, and the API is there for the present.
 The rule to apply is the same either way — trust the day counts in the coverage tables
 below, not the fact that a download ran.
+
+### The same table from the CGNA
+
+`/apiv1/voossisceab` — "Consulta Voos SISCEAB" — is the CGNA's national flight table, on the
+same host and the same `TATIC_TOKEN` as TATIC. **Start with one month.** A month says
+whether the source is what we think it is, at a thirtieth of the cost of a year.
+
+```{r}
+#| label: download-bra-totalbr-cgna
+#| eval: false
+
+source(here::here("TOTALBR", "download_totalbr_cgna.R"))
+
+download_totalbr_cgna(2026, month = 1)   # -> data-raw/totalbr/totalbr_2026cgna.csv
+```
+
+Three things this endpoint does differently from ODIN, each handled in the downloader:
+
+- **The dates are `YYYY-MM-DD`**, not the `YYYYMMDD` that `/apiv1/tatic` requires. The two
+  CGNA endpoints do not agree on this, and the wrong one is answered with
+  *"Formato de data invalido"* rather than with data.
+- **`per_page` defaults to 1 and caps at 1000.** Omitting it fetches a day one row at a
+  time, and the cap means a day of the national table is always several pages — so paging is
+  not an optimisation here, it is the only way to get a whole day. Every page of the
+  envelope is fetched and the rows are counted against the `total` the API itself reports; a
+  day that does not add up is named rather than quietly stored short.
+- **The window is walked one day at a time**, and the answer trimmed to that day on `dt_dia`.
+  Whether `dataf` is inclusive is not documented: asked as `[d, d+1]`, an exclusive bound
+  gives the day and an inclusive one gives two, which would file the same flight under two
+  days. Trimming locally makes both behaviours produce the same file. The day asked for is
+  recorded in an added `CGNA_DAY` column — not inferred from the record, because the
+  source's stamps describe the *flight*, and a flight can be reported on a day other than
+  the one it is filed under. That column is what makes a re-run resumable at the day.
+
+### ODIN against CGNA
+
+Two APIs serving one table is not the same question as the archive against ODIN, and it
+starts from a clean slate: assume nothing about a shift between them, measure it, and only
+then decide what the key has to survive.
+
+```{r}
+#| label: compare-bra-totalbr-cgna
+#| eval: false
+
+source(here::here("TOTALBR", "compare_totalbr_cgna.R"))
+
+totalbr_cgna_daily(2026, month = 1)         # START HERE — rows per day, both sides
+compare_totalbr_cgna(2026, month = 1)       # one row per key: pk, eobt, eobt_seq
+totalbr_cgna_field_diffs(2026, month = 1)   # same flight, different values
+totalbr_cgna_examples(2026, month = 1)      # rows only one side has
+totalbr_cgna_scope(2026, "addep", month = 1)
+```
+
+**The daily profile comes first.** The first question about two sources of different size is
+not "which flights differ" but "is one of them truncated", and a total cannot tell those
+apart. A count repeating across many days is the signature of a page limit, not of traffic;
+a handful of days on one side only is a coverage window; every day present at a stable ratio
+is a difference of scope, and `totalbr_cgna_scope()` says where it is.
+
+**Then read `MATCH_PCT` per key before reading anything else.** The summary reports three:
+
+| Key | What it is | What a low rate means |
+| --- | --- | --- |
+| `pk` | the row hash, case-folded | the two sides compute the hash differently — a finding about the key, not about the data |
+| `eobt` | callsign + aerodrome pair + filed off-block time | a planned value both sources copy from the same flight plan, so it survives a shift in the observed stamps |
+| `eobt_seq` | the same, plus the rotation number within the day | `eobt` alone is one key for every rotation of a route in a day, so a side holding three flights and a side holding two would otherwise still "match" |
+
+Nothing here merges or corrects. Which source wins is a decision about the study, not about
+the files.
 
 ## Checking What Arrived
 

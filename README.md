@@ -24,7 +24,7 @@ There is **one folder per dataset**, plus one shared engine:
 | `ODIN/` | **Shared, not a dataset.** `download_odin.R` is the download engine for the whole ICEA/DECEA API: one month per request window, resumable, pagination over a total order, JSON array columns flattened. Three thin wrappers supply only what differs — `TAXI/download_taxi.R`, `TOTALBR/download_totalbr.R` and `KPI08/download_kpi08.R`. Nothing here belongs to one dataset. |
 | `TAXI/` | Taxi time (`dstaxi` via ODIN): download, source comparison, the metric's standalone validation, and the dashboard build |
 | `KPI08/` | ASMA (`kpi08` via ODIN): download, golden validation, the PBWG export, the dashboard build |
-| `TOTALBR/` | The national movement table (`total_brasil` via ODIN): download, duplicate measurement, the two-stage pipeline |
+| `TOTALBR/` | The national movement table: download from **both APIs that serve it** (`total_brasil` via ODIN, `voossisceab` via the CGNA), duplicate measurement, the two-stage pipeline, and the source comparisons |
 | `API_TATIC/` | TATIC — a **different API** (CGNA, token-authenticated, one day per call): download, JSON ingest, harmonisation to APDF |
 | `VRA/` | VRA — a **different API again** (ANAC): probe, download, duplicate inspection |
 
@@ -256,13 +256,15 @@ percentile; it is the volume/denominator dataset.
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
 | `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dstaxi/dsTaxiYYYY.csv` | yes |
-| `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
+| `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table from **ODIN**, one file per year | yes |
+| `TOTALBR/download_totalbr_cgna.R` | Downloads the same table from the **CGNA** (`/apiv1/voossisceab`), day by day, into `totalbr_YYYYcgna.csv` | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
 | `TOTALBR/merge_totalbr_duplicates.R` | Merges the records of one flight into one row | yes |
 | `TOTALBR/prepare_totalbr.R` | The whole cycle in one call: read, drop repeated `pk`, merge flights | yes |
 | `TOTALBR/run_totalbr.R` | Download, check, prepare per month and bind — the whole cycle up to a cut-off date | yes |
-| `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs API download: what matches, what is one-sided, where they disagree | yes |
+| `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs ODIN download: what matches, what is one-sided, where they disagree | yes |
+| `TOTALBR/compare_totalbr_cgna.R` | **ODIN vs CGNA**: rows per day, the set arithmetic under three keys, field-by-field diffs, scope | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
 | `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
 
@@ -298,6 +300,55 @@ and re-binds** — nothing else changes.
 > The bind re-runs the flight merge on purpose. A flight whose records straddle
 > 31 January → 1 February was split into two incomplete halves by the per-month
 > preparation, and only a pass over the joined data puts it back together.
+
+### The national table from both APIs (ODIN and CGNA)
+
+`total_brasil` is served by **two APIs**, and whether they agree flight by flight is worth
+asking rather than assuming — exactly as for `dstaxi`. The CGNA serves it at
+`/apiv1/voossisceab` ("Consulta Voos SISCEAB"), with the same `TATIC_TOKEN` as TATIC.
+
+```r
+source(here::here("TOTALBR", "download_totalbr_cgna.R"))
+download_totalbr_cgna(2026, month = 1)     # ONE MONTH first
+```
+
+```bash
+Rscript TOTALBR/download_totalbr_cgna.R 2026 20260101 20260131
+```
+
+It writes `data-raw/totalbr/totalbr_2026cgna.csv`, with `parts/totalbr_2026cgna_2026-01.csv`
+per month — **beside** the ODIN files and never over them. The inventory in
+`totalbr_sources.R` matches `^totalbr_\d{4}\.csv$`, so a CGNA year sits in the same folder
+without ever being read as if it were the ODIN download.
+
+Three things this endpoint does differently from ODIN, each handled in the downloader:
+
+- **Dates are `YYYY-MM-DD`**, not the `YYYYMMDD` that `/apiv1/tatic` requires.
+- **`per_page` defaults to 1 and caps at 1000.** Omitting it fetches a day one row at a
+  time; the cap means a day of the national table is always several pages, so every page of
+  the envelope (`page`, `per_page`, `total`, `total_pages`) is fetched and the rows are
+  counted against the `total` the API itself reported.
+- **The window is walked one day at a time** and the answer trimmed to that day on `dt_dia`,
+  with the day recorded in an added `CGNA_DAY` column. That is what makes a re-run resumable
+  at the day — an interrupt costs one day, never a month.
+
+Then compare, starting with the daily profile, because the first question about two sources
+of different size is not "which flights differ" but "is one of them truncated":
+
+```r
+source(here::here("TOTALBR", "compare_totalbr_cgna.R"))
+totalbr_cgna_daily(2026, month = 1)        # rows per day, both sides
+compare_totalbr_cgna(2026, month = 1)      # one row per key: pk, eobt, eobt_seq
+totalbr_cgna_field_diffs(2026, month = 1)  # same flight, different values
+totalbr_cgna_scope(2026, "addep", month = 1)
+```
+
+`compare_totalbr_cgna()` reports the match rate of **three keys**, because a low rate is a
+finding about the key before it is a finding about the data: `pk` (the row hash — it matches
+only if both sides compute it the same way), `eobt` (callsign + aerodrome pair + filed
+off-block time, which survives a shift in the observed stamps) and `eobt_seq` (the same plus
+the rotation number within the day, so a side holding three flights of a route and a side
+holding two no longer "match").
 
 TOTALBR has two sources and both count: a **parquet archive** holding the history (all
 airports, up to 2025), and the **ODIN API** for the rest. `totalbr_sources.R` reads them as
