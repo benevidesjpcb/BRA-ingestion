@@ -35,10 +35,12 @@
 #      Brazilian ICAO prefix (SB, SD, SI, SJ, SN, SS, SW), so the aerodrome is
 #      in Brazil even though no file lists it. Deliberately narrow -- see
 #      TOTALBR_BR_PREFIX below.                           _SRC = "prefix"
-#   4. codes that are not aerodromes at all (ZZZZ, XXXX, AFIL, numeric),
+#   4. a Brazilian offshore platform (9P..): not an aerodrome, not in any
+#      database, but its location is not in doubt.        _SRC = "platform"
+#   5. codes that are not aerodromes at all (ZZZZ, XXXX, AFIL, other numeric),
 #      ASSUMED Brazilian. The only step that invents an answer; measure it with
 #      totalbr_daio_assumption_cost().                    _SRC = "assumed"
-#   5. anything still unknown stays NA, and DAIO stays NA with it.
+#   6. anything still unknown stays NA, and DAIO stays NA with it.
 #                                                         _SRC = "unresolved"
 #
 # Step 4 is the point of steps 1-3 being auditable: an unresolved code is a row
@@ -80,10 +82,39 @@ suppressPackageStartupMessages({
 # compare the two runs before deciding which the study should use.
 # ---------------------------------------------------------------------------
 TOTALBR_BR_PREFIX    <- "^S[BDIJNSW]"
-# ZZZZ and XXXX are both "aerodrome not stated"; AFIL is "flight plan filed in
-# the air"; a code starting with a digit is not an ICAO code at all. None of
-# them is an aerodrome, and none can be looked up.
+# ZZZZ and XXXX are "aerodrome not stated"; AFIL is "flight plan filed in the
+# air". None is an aerodrome and none can be looked up, so calling them
+# Brazilian is an assumption. It is a defensible one, and the reason is worth
+# writing down rather than leaving as a default nobody remembers choosing:
+#
+#   AN INTERNATIONAL FLIGHT PLAN REQUIRES A DEFINED AERODROME. ZZZZ is what gets
+#   filed when the field is not in the ICAO list -- a private strip, a farm
+#   runway, an unlisted field. Those exist at both ends of a domestic leg and
+#   essentially never at the ends of an international one, so in a Brazilian
+#   feed a ZZZZ is overwhelmingly a Brazilian airstrip. AFIL says the same thing
+#   from another angle: a plan opened in the air is a flight that departed
+#   outside controlled airspace, which is a domestic circumstance.
+#
+# The assumption is still measured rather than trusted -- see
+# totalbr_daio_assumption_cost(), which prices it per class. Turn it off with
+# totalbr_daio(assume_unknown_is_br = FALSE) to see the lookup-only floor.
 TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|XXXX|AFIL|[0-9])"
+
+# 9P.. IS NOT AN ASSUMPTION. These are Brazilian OFFSHORE PLATFORMS -- the oil
+# installations off Rio and Espírito Santo that helicopters shuttle to from
+# Macaé, Vitória and Cabo Frio. They are not in any aerodrome database because
+# they are not aerodromes, but their location is not in doubt: they sit on the
+# Brazilian continental shelf, inside Brazilian airspace. So they get their own
+# provenance rather than being lumped in with "unstated": in January 2026 they
+# were a THIRD of everything the assumption was carrying, and counting known
+# platforms as guesswork makes the guesswork look three times worse than it is.
+#
+# Two consequences worth knowing before quoting a figure built on this:
+#   * they are internal traffic, correctly -- both ends in Brazil;
+#   * they are HELICOPTER SHUTTLES, not airline movements. For anything that
+#     compares airports or airline networks, filter them out:
+#       d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]
+TOTALBR_BR_PLATFORM <- "^9P"
 
 # =============================================================================
 # totalbr_country_lookup() -- ICAO -> ISO2 country, from whatever file you have
@@ -453,16 +484,17 @@ totalbr_daio <- function(src   = totalbr_daio_source(),
   src_of <- function(code, cntry) {
     ifelse(!is.na(cntry), ifelse(code %in% from_patch, "patch", "lookup"),
     ifelse(is.na(code), "no code",
+    ifelse(grepl(TOTALBR_BR_PLATFORM, code), "platform",
     ifelse(grepl(TOTALBR_BR_PREFIX, code), "prefix",
     ifelse(grepl(TOTALBR_UNKNOWN_ADEP, code),
            if (assume_unknown_is_br) "assumed" else "unresolved",
-           "unresolved"))))
+           "unresolved")))))
   }
   ndf$ADEP_SRC <- src_of(ndf$ADEP, ndf$ADEP_CNTRY)
   ndf$ADES_SRC <- src_of(ndf$ADES, ndf$ADES_CNTRY)
 
-  fill <- function(cntry, srcs) ifelse(is.na(cntry) & srcs %in% c("prefix", "assumed"),
-                                       "BR", cntry)
+  fill <- function(cntry, srcs)
+    ifelse(is.na(cntry) & srcs %in% c("platform", "prefix", "assumed"), "BR", cntry)
   ndf$ADEP_CNTRY <- fill(ndf$ADEP_CNTRY, ndf$ADEP_SRC)
   ndf$ADES_CNTRY <- fill(ndf$ADES_CNTRY, ndf$ADES_SRC)
 

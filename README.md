@@ -344,7 +344,8 @@ should quote:
 | 1 | the OurAirports dump, `data-raw/airports.csv` | `lookup` |
 | 2 | `data/oa-patch-bra.csv` — the hand-maintained list, for what the database lacks | `patch` |
 | 3 | **no database knows the code**, but its first two letters are a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`), so the aerodrome is in Brazil | `prefix` |
-| 4 | the code is **not an aerodrome** (`ZZZZ`, `XXXX`, `AFIL`, numeric) and is *assumed* Brazilian | `assumed` |
+| 4 | a **Brazilian offshore platform** (`9P..`) — not an aerodrome, not in any database, but its location is not in doubt | `platform` |
+| 5 | the code is **not an aerodrome** (`ZZZZ`, `XXXX`, `AFIL`, other numeric) and is *assumed* Brazilian | `assumed` |
 | — | nothing matched: country `NA`, `DAIO` `NA` | `unresolved` |
 
 Steps 1 and 2 are equally trusted and separately reported: the patch is a few dozen lines
@@ -361,11 +362,31 @@ totalbr_daio_assumption_cost(d)   # every class, as classed vs lookup-only
 totalbr_daio_assumed(d)           # which codes it fired on
 ```
 
-In January 2026 it carried 9.5% of flights (17,139 of 179,836 with at least one end
-assumed), against 86.9% with both ends looked up. That is not negligible: a flight from
-`ZZZZ` to `SBGR` is counted as **internal**, and if that unstated aerodrome was in fact
-abroad it was an **arrival**. `totalbr_daio(assume_unknown_is_br = FALSE)` leaves them
-unclassified instead.
+**Why it is defensible, and where it lands.** An international flight plan requires a
+defined aerodrome; `ZZZZ` is what gets filed when the field is not in the ICAO list — a
+private strip, a farm runway — which in a Brazilian feed is overwhelmingly a Brazilian
+airstrip. `AFIL` says the same from another angle: a plan opened in the air departed outside
+controlled airspace, a domestic circumstance.
+
+January 2026 puts numbers on it. Of 18,477 assumed flight ends, `ZZZZ` was 11,328 (61%),
+`AFIL` 1,022 (6%) and offshore platforms 6,127 (33%) — the last of which are **not**
+assumptions and now report as `platform`. And the cost falls almost entirely on one class:
+
+| `DAIO` | as classed | lookup only | rests on the assumption |
+| --- | ---: | ---: | ---: |
+| I | 153,365 | 136,243 | 11.2% |
+| D | 10,045 | 10,039 | 0.1% |
+| A | 9,882 | 9,876 | 0.1% |
+| O | 6,527 | 6,527 | 0% |
+
+So **D, A and O are effectively assumption-free** — the international figures rest on
+lookups at both ends. The exposure is that `I` is an upper bound and `D + A` a lower one:
+if an unstated aerodrome were in fact abroad, that flight moves from internal to arriving or
+departing.
+
+> **Offshore platforms are helicopter shuttles, not airline movements.** They are correctly
+> internal, but for anything comparing airports or airline networks, filter them:
+> `d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]`.
 
 > **Where the file comes from**, written down because a filename will not remind anyone:
 > `data-raw/airports.csv` is the full dump from <https://ourairports.com/data/>. It has 86k
