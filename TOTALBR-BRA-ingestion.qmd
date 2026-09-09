@@ -121,7 +121,19 @@ of which five are date-like (`dt_dia`, `dh_inicio`, `dh_fim`, `dh_eobt`, `dh_eet
 confirms the two choices the downloader is built on: the month windows filter on `dt_dia`,
 and the unique key is `pk`.
 
-### Download
+### Download — from ODIN
+
+**The short version.** If you know which year you want, one line does it:
+
+```r
+source(here::here("TOTALBR", "download_totalbr.R"))
+download_totalbr(2026, out_dir = bra_totalbr_raw_dir)
+```
+
+The chunk below adds one thing to that, and it is optional: it asks what is **already on
+disk** before downloading, so a year the parquet archive already covers is not fetched
+again at the cost of hours. `cov` and `need` exist for that decision alone — skip them
+whenever you have already made it.
 
 The chunk below is `eval: false` — the download is slow, so it is not executed on render;
 run it manually when you need data.
@@ -161,7 +173,7 @@ if (length(need) > 0)
   download_totalbr(need, out_dir = bra_totalbr_raw_dir)
 ```
 
-The coverage table printed first is what makes the decision auditable. `COVERED` is why a
+The coverage table printed first is what makes that decision auditable. `COVERED` is why a
 year is not fetched: 2024 and 2025 are in the **parquet archive**, so `need` comes back as
 2026 alone. That is the intended behaviour — the archive is the reference for the history,
 and re-downloading a year it already holds would spend hours to produce a second, competing
@@ -193,7 +205,7 @@ years. The history comes from the parquet archive, and the API is there for the 
 The rule to apply is the same either way — trust the day counts in the coverage tables
 below, not the fact that a download ran.
 
-### The same table from the CGNA
+### Download — from the CGNA
 
 `/apiv1/voossisceab` — "Consulta Voos SISCEAB" — is the CGNA's national flight table, on the
 same host and the same `TATIC_TOKEN` as TATIC. **Start with one month.** A month says
