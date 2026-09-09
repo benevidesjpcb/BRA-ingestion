@@ -13,6 +13,13 @@
 # {"count": N, "data": [...]}. Only the plumbing is common, so only the plumbing
 # lives here.
 #
+# API_TATIC/ carries its own copy of these four helpers and does NOT read this
+# file. That duplication is deliberate for now: TATIC is a working pipeline that
+# nobody asked to change, and rewriting it to source this would be an untested
+# edit to something outside the task that created this file. When TATIC is next
+# touched for its own reasons, the four definitions there can be deleted in
+# favour of these.
+#
 #   source(here::here("CGNA", "cgna_common.R"))
 #
 # They share ONE thing beyond this file: TATIC_TOKEN. The token authenticates a

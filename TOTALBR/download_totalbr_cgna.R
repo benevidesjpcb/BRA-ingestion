@@ -110,13 +110,12 @@
 # The shared CGNA plumbing: the proxy, the CSV conventions, the JSON flattening.
 # Sourcing only defines functions.
 #
-# NOT API_TATIC/download_tatic.R, which is where these helpers used to live and
-# which this file used to source for them. TATIC is a different endpoint with a
-# different contract and nothing to do with the national table; pulling in one
-# dataset's downloader to borrow four utilities made it look as though TOTALBR
-# depended on TATIC, which it does not. The one thing they genuinely share is
-# TATIC_TOKEN -- the token authenticates a person against the portal, not
-# against an endpoint.
+# NOT API_TATIC/download_tatic.R, which this file used to source to borrow four
+# utilities. TATIC is a different endpoint with a different contract and nothing
+# to do with the national table; sourcing one dataset's downloader from another
+# made TOTALBR look as though it depended on TATIC, which it does not. The one
+# thing they genuinely share is TATIC_TOKEN -- the token authenticates a person
+# against the portal, not against an endpoint.
 source(here::here("CGNA", "cgna_common.R"))
 
 CGNA_TOTALBR_URL <- Sys.getenv(
