@@ -19,7 +19,7 @@
 #   totalbr_daio_unresolved(d)                # the codes still unclassified
 #   totalbr_daio_assumption_cost(d)           # what step 4 is worth, per class
 #   totalbr_lookup_coverage(d = d)            # which database covers YOUR data
-#   totalbr_daio_write(d)                     # -> outputs/
+#   totalbr_daio_write(d)                     # -> outputs/totalbr/
 #
 # HOW A COUNTRY IS DECIDED, in order. Each step is separately visible in the
 # result, because a classification nobody can audit is a number nobody should
@@ -652,11 +652,18 @@ totalbr_daio_unresolved <- function(d, n = 40) {
 # =============================================================================
 # totalbr_daio_write(d) -- the product
 #
-# Parquet by default: 11.6 million rows is not a CSV anyone wants to re-read,
-# and the timestamps survive as timestamps. Pass format = "csv" when something
-# downstream needs text.
+# Written to outputs/totalbr/, one folder per dataset rather than one flat pile.
+#
+# Parquet by default: 180,000 rows a month and 11.6 million for the archive is
+# not a CSV anyone wants to re-read, and the timestamps survive as timestamps.
+# Pass format = "csv" when something downstream needs text.
 # =============================================================================
-totalbr_daio_write <- function(d, out_dir = here::here("outputs"),
+# Its own folder under outputs/, because DAIO is not the only thing this dataset
+# will produce and a flat outputs/ stops being readable at about the fifth
+# product. Created on first write.
+TOTALBR_OUT_DIR <- here::here("outputs", "totalbr")
+
+totalbr_daio_write <- function(d, out_dir = TOTALBR_OUT_DIR,
                                format = c("parquet", "csv"), file = NULL) {
   format <- match.arg(format)
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)

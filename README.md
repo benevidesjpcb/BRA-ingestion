@@ -322,7 +322,7 @@ source(here::here("TOTALBR", "classify_totalbr_daio.R"))
 d <- totalbr_daio_month(2026, 1)     # ONE MONTH, from data-raw/totalbr/parts/
 totalbr_daio_summary(d)              # flights per class per year
 totalbr_daio_unresolved(d)           # the codes still costing flights
-totalbr_daio_write(d)                # -> outputs/totalbr-daio-2026-01.parquet
+totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-2026-01.parquet
 ```
 
 Start with a month. `totalbr_daio_month()` reads the raw part already on disk — a few
@@ -330,7 +330,10 @@ hundred megabytes against a gigabyte of parquet, and the same rows the archive h
 that month. The whole archive is `totalbr_daio()`, once the prefix rule and the patch file
 are settled on a month you have actually looked at.
 
-The result stays in memory until `totalbr_daio_write(d)` is called; it names the file by the
+The result stays in memory until `totalbr_daio_write(d)` is called. It writes to
+`outputs/totalbr/` — its own folder, because DAIO will not be the only thing this dataset
+produces and a flat `outputs/` stops being readable at about the fifth product — and names
+the file by the
 months the data actually covers (`2026-01`, `2026-01-06`, `2024-01-2026-03`), following the
 naming the rest of the pipeline uses. Naming it by year alone would write January as `2026`,
 which reads as the whole year and is then silently overwritten by a run that really is.
