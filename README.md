@@ -341,7 +341,7 @@ should quote:
 
 | Step | How the country was found | `_SRC` |
 | --- | --- | --- |
-| 1 | an aerodrome database — `data-raw/airports.csv` (OurAirports), or `world-airports.csv` | `lookup` |
+| 1 | the OurAirports dump, `data-raw/airports.csv` | `lookup` |
 | 2 | `data/oa-patch-bra.csv` — the hand-maintained list, for what the database lacks | `patch` |
 | 3 | **no database knows the code**, but its first two letters are a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`), so the aerodrome is in Brazil | `prefix` |
 | 4 | the code is **not an aerodrome** (`ZZZZ`, `XXXX`, `AFIL`, numeric) and is *assumed* Brazilian | `assumed` |
@@ -367,18 +367,22 @@ assumed), against 86.9% with both ends looked up. That is not negligible: a flig
 abroad it was an **arrival**. `totalbr_daio(assume_unknown_is_br = FALSE)` leaves them
 unclassified instead.
 
-> **Where the files come from**, written down because filenames alone will not remind
-> anyone: `data-raw/airports.csv` is the full dump from <https://ourairports.com/data/>
-> (`ident`, `icao_code`, `iso_country`, …), and `data-raw/world-airports.csv` is from
-> <https://world-airport-database.com/download/> (`icao`, `country`, …). The OurAirports one
-> is preferred and looked for first: it carries both an ICAO column and a country *code*, so
-> it needs no name translation.
+> **Where the file comes from**, written down because a filename will not remind anyone:
+> `data-raw/airports.csv` is the full dump from <https://ourairports.com/data/>. It has 86k
+> rows because it counts every heliport and closed strip; the ~22k carrying a four-letter
+> code are what a flight can be matched against, and they resolve **99.99%** of a month's
+> flying. Set `BRA_AIRPORT_DB` to use a file elsewhere.
 >
-> In that dump `icao_code` is filled for a subset while `ident` is the primary key and *is*
-> the ICAO code wherever the aerodrome has one — so aerodromes are also keyed on `ident`
-> when it looks like an ICAO code (four letters, nothing else), which excludes the local
-> identifiers the same column carries for small fields (`00A`, `3B7`). Keying on `icao_code`
-> alone throws away aerodromes the file knows perfectly well.
+> In that dump `icao_code` is filled for a subset, while `ident` and `gps_code` carry the
+> ICAO code for many of the rest — so aerodromes are keyed on all three, taking `ident` and
+> `gps_code` only where they look like an ICAO code (four letters, nothing else). That
+> excludes the local identifiers the same columns hold for small fields (`00A`, `3B7`), and
+> it more than doubles the usable lookup: 10,457 aerodromes on `icao_code` alone against
+> 22,452 on all three.
+>
+> A second database (world-airport-database.com) was tried and dropped — it held a fraction
+> of the aerodromes, gave the country as a name rather than a code, and shipped an empty ISO
+> country column. It resolved nothing this one does not.
 
 > **Two `readr` defaults are turned off when a lookup file is read, and both cost aerodromes
 > silently.** `na = character(0)`, because readr treats the string `"NA"` as missing and
@@ -397,10 +401,12 @@ unclassified instead.
 > values, a country given as a *name* is translated through
 > `data/country-icao-iso-etc.csv`, and what was chosen is printed on every run.
 
-> Coverage is not the same between them, and it lands directly in
-> `totalbr_daio_unresolved()`. Judge it by `totalbr_lookup_coverage()` — how many aerodromes
-> each file resolves to a country — not by the size of the file, which counts heliports and
-> codeless fields no flight is ever matched against. `BRA_AIRPORT_DB` picks the file.
+> `totalbr_lookup_coverage(d = d)` compares any candidate files, and reports coverage two
+> ways: `CODES_PCT` over the distinct aerodrome codes, and `ENDS_PCT` over flight ends —
+> the same thing weighted by traffic. **Read `ENDS_PCT`.** The two diverge sharply, because
+> the codes a database misses are overwhelmingly aerodromes seen once or twice: for January
+> 2026 the OurAirports dump knows 69.8% of the distinct codes and resolves 99.99% of the
+> flying.
 
 > The prefix rule is deliberately narrow. A draft version used
 > `grepl("^S[BDNSWISJ]|9|^Z|AFIL|NI", ADEP)`, whose alternation binds loosely — `9` and `NI`

@@ -26,7 +26,7 @@
 # quote:
 #
 #   1. an aerodrome database -- data-raw/airports.csv (OurAirports) or
-#      world-airports.csv. The schema is detected, not assumed; see
+#      the OurAirports dump. Its columns are found, not named; see
 #      totalbr_country_lookup().                          _SRC = "lookup"
 #   2. data/oa-patch-bra.csv, for what that database lacks or gets wrong. It is
 #      as trusted as the database and separately reported, because it is 48
@@ -89,38 +89,31 @@ TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|XXXX|AFIL|[0-9])"
 # totalbr_country_lookup() -- ICAO -> ISO2 country, from whatever file you have
 #
 #   totalbr_country_lookup()                                   # auto-detect
-#   totalbr_country_lookup("data-raw/world-airports.csv")
+#   totalbr_country_lookup("some/other/airports.csv")
 #
-# WHERE THE FILES COME FROM -- written down because the next person to refresh
-# one will not remember, and the two are easy to confuse by their filenames:
+# WHERE THE FILE COMES FROM -- written down because the next person to refresh it
+# will not remember:
 #
 #   data-raw/airports.csv        https://ourairports.com/data/
 #                                the full OurAirports dump. Columns ident, type,
 #                                icao_code, iata_code, gps_code, iso_country,
 #                                iso_region, ... Big (86k rows) because it counts
-#                                every heliport and closed strip; the part that
-#                                matters is the rows carrying an ICAO code.
+#                                every heliport and closed strip; the ~22k rows
+#                                carrying a four-letter code are what a flight
+#                                can be matched against, and they resolve 99.99%
+#                                of a month's flying.
 #
-#   data-raw/world-airports.csv  https://world-airport-database.com/download/
-#                                ~9k rows. Columns icao, iata, country, ...
-#                                Its iso_country column is EMPTY -- see below.
+# A second database (world-airport-database.com) was tried and dropped: it holds
+# a fraction of the aerodromes, gives the country as a NAME rather than a code,
+# and ships an ISO country column that is entirely empty. It resolved nothing
+# this one does not.
 #
-# THE SCHEMA IS DETECTED, NOT ASSUMED, because those two disagree on both the
-# column names and what is in them:
-#
-#   OurAirports          icao_code, iso_country ("BR")
-#   world-airport-db     icao, country ("Brazil"), iso_country ENTIRELY EMPTY
-#
-# That last one is the trap worth naming. readr types a column of nothing as
-# `lgl`, so world-airports.csv reads with `iso_country` as logical NA -- and a
-# lookup built on it joins successfully, returns NA for every aerodrome, and
-# leaves every flight unclassified without one error. So a column is used only
-# if it actually holds values, and what was chosen is printed.
-#
-# A country given as a NAME rather than a code is translated through
-# data/country-icao-iso-etc.csv (country.name.en -> iso2c). Names that file does
-# not know are reported rather than dropped: they are aerodromes that will go
-# unclassified, and that is a number worth seeing before trusting the output.
+# THE COLUMNS ARE STILL FOUND RATHER THAN NAMED, for two reasons that outlived
+# that file. A column is used only if it HOLDS VALUES -- readr types a column of
+# nothing as `lgl`, and a lookup built on such a column joins successfully,
+# returns NA for every aerodrome, and leaves every flight unclassified without
+# raising one error. And the key is looked for under several names because this
+# dump keeps the ICAO code in three of them; see TOTALBR_ALT_ICAO_COLS.
 # =============================================================================
 TOTALBR_ICAO_COLS    <- c("icao", "icao_code", "ident", "gps_code")
 
@@ -147,10 +140,11 @@ TOTALBR_CNTRY_COLS   <- c("country", "country_name", "iso_country")
 #   (Windhoek) turned up in totalbr_daio_unresolved(). Nothing is auto-blanked;
 #   emptiness is decided here, by nzchar.
 #
-#   col_character(). Type inference is what turned world-airports.csv's empty
-#   iso_country into a logical column. Read as text, an empty column is a column
-#   of "" -- which .tb_usable() rejects for the right reason (no values) rather
-#   than by accident of type.
+#   col_character(). Type inference is what turned a dropped database's empty
+#   iso_country column into a logical one -- a lookup built on it joined
+#   cleanly and resolved nothing. Read as text, an empty column is a column of
+#   "", rejected by .tb_usable() for the right reason (no values) rather than by
+#   accident of type.
 # =============================================================================
 .tb_read <- function(path, ...) {
   readr::read_csv(path,
@@ -178,17 +172,6 @@ TOTALBR_CNTRY_COLS   <- c("country", "country_name", "iso_country")
   length(v) > 0 && mean(grepl("^[A-Z]{2}$", v)) > 0.9
 }
 
-# country name -> ISO2, from the reference table the project already carries
-totalbr_iso_from_name <- function(
-    file = here::here("data", "country-icao-iso-etc.csv")) {
-  if (!file.exists(file)) return(NULL)
-  d <- .tb_read(file)
-  nm <- .tb_usable(d, c("country.name.en", "country_name_en", "cntry_name", "country"))
-  is <- .tb_usable(d, c("iso2c", "cntry_iso", "iso_country"))
-  if (is.null(nm) || is.null(is)) return(NULL)
-  stats::setNames(toupper(trimws(d[[is]])), toupper(trimws(d[[nm]])))
-}
-
 totalbr_country_lookup <- function(
     file       = totalbr_lookup_file(),
     patch_file = here::here("data", "oa-patch-bra.csv"),
@@ -196,10 +179,8 @@ totalbr_country_lookup <- function(
 
   if (!file.exists(file))
     stop("Aerodrome database not found: ", file,
-         "\nDownload one and put it in data-raw/:",
-         "\n  https://ourairports.com/data/            -> airports.csv (preferred)",
-         "\n  https://world-airport-database.com/download/ -> world-airports.csv",
-         "\nor pass file =, or set BRA_AIRPORT_DB.")
+         "\nDownload airports.csv from https://ourairports.com/data/ into",
+         "\ndata-raw/, or pass file =, or set BRA_AIRPORT_DB.")
 
   raw <- .tb_read(file)
 
@@ -213,45 +194,27 @@ totalbr_country_lookup <- function(
   iso_col  <- .tb_usable(raw, TOTALBR_ISO_COLS)
   if (!is.null(iso_col) && !.tb_looks_iso2(raw[[iso_col]])) iso_col <- NULL
   name_col <- if (is.null(iso_col)) .tb_usable(raw, TOTALBR_CNTRY_COLS) else NULL
-  # A column called `country` may hold codes rather than names -- databases
-  # differ, and the name of the column is not evidence. Decide by the content:
-  # two letters is a code, whatever the header says.
+  # A column called `country` may hold codes rather than names, and the header is
+  # not evidence either way. Decide by the content: two letters is a code.
   if (!is.null(name_col) && .tb_looks_iso2(raw[[name_col]])) {
     iso_col <- name_col; name_col <- NULL
   }
-  if (is.null(iso_col) && is.null(name_col))
-    stop(basename(file), " has no usable country column: the ones it has are ",
-         "empty or unrecognised. It has: ", paste(names(raw), collapse = ", "))
+  if (is.null(iso_col))
+    stop(basename(file), " has no usable ISO2 country column",
+         if (!is.null(name_col))
+           paste0(" -- `", name_col, "` holds country NAMES, not codes, and ",
+                  "translating them is no longer supported (the one database ",
+                  "that needed it was dropped)")
+         else ": the ones it has are empty or unrecognised",
+         ".\nIt has: ", paste(names(raw), collapse = ", "))
 
   icao <- toupper(trimws(as.character(raw[[icao_col]])))
-
-  if (!is.null(iso_col)) {
-    iso <- toupper(trimws(as.character(raw[[iso_col]])))
-    if (!quiet) message(sprintf("Lookup: %s -> %s (ISO2 codes) from %s",
-                                icao_col, iso_col, basename(file)))
-  } else {
-    nm  <- toupper(trimws(as.character(raw[[name_col]])))
-    map <- totalbr_iso_from_name()
-    if (is.null(map))
-      stop(basename(file), " gives the country as a NAME (", name_col, "), and ",
-           "data/country-icao-iso-etc.csv is missing or unreadable, so it ",
-           "cannot be turned into a code. Add that file, or use a database ",
-           "that carries iso_country.")
-    iso <- unname(map[nm])
-    if (!quiet) {
-      message(sprintf("Lookup: %s -> %s (country NAMES) from %s, via %s",
-                      icao_col, name_col, basename(file),
-                      "data/country-icao-iso-etc.csv"))
-      lost <- sort(unique(nm[!is.na(nm) & nzchar(nm) & is.na(iso)]))
-      if (length(lost) > 0)
-        message(sprintf("  %d country name(s) not in the reference table: %s",
-                        length(lost), paste(utils::head(lost, 12), collapse = ", ")))
-    }
-  }
-
-  # "" is the empty value now, not NA -- see .tb_read() on why Namibia made that
-  # necessary. is.na() is still checked: a name that the reference table could
-  # not translate comes back as a real NA from the match.
+  iso  <- toupper(trimws(as.character(raw[[iso_col]])))
+  if (!quiet) message(sprintf("Lookup: %s -> %s (ISO2 codes) from %s",
+                              icao_col, iso_col, basename(file)))
+  # "" is the empty value, not NA -- see .tb_read() on why Namibia made that
+  # necessary. is.na() is still checked, because a code the file simply does not
+  # have comes back from the match as a real NA.
   base <- tibble::tibble(ICAO = icao, CNTRY_ISO = iso, SOURCE = "db") |>
     dplyr::filter(!is.na(.data$ICAO), nzchar(.data$ICAO),
                   !is.na(.data$CNTRY_ISO), nzchar(.data$CNTRY_ISO))
@@ -317,12 +280,10 @@ totalbr_oa_lookup <- totalbr_country_lookup
 totalbr_lookup_file <- function() {
   env <- Sys.getenv("BRA_AIRPORT_DB", unset = "")
   if (nzchar(env)) return(env)
-  # The OurAirports dump first: it carries both an ICAO column and a country
-  # code, so it needs no name translation and resolves the most codes.
+  # The OurAirports dump, under either the name it downloads as or the dated one
+  # an earlier extract used.
   cand <- c(here::here("data-raw", "airports.csv"),
             here::here("data", "airports.csv"),
-            here::here("data-raw", "world-airports.csv"),
-            here::here("data", "world-airports.csv"),
             sort(list.files(here::here("data"), pattern = "^oa-[0-9]{6}\\.csv$",
                             full.names = TRUE), decreasing = TRUE))
   hit <- cand[file.exists(cand)]
@@ -341,10 +302,13 @@ totalbr_lookup_file <- function() {
 #   AERODROMES  how many ICAO codes it resolves to a country. A file can be
 #               enormous and score badly here: a dump full of heliports and
 #               fields with no ICAO code at all is large, not useful.
-#   RESOLVED    the share of the aerodrome codes IN YOUR DATA it covers, when a
-#               classified month is passed as `d`. This is the question. A
-#               database that knows 40,000 aerodromes none of which appear in
-#               TOTALBR is worth less than one that knows 2,000 that do.
+#   CODES_PCT   the share of the DISTINCT aerodrome codes in your data it knows.
+#   ENDS_PCT    the share of FLIGHT ENDS it resolves -- the same thing weighted
+#               by traffic. THIS is the one to read. The two diverge sharply:
+#               the codes a database misses are overwhelmingly aerodromes seen
+#               once or twice, so a file can know 70% of the codes and still
+#               resolve 99% of the flying.
+#   NOTE        why a file produced nothing, when it did.
 #
 # Pass the month you are actually working on. Comparing files in the abstract is
 # how a smaller database gets rejected for being smaller when it happens to
@@ -354,37 +318,44 @@ totalbr_lookup_coverage <- function(files = NULL, d = NULL) {
   if (is.null(files)) {
     cand <- c(here::here("data-raw", "airports.csv"),
               here::here("data", "airports.csv"),
-              here::here("data-raw", "world-airports.csv"),
-              here::here("data", "world-airports.csv"),
               list.files(here::here("data"), pattern = "^oa-[0-9]{6}\\.csv$",
                          full.names = TRUE))
     files <- cand[file.exists(cand)]
   }
   if (length(files) == 0) stop("No aerodrome database found to compare.")
 
-  codes <- if (!is.null(d)) {
-    v <- c(d$ADEP, d$ADES)
-    unique(v[!is.na(v)])
-  } else NULL
+  # Both ends of every flight, kept WITH their repetitions: the distinct codes
+  # answer "how much of the world does this file know", and the ends answer
+  # "how much of my traffic does it resolve". They differ enormously -- a
+  # thousand codes seen once each weigh the same as one code seen a thousand
+  # times in the first, and nothing like it in the second.
+  ends   <- if (!is.null(d)) { v <- c(d$ADEP, d$ADES); v[!is.na(v)] } else NULL
+  codes  <- if (!is.null(ends)) unique(ends) else NULL
 
   out <- lapply(files, function(f) {
     lk <- tryCatch(totalbr_country_lookup(file = f, quiet = TRUE),
-                   error = function(e) NULL)
-    if (is.null(lk))
+                   error = function(e) e)
+    if (inherits(lk, "condition"))
+      # The reason, not just the absence of an answer. A file that cannot be
+      # read and a file that resolves nothing are different problems, and NA
+      # said neither.
       return(tibble::tibble(FILE = basename(f), AERODROMES = NA_integer_,
-                            IN_DATA = NA_integer_, RESOLVED_PCT = NA_real_))
+                            CODES_PCT = NA_real_, ENDS_PCT = NA_real_,
+                            NOTE = substr(conditionMessage(lk), 1, 120)))
     tibble::tibble(
       FILE       = basename(f),
       AERODROMES = nrow(lk),
-      IN_DATA    = if (is.null(codes)) NA_integer_ else sum(codes %in% lk$ICAO),
-      RESOLVED_PCT = if (is.null(codes)) NA_real_
-                     else round(100 * mean(codes %in% lk$ICAO), 1))
+      CODES_PCT  = if (is.null(codes)) NA_real_
+                   else round(100 * mean(codes %in% lk$ICAO), 1),
+      ENDS_PCT   = if (is.null(ends)) NA_real_
+                   else round(100 * mean(ends %in% lk$ICAO), 2),
+      NOTE       = "")
   })
   out <- dplyr::bind_rows(out)
   if (is.null(codes))
-    message("No data passed: RESOLVED_PCT needs `d`, e.g. ",
+    message("No data passed: the percentages need `d`, e.g. ",
             "totalbr_lookup_coverage(d = totalbr_daio_month(2026, 1)).")
-  out[order(-out$RESOLVED_PCT, -out$AERODROMES), ]
+  out[order(-out$ENDS_PCT, -out$AERODROMES), ]
 }
 
 # =============================================================================
