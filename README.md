@@ -339,13 +339,17 @@ The country of each end is decided in four steps, and **which step decided it is
 table** (`ADEP_SRC`, `ADES_SRC`) — a classification nobody can audit is a number nobody
 should quote:
 
-| Step | Source | `_SRC` |
+| Step | How the country was found | `_SRC` |
 | --- | --- | --- |
 | 1 | an aerodrome database — `data-raw/airports.csv` (OurAirports), or `world-airports.csv` | `lookup` |
-| 2 | `data/oa-patch-bra.csv`, for what it lacks or gets wrong | `lookup` |
-| 3 | a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`) | `prefix` |
-| 4 | `ZZZZ`, `XXXX`, `AFIL` or a numeric code, **assumed** Brazilian | `assumed` |
+| 2 | `data/oa-patch-bra.csv` — the hand-maintained list, for what the database lacks | `patch` |
+| 3 | **no database knows the code**, but its first two letters are a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`), so the aerodrome is in Brazil | `prefix` |
+| 4 | the code is **not an aerodrome** (`ZZZZ`, `XXXX`, `AFIL`, numeric) and is *assumed* Brazilian | `assumed` |
 | — | nothing matched: country `NA`, `DAIO` `NA` | `unresolved` |
+
+Steps 1 and 2 are equally trusted and separately reported: the patch is a few dozen lines
+somebody maintains by hand, and how much traffic leans on it is the difference between a
+list worth curating and one that no longer matters.
 
 Step 4 is a modelling decision, not a lookup: `ZZZZ` and `XXXX` mean "aerodrome not stated"
 and `AFIL` means the plan was filed in the air. It is also the only step that *invents* an

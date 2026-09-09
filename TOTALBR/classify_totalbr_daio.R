@@ -25,13 +25,21 @@
 # result, because a classification nobody can audit is a number nobody should
 # quote:
 #
-#   1. an aerodrome database -- data-raw/world-airports.csv, or an OurAirports
-#      extract in data/. The schema is detected, not assumed; see
-#      totalbr_country_lookup()
-#   2. data/oa-patch-bra.csv, for what that database lacks or gets wrong
-#   3. a PREFIX RULE for codes neither knows, kept deliberately narrow -- see
-#      TOTALBR_BR_PREFIX below
-#   4. anything still unknown stays NA, and DAIO stays NA with it
+#   1. an aerodrome database -- data-raw/airports.csv (OurAirports) or
+#      world-airports.csv. The schema is detected, not assumed; see
+#      totalbr_country_lookup().                          _SRC = "lookup"
+#   2. data/oa-patch-bra.csv, for what that database lacks or gets wrong. It is
+#      as trusted as the database and separately reported, because it is 48
+#      lines somebody maintains by hand.                  _SRC = "patch"
+#   3. a PREFIX RULE, for a code NO database knows: the first two letters are a
+#      Brazilian ICAO prefix (SB, SD, SI, SJ, SN, SS, SW), so the aerodrome is
+#      in Brazil even though no file lists it. Deliberately narrow -- see
+#      TOTALBR_BR_PREFIX below.                           _SRC = "prefix"
+#   4. codes that are not aerodromes at all (ZZZZ, XXXX, AFIL, numeric),
+#      ASSUMED Brazilian. The only step that invents an answer; measure it with
+#      totalbr_daio_assumption_cost().                    _SRC = "assumed"
+#   5. anything still unknown stays NA, and DAIO stays NA with it.
+#                                                         _SRC = "unresolved"
 #
 # Step 4 is the point of steps 1-3 being auditable: an unresolved code is a row
 # that cannot be counted, so totalbr_daio_unresolved() lists them by how much
@@ -462,10 +470,17 @@ totalbr_daio <- function(src   = totalbr_daio_source(),
   ndf$ADEP_CNTRY <- unname(cn[ndf$ADEP])
   ndf$ADES_CNTRY <- unname(cn[ndf$ADES])
 
+  # Which side of the lookup answered: the database, or the hand-maintained
+  # patch file. Both are step 1-2 and equally trusted, but they are not equally
+  # MAINTAINED -- the patch is 48 lines somebody wrote, and knowing how much
+  # traffic leans on it is the difference between a list worth curating and one
+  # that no longer matters.
+  from_patch <- lookup$ICAO[lookup$SOURCE == "patch"]
+
   # How each end was decided, kept in the table. Without it, "why is this flight
   # internal" can only be answered by re-running the rules by hand.
   src_of <- function(code, cntry) {
-    ifelse(!is.na(cntry), "lookup",
+    ifelse(!is.na(cntry), ifelse(code %in% from_patch, "patch", "lookup"),
     ifelse(is.na(code), "no code",
     ifelse(grepl(TOTALBR_BR_PREFIX, code), "prefix",
     ifelse(grepl(TOTALBR_UNKNOWN_ADEP, code),
