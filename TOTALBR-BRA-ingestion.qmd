@@ -1176,32 +1176,44 @@ if (length(files) == 0) {
     prof |>
       # The li_* columns are a LIST collapsed to a string, and the collapse
       # character depends on which source wrote the file -- the ODIN engine uses
-      # "|", other exports use ",". Splitting on only one of them leaves the
-      # whole string ("I,I,I") as the value, which matches no code and silently
-      # reports 0% for everything. Both are accepted.
+      # "|", other exports use ",". This source uses commas ("I,I"), so
+      # splitting on "|" alone left the whole string, matched no code, and
+      # reported 0% for everything. Both are accepted.
       #
       # The first value is the flight's own rule/type; further values are later
       # changes in the plan.
       dplyr::mutate(RULE = sub("[|,].*$", "", li_regravoo),
                     TYPE = sub("[|,].*$", "", li_tipovoo)) |>
       dplyr::group_by(YEAR) |>
-      # %in%, NOT ==. A single NA in RULE makes MOVEMENTS[RULE == "I"] carry an
-      # NA, and one NA makes the whole sum NA -- which is how every percentage
-      # in this table came back NA while the movement counts were fine. %in%
-      # treats NA as "not this code", which is what is meant.
+      # NEVER NAME THE TOTAL `MOVEMENTS` HERE. summarise() evaluates in order and
+      # later expressions see the columns it has just created, so
+      # `MOVEMENTS = sum(MOVEMENTS)` replaced the column with a single number --
+      # and MOVEMENTS[RULE %in% "I"] then indexed a length-1 vector with a
+      # logical of the group's length, giving NA past the first position and an
+      # NA sum. That is why every percentage in this table was NA while the
+      # movement counts were right. The total is built under its own name and
+      # renamed at the end.
       dplyr::summarise(
-        MOVEMENTS = sum(MOVEMENTS),
-        `IFR (%)` = round(100 * sum(MOVEMENTS[RULE %in% "I"]) / sum(MOVEMENTS), 1),
-        `VFR (%)` = round(100 * sum(MOVEMENTS[RULE %in% "V"]) / sum(MOVEMENTS), 1),
-        `Scheduled (%)`   = round(100 * sum(MOVEMENTS[TYPE %in% "S"]) / sum(MOVEMENTS), 1),
-        `General av. (%)` = round(100 * sum(MOVEMENTS[TYPE %in% "G"]) / sum(MOVEMENTS), 1),
-        # what the four columns above do NOT account for: an unclassified or
-        # unexpected code. If this is large, the codes are not S/G/I/V and the
-        # table below says what they actually are.
-        `Other (%)` = round(100 * sum(MOVEMENTS[!(RULE %in% c("I", "V"))]) /
-                              sum(MOVEMENTS), 1),
+        TOTAL = sum(MOVEMENTS),
+        IFR   = sum(MOVEMENTS[RULE %in% "I"]),
+        VFR   = sum(MOVEMENTS[RULE %in% "V"]),
+        SCH   = sum(MOVEMENTS[TYPE %in% "S"]),
+        GA    = sum(MOVEMENTS[TYPE %in% "G"]),
         .groups = "drop"
       ) |>
+      dplyr::mutate(
+        `IFR (%)`         = round(100 * IFR / TOTAL, 1),
+        `VFR (%)`         = round(100 * VFR / TOTAL, 1),
+        `Scheduled (%)`   = round(100 * SCH / TOTAL, 1),
+        `General av. (%)` = round(100 * GA  / TOTAL, 1),
+        # what the four named codes do NOT account for. li_tipovoo also carries
+        # M, N and X in this source, so this is not expected to be zero -- see
+        # the code table below.
+        `Other type (%)`  = round(100 * (TOTAL - SCH - GA) / TOTAL, 1),
+        MOVEMENTS = TOTAL
+      ) |>
+      dplyr::select(YEAR, MOVEMENTS, `IFR (%)`, `VFR (%)`, `Scheduled (%)`,
+                    `General av. (%)`, `Other type (%)`) |>
       dplyr::mutate(MOVEMENTS = format(MOVEMENTS, big.mark = ",")) |>
       knitr::kable()
   }
@@ -1270,20 +1282,29 @@ if (length(files) == 0 || !exists("movements") || nrow(movements) == 0) {
 }
 ```
 
-If `Other (%)` above is not near zero, the codes in this source are not the `S`/`G` and
-`I`/`V` this table assumes. Look at what they actually are before reading anything into the
-percentages:
+`li_tipovoo` is **not** only `S` and `G`. This source also carries `M`, `N` and `X`, which
+is why `Other type (%)` above is not zero and why the two named shares do not add to 100.
+The codes actually present, largest first:
 
 ```{r}
 #| label: tbl-bra-totalbr-profile-codes
-#| eval: false
 
-prof |>
-  dplyr::mutate(RULE = sub("[|,].*$", "", li_regravoo),
-                TYPE = sub("[|,].*$", "", li_tipovoo)) |>
-  dplyr::count(RULE, TYPE, wt = MOVEMENTS, sort = TRUE) |>
-  head(15)
+if (exists("prof") && nrow(prof) > 0) {
+  prof |>
+    dplyr::mutate(RULE = sub("[|,].*$", "", li_regravoo),
+                  TYPE = sub("[|,].*$", "", li_tipovoo)) |>
+    dplyr::count(RULE, TYPE, wt = MOVEMENTS, sort = TRUE, name = "MOVEMENTS") |>
+    head(12) |>
+    dplyr::mutate(MOVEMENTS = format(MOVEMENTS, big.mark = ",")) |>
+    knitr::kable()
+} else {
+  knitr::kable(tibble::tibble(note = "No profile computed."))
+}
 ```
+
+Confirm what `M`, `N` and `X` mean with ICEA before reporting a flight-type split — the
+column reference above documents only `S` and `G`, so the rest is currently unexplained
+rather than negligible.
 
 `AFIL` and `ZZZZ` are legitimate values, not errors: a flight plan filed airborne has no
 departure aerodrome, and `ZZZZ` marks an end that is not an ICAO aerodrome. They matter
