@@ -660,14 +660,37 @@ totalbr_daio_write <- function(d, out_dir = here::here("outputs"),
                                format = c("parquet", "csv"), file = NULL) {
   format <- match.arg(format)
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
-  yrs <- range(format(d$DATE, "%Y"), na.rm = TRUE)
-  tag <- if (yrs[1] == yrs[2]) yrs[1] else paste(yrs, collapse = "-")
   path <- if (!is.null(file)) file
-          else file.path(out_dir, sprintf("totalbr-daio-%s.%s", tag, format))
+          else file.path(out_dir, sprintf("totalbr-daio-%s.%s",
+                                          totalbr_daio_span(d), format))
   if (format == "parquet") arrow::write_parquet(d, path)
   else data.table::fwrite(d, path, sep = ";", na = "", quote = TRUE)
   message(sprintf("Wrote %s row(s) -> %s", format(nrow(d), big.mark = ","), path))
   invisible(path)
+}
+
+# =============================================================================
+# totalbr_daio_span(d) -- the period a result covers, as a file-name tag
+#
+# THE TAG MUST NOT CLAIM MORE THAN THE DATA HOLDS. Naming a result by its YEARS
+# writes January 2026 as "2026", which reads as the whole year and is then
+# overwritten by, or confused with, a run that really is the whole year. The tag
+# is built from the year-MONTHS present, and follows the naming the rest of the
+# pipeline uses (outputs/totalbr-2026-01-flights.csv):
+#
+#   one month            2026-01
+#   months of one year   2026-01-06
+#   spanning years       2024-01-2026-03
+# =============================================================================
+totalbr_daio_span <- function(d) {
+  ym <- format(d$DATE, "%Y-%m")
+  ym <- ym[!is.na(ym)]
+  if (length(ym) == 0) return("empty")
+  lo <- min(ym); hi <- max(ym)
+  if (lo == hi) return(lo)                                  # 2026-01
+  if (substr(lo, 1, 4) == substr(hi, 1, 4))
+    return(paste0(lo, "-", substr(hi, 6, 7)))               # 2026-01-06
+  paste0(lo, "-", hi)                                       # 2024-01-2026-03
 }
 
 # ---- run only when executed as a script (not when sourced) ------------------
