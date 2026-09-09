@@ -86,13 +86,33 @@ A full download runs for hours, so confirm the endpoint and its column names wit
 small request before starting one. This is cheap and catches a renamed column immediately
 instead of after a wasted afternoon.
 
+**Two APIs serve this table, and each has its own probe.** Use the one for the API you are
+about to download from — they answer different questions, because they fail in different
+ways. ODIN is open and reliable and the question is what its columns are called; the CGNA
+needs a token, sits behind a gateway that has timed out on a whole day, and the question is
+whether it is answering at all.
+
 ```{r}
 #| label: probe-bra-totalbr-api
 #| eval: false
 
+# ---- ODIN ------------------------------------------------------------------
 source(here::here("ODIN", "download_odin.R"))
 odin_probe(totalbr_table)      # prints the columns and flags the date-like ones
+
+# ---- CGNA (/apiv1/voossisceab) ---------------------------------------------
+# One request, printed in full: the URL, the query with the token redacted, the
+# HTTP status AND HOW LONG IT TOOK, the raw body, the columns found. Run it
+# before a download and again whenever one comes back empty or refused.
+source(here::here("TOTALBR", "download_totalbr_cgna.R"))
+cgna_totalbr_check("2026-01-15")
 ```
+
+An empty day and a rejected request look identical from the outside — a proxy that is not
+configured, an expired token and a day the endpoint cannot assemble all arrive as "no rows"
+— and `cgna_totalbr_check()` is what separates them. The elapsed time it prints is the
+tell: a 502 at ~61 seconds is the CGNA's own gateway giving up on its backend, while an
+immediate one is the application refusing outright. Neither is fixed on this side.
 
 Run on 2026-07-30 this answered with 18 columns —
 `pk, id, dt_dia, dh_inicio, dh_fim, co_indicativo, co_addep, co_addes, dh_eobt, dh_eet,
@@ -185,21 +205,29 @@ whether the source is what we think it is, at a thirtieth of the cost of a year.
 
 source(here::here("TOTALBR", "download_totalbr_cgna.R"))
 
-# one request, printed in full: the URL, the HTTP status, the raw body, the
-# columns. Run it first, and again whenever a download comes back empty.
-cgna_totalbr_check("2026-01-15")                    # datai = dataf = that day
-cgna_totalbr_check(Sys.Date() - 7)                 # a recent day, if that came back 502
-cgna_totalbr_check("2026-01-15", span = 1)         # is dataf inclusive?
-
 download_totalbr_cgna(2026, month = 1)   # -> data-raw/totalbr/totalbr_2026cgna.csv
 ```
 
-An empty year and a rejected request look identical from the outside: a proxy that is not
-configured, an expired token and a date the endpoint refuses all arrive as "no rows".
-`cgna_totalbr_check()` is what separates them, and it is why the downloader points at one
-URL and lets it fail loudly rather than trying a list of candidate paths — a list turns
-every distinct failure into the same silence, five times over, and discards the explanation
-the API had already given in the body.
+Probe it first with `cgna_totalbr_check()` (see *Check the endpoint first* above), and again
+whenever a download comes back empty or refused. Two variants are worth knowing:
+
+```{r}
+#| label: probe-bra-totalbr-cgna-variants
+#| eval: false
+
+cgna_totalbr_check(Sys.Date() - 7)             # a recent day, when an older one is refused
+cgna_totalbr_check("2026-01-15", span = 0)     # datai = dataf: is dataf inclusive?
+```
+
+The `span = 0` variant is the one open question about this endpoint. The download asks
+`datai=d dataf=d+1` and trims locally, because the two readings of `dataf` fail in opposite
+directions — see below. Running both on a day that answers and comparing the row counts is
+what would settle it; until then the downloader is correct under either reading.
+
+The downloader points at **one** URL and lets it fail loudly, rather than trying a list of
+candidate paths. A list turns every distinct failure — an expired token, an unconfigured
+proxy, a refused date, an unexpected envelope — into the same "no rows", once per candidate,
+and throws away the explanation the API had already put in the response body.
 
 Three things this endpoint does differently from ODIN, each handled in the downloader:
 
