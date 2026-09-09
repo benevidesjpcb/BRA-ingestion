@@ -17,6 +17,7 @@
 #   d <- totalbr_daio(years = 2024:2026)      # a slice of it
 #   totalbr_daio_summary(d)                   # counts by class and year
 #   totalbr_daio_unresolved(d)                # the codes still unclassified
+#   totalbr_daio_assumption_cost(d)           # what step 4 is worth, per class
 #   totalbr_lookup_coverage(d = d)            # which database covers YOUR data
 #   totalbr_daio_write(d)                     # -> outputs/
 #
@@ -71,7 +72,10 @@ suppressPackageStartupMessages({
 # compare the two runs before deciding which the study should use.
 # ---------------------------------------------------------------------------
 TOTALBR_BR_PREFIX    <- "^S[BDIJNSW]"
-TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|AFIL|[0-9])"
+# ZZZZ and XXXX are both "aerodrome not stated"; AFIL is "flight plan filed in
+# the air"; a code starting with a digit is not an ICAO code at all. None of
+# them is an aerodrome, and none can be looked up.
+TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|XXXX|AFIL|[0-9])"
 
 # =============================================================================
 # totalbr_country_lookup() -- ICAO -> ISO2 country, from whatever file you have
@@ -124,6 +128,29 @@ TOTALBR_ICAO_RE       <- "^[A-Z]{4}$"
 TOTALBR_ISO_COLS     <- c("iso_country", "iso2c", "country_iso", "cntry_iso")
 TOTALBR_CNTRY_COLS   <- c("country", "country_name", "iso_country")
 
+# =============================================================================
+# READING A LOOKUP FILE: EVERYTHING AS TEXT, NOTHING AUTO-BLANKED
+#
+# Two defaults have to be turned off, and both cost aerodromes silently.
+#
+#   na = character(0). readr treats the string "NA" as missing by default, and
+#   "NA" IS THE ISO2 CODE FOR NAMIBIA. Every Namibian aerodrome was therefore
+#   read as having no country and dropped from the lookup -- which is how FYWH
+#   (Windhoek) turned up in totalbr_daio_unresolved(). Nothing is auto-blanked;
+#   emptiness is decided here, by nzchar.
+#
+#   col_character(). Type inference is what turned world-airports.csv's empty
+#   iso_country into a logical column. Read as text, an empty column is a column
+#   of "" -- which .tb_usable() rejects for the right reason (no values) rather
+#   than by accident of type.
+# =============================================================================
+.tb_read <- function(path, ...) {
+  readr::read_csv(path,
+                  col_types = readr::cols(.default = readr::col_character()),
+                  na = character(0), show_col_types = FALSE, progress = FALSE,
+                  ...)
+}
+
 # a column that exists AND holds at least one value
 .tb_usable <- function(df, candidates) {
   for (nm in candidates) {
@@ -147,7 +174,7 @@ TOTALBR_CNTRY_COLS   <- c("country", "country_name", "iso_country")
 totalbr_iso_from_name <- function(
     file = here::here("data", "country-icao-iso-etc.csv")) {
   if (!file.exists(file)) return(NULL)
-  d <- readr::read_csv(file, show_col_types = FALSE, progress = FALSE)
+  d <- .tb_read(file)
   nm <- .tb_usable(d, c("country.name.en", "country_name_en", "cntry_name", "country"))
   is <- .tb_usable(d, c("iso2c", "cntry_iso", "iso_country"))
   if (is.null(nm) || is.null(is)) return(NULL)
@@ -166,7 +193,7 @@ totalbr_country_lookup <- function(
          "\n  https://world-airport-database.com/download/ -> world-airports.csv",
          "\nor pass file =, or set BRA_AIRPORT_DB.")
 
-  raw <- readr::read_csv(file, show_col_types = FALSE, progress = FALSE)
+  raw <- .tb_read(file)
 
   icao_col <- .tb_usable(raw, TOTALBR_ICAO_COLS)
   if (is.null(icao_col))
@@ -214,8 +241,12 @@ totalbr_country_lookup <- function(
     }
   }
 
+  # "" is the empty value now, not NA -- see .tb_read() on why Namibia made that
+  # necessary. is.na() is still checked: a name that the reference table could
+  # not translate comes back as a real NA from the match.
   base <- tibble::tibble(ICAO = icao, CNTRY_ISO = iso, SOURCE = "db") |>
-    dplyr::filter(!is.na(.data$ICAO), nzchar(.data$ICAO), !is.na(.data$CNTRY_ISO))
+    dplyr::filter(!is.na(.data$ICAO), nzchar(.data$ICAO),
+                  !is.na(.data$CNTRY_ISO), nzchar(.data$CNTRY_ISO))
 
   # Rows the primary key missed, recovered from a secondary one. Bound AFTER the
   # primary, so the de-duplication below keeps the primary's answer wherever
@@ -224,7 +255,8 @@ totalbr_country_lookup <- function(
     hit <- which(tolower(names(raw)) == alt)
     if (length(hit) == 0) next
     v <- toupper(trimws(as.character(raw[[hit[1]]])))
-    ok <- !is.na(v) & grepl(TOTALBR_ICAO_RE, v) & !is.na(iso) & !(v %in% base$ICAO)
+    ok <- !is.na(v) & grepl(TOTALBR_ICAO_RE, v) &
+          !is.na(iso) & nzchar(iso) & !(v %in% base$ICAO)
     if (!any(ok)) next
     if (!quiet)
       message(sprintf("  +%d aerodrome(s) keyed on %s where %s was empty",
@@ -234,9 +266,8 @@ totalbr_country_lookup <- function(
   }
 
   patch <- if (file.exists(patch_file)) {
-    readr::read_csv(patch_file, comment = "#", show_col_types = FALSE,
-                    progress = FALSE) |>
-      dplyr::filter(!is.na(.data$ICAO), !is.na(.data$CNTRY_ISO)) |>
+    .tb_read(patch_file, comment = "#") |>
+      dplyr::filter(nzchar(trimws(.data$ICAO)), nzchar(trimws(.data$CNTRY_ISO))) |>
       dplyr::transmute(ICAO = toupper(trimws(.data$ICAO)),
                        CNTRY_ISO = toupper(trimws(.data$CNTRY_ISO)),
                        SOURCE = "patch")
@@ -531,6 +562,55 @@ totalbr_daio_provenance <- function(d) {
     table(ADEP = d$ADEP_SRC, ADES = d$ADES_SRC), stringsAsFactors = FALSE)) |>
     dplyr::filter(.data$Freq > 0) |>
     dplyr::arrange(dplyr::desc(.data$Freq))
+}
+
+# =============================================================================
+# totalbr_daio_assumed(d) -- WHICH codes were assumed Brazilian, and how often
+#
+# Step 4 of the classification is the only one that invents an answer, so it is
+# the only one that can be wrong without anything looking wrong. This lists what
+# it fired on. ZZZZ carrying most of it is a different situation from AFIL
+# carrying most of it: the first is an unstated aerodrome, the second a plan
+# filed in the air, and they are not equally likely to be Brazilian.
+# =============================================================================
+totalbr_daio_assumed <- function(d, n = 20) {
+  v <- c(d$ADEP[d$ADEP_SRC == "assumed"], d$ADES[d$ADES_SRC == "assumed"])
+  v <- v[!is.na(v)]
+  if (length(v) == 0) {
+    message("Nothing was assumed: every code resolved or was left unresolved.")
+    return(tibble::tibble(CODE = character(0), ENDS = integer(0)))
+  }
+  tb <- sort(table(v), decreasing = TRUE)
+  utils::head(tibble::tibble(CODE = names(tb), ENDS = as.integer(tb)), n)
+}
+
+# =============================================================================
+# totalbr_daio_assumption_cost(d) -- what the Brazil assumption is worth
+#
+# The same flights counted twice: as classified, and with step 4 withdrawn so
+# that an unstated aerodrome leaves the flight unclassified instead of
+# Brazilian. The difference is the part of every DAIO figure that rests on an
+# assumption rather than on a lookup.
+#
+# Read the DELTA column. A month where D and A barely move is a month where the
+# assumption is cheap; one where they move by a fifth is a month where "flights
+# departing Brazil" cannot be quoted without saying what was assumed to get it.
+# It matters most for D, A and O: a flight from ZZZZ to SBGR is called internal,
+# and if that unstated aerodrome was in fact abroad, it was an arrival.
+# =============================================================================
+totalbr_daio_assumption_cost <- function(d) {
+  strict <- ifelse(d$ADEP_SRC == "assumed" | d$ADES_SRC == "assumed",
+                   NA_character_, d$DAIO)
+  lv  <- c("I", "D", "A", "O")
+  cnt <- function(x) vapply(lv, function(k) sum(!is.na(x) & x == k), integer(1))
+  a <- cnt(d$DAIO); b <- cnt(strict)
+  tibble::tibble(
+    DAIO        = lv,
+    AS_CLASSED  = as.integer(a),
+    LOOKUP_ONLY = as.integer(b),
+    DELTA       = as.integer(a - b),
+    PCT_ASSUMED = ifelse(a > 0, round(100 * (a - b) / a, 1), NA_real_)
+  )
 }
 
 # =============================================================================

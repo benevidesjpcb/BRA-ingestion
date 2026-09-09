@@ -344,12 +344,24 @@ should quote:
 | 1 | an aerodrome database — `data-raw/airports.csv` (OurAirports), or `world-airports.csv` | `lookup` |
 | 2 | `data/oa-patch-bra.csv`, for what it lacks or gets wrong | `lookup` |
 | 3 | a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`) | `prefix` |
-| 4 | `ZZZZ`, `AFIL` or a numeric code, **assumed** Brazilian | `assumed` |
+| 4 | `ZZZZ`, `XXXX`, `AFIL` or a numeric code, **assumed** Brazilian | `assumed` |
 | — | nothing matched: country `NA`, `DAIO` `NA` | `unresolved` |
 
-Step 4 is a modelling decision, not a lookup: `ZZZZ` means "aerodrome unknown" and `AFIL`
-means the plan was filed in the air. Run `totalbr_daio(assume_unknown_is_br = FALSE)` to
-leave them unclassified and compare the two before deciding which the study uses.
+Step 4 is a modelling decision, not a lookup: `ZZZZ` and `XXXX` mean "aerodrome not stated"
+and `AFIL` means the plan was filed in the air. It is also the only step that *invents* an
+answer, so it is the only one that can be wrong without anything looking wrong —
+**measure it before quoting any figure**:
+
+```r
+totalbr_daio_assumption_cost(d)   # every class, as classed vs lookup-only
+totalbr_daio_assumed(d)           # which codes it fired on
+```
+
+In January 2026 it carried 9.5% of flights (17,139 of 179,836 with at least one end
+assumed), against 86.9% with both ends looked up. That is not negligible: a flight from
+`ZZZZ` to `SBGR` is counted as **internal**, and if that unstated aerodrome was in fact
+abroad it was an **arrival**. `totalbr_daio(assume_unknown_is_br = FALSE)` leaves them
+unclassified instead.
 
 > **Where the files come from**, written down because filenames alone will not remind
 > anyone: `data-raw/airports.csv` is the full dump from <https://ourairports.com/data/>
@@ -363,6 +375,14 @@ leave them unclassified and compare the two before deciding which the study uses
 > when it looks like an ICAO code (four letters, nothing else), which excludes the local
 > identifiers the same column carries for small fields (`00A`, `3B7`). Keying on `icao_code`
 > alone throws away aerodromes the file knows perfectly well.
+
+> **Two `readr` defaults are turned off when a lookup file is read, and both cost aerodromes
+> silently.** `na = character(0)`, because readr treats the string `"NA"` as missing and
+> **`NA` is the ISO2 code for Namibia** — every Namibian aerodrome was read as having no
+> country and dropped, which is how `FYWH` (Windhoek) reached the unresolved list. And
+> `col_character()`, because type inference is what turned world-airports.csv's empty
+> `iso_country` into a logical column. Read as text, an empty column is a column of `""`,
+> rejected for having no values rather than by accident of type.
 
 > **The schema is detected, not assumed.** Two databases have been used here and they
 > disagree on both names and contents: OurAirports gives `icao_code` + `iso_country` (`"BR"`),
