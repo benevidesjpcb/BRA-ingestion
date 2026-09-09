@@ -360,8 +360,10 @@ leave them unclassified and compare the two before deciding which the study uses
 > values, a country given as a *name* is translated through
 > `data/country-icao-iso-etc.csv`, and what was chosen is printed on every run.
 
-> Coverage differs a lot between them — around 9,000 aerodromes against around 80,000 — and
-> it lands directly in `totalbr_daio_unresolved()`. Set `BRA_AIRPORT_DB` to pick the file.
+> Coverage is not the same between them, and it lands directly in
+> `totalbr_daio_unresolved()`. Judge it by `totalbr_lookup_coverage()` — how many aerodromes
+> each file resolves to a country — not by the size of the file, which counts heliports and
+> codeless fields no flight is ever matched against. `BRA_AIRPORT_DB` picks the file.
 
 > The prefix rule is deliberately narrow. A draft version used
 > `grepl("^S[BDNSWISJ]|9|^Z|AFIL|NI", ADEP)`, whose alternation binds loosely — `9` and `NI`

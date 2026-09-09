@@ -17,6 +17,7 @@
 #   d <- totalbr_daio(years = 2024:2026)      # a slice of it
 #   totalbr_daio_summary(d)                   # counts by class and year
 #   totalbr_daio_unresolved(d)                # the codes still unclassified
+#   totalbr_lookup_coverage(d = d)            # which database covers YOUR data
 #   totalbr_daio_write(d)                     # -> outputs/
 #
 # HOW A COUNTRY IS DECIDED, in order. Each step is separately visible in the
@@ -226,9 +227,12 @@ totalbr_country_lookup <- function(
 # function is not a reason to break a script someone already has open.
 totalbr_oa_lookup <- totalbr_country_lookup
 
-# The aerodrome database, wherever it is. world-airports.csv holds around 9,000
-# aerodromes and an OurAirports extract around 80,000 -- a difference that shows
-# up directly in totalbr_daio_unresolved(), so the file in use is always named.
+# The aerodrome database, wherever it is. Two of them have been used here and
+# their coverage is not the same; how much each one actually resolves is printed
+# by totalbr_country_lookup() and measured by totalbr_daio_unresolved(). Neither
+# is assumed to be better -- compare them with totalbr_lookup_coverage() rather
+# than by the size of the file, which counts heliports and codeless fields that
+# no flight will ever be matched against.
 totalbr_lookup_file <- function() {
   env <- Sys.getenv("BRA_AIRPORT_DB", unset = "")
   if (nzchar(env)) return(env)
@@ -239,6 +243,61 @@ totalbr_lookup_file <- function() {
   hit <- cand[file.exists(cand)]
   if (length(hit) > 0) return(hit[1])
   here::here("data-raw", "world-airports.csv")   # named, so the error says what to add
+}
+
+# =============================================================================
+# totalbr_lookup_coverage(files) -- which database resolves more of YOUR flights
+#
+#   totalbr_lookup_coverage()                       # every candidate on disk
+#   totalbr_lookup_coverage(d = totalbr_daio_month(2026, 1))
+#
+# Two numbers per file, and only the second one matters:
+#
+#   AERODROMES  how many ICAO codes it resolves to a country. A file can be
+#               enormous and score badly here: a dump full of heliports and
+#               fields with no ICAO code at all is large, not useful.
+#   RESOLVED    the share of the aerodrome codes IN YOUR DATA it covers, when a
+#               classified month is passed as `d`. This is the question. A
+#               database that knows 40,000 aerodromes none of which appear in
+#               TOTALBR is worth less than one that knows 2,000 that do.
+#
+# Pass the month you are actually working on. Comparing files in the abstract is
+# how a smaller database gets rejected for being smaller when it happens to
+# cover Brazilian traffic better.
+# =============================================================================
+totalbr_lookup_coverage <- function(files = NULL, d = NULL) {
+  if (is.null(files)) {
+    cand <- c(here::here("data-raw", "world-airports.csv"),
+              here::here("data", "world-airports.csv"),
+              list.files(here::here("data"), pattern = "^oa-[0-9]{6}\\.csv$",
+                         full.names = TRUE))
+    files <- cand[file.exists(cand)]
+  }
+  if (length(files) == 0) stop("No aerodrome database found to compare.")
+
+  codes <- if (!is.null(d)) {
+    v <- c(d$ADEP, d$ADES)
+    unique(v[!is.na(v)])
+  } else NULL
+
+  out <- lapply(files, function(f) {
+    lk <- tryCatch(totalbr_country_lookup(file = f, quiet = TRUE),
+                   error = function(e) NULL)
+    if (is.null(lk))
+      return(tibble::tibble(FILE = basename(f), AERODROMES = NA_integer_,
+                            IN_DATA = NA_integer_, RESOLVED_PCT = NA_real_))
+    tibble::tibble(
+      FILE       = basename(f),
+      AERODROMES = nrow(lk),
+      IN_DATA    = if (is.null(codes)) NA_integer_ else sum(codes %in% lk$ICAO),
+      RESOLVED_PCT = if (is.null(codes)) NA_real_
+                     else round(100 * mean(codes %in% lk$ICAO), 1))
+  })
+  out <- dplyr::bind_rows(out)
+  if (is.null(codes))
+    message("No data passed: RESOLVED_PCT needs `d`, e.g. ",
+            "totalbr_lookup_coverage(d = totalbr_daio_month(2026, 1)).")
+  out[order(-out$RESOLVED_PCT, -out$AERODROMES), ]
 }
 
 # =============================================================================
