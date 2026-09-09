@@ -140,6 +140,12 @@ CGNA_TOTALBR_PAGE_SIZE <- local({
 # kept as a fallback for the day the envelope drops dt_dia.
 CGNA_TOTALBR_DATE_COLS <- c("dt_dia", "dhinicio", "dh_inicio")
 
+# How long to wait for one request. The portal's own gateway gives up at 60
+# seconds and answers 502, so a client timeout above that never fires on that
+# failure -- it only decides how long a genuinely hanging request blocks the
+# run. 120 is past the gateway with room to spare.
+CGNA_TOTALBR_TIMEOUT <- as.integer(Sys.getenv("CGNA_TOTALBR_TIMEOUT", unset = "120"))
+
 # =============================================================================
 # the paginated envelope
 # =============================================================================
@@ -165,11 +171,12 @@ CGNA_TOTALBR_DATE_COLS <- c("dt_dia", "dhinicio", "dh_inicio")
 
 .cgna_totalbr_page_parts <- function(parsed) {
   num <- function(x) if (is.null(x)) NA_integer_ else suppressWarnings(as.integer(x[[1]]))
-  list(rows        = .cgna_find_rows(parsed),
-       page        = num(parsed[["page"]]),
-       per_page    = num(parsed[["per_page"]]),
-       total       = num(parsed[["total"]]),
-       total_pages = num(parsed[["total_pages"]]))
+  # The envelope is {"count": N, "data": [...]}. It does NOT carry page,
+  # per_page, total or total_pages -- confirmed against the live answer. `count`
+  # is the rows IN THIS PAGE, not the size of the whole result, so it cannot say
+  # how many pages there are and paging stops on a short page instead.
+  list(rows  = .cgna_find_rows(parsed),
+       count = num(parsed[["count"]]))
 }
 
 # =============================================================================
@@ -189,7 +196,8 @@ CGNA_TOTALBR_DATE_COLS <- c("dt_dia", "dhinicio", "dh_inicio")
 cgna_totalbr_fetch_page <- function(from, to, token, page,
                                     base_url = CGNA_TOTALBR_URL,
                                     per_page = CGNA_TOTALBR_PAGE_SIZE,
-                                    timeout = 300, quiet = FALSE) {
+                                    timeout = CGNA_TOTALBR_TIMEOUT,
+                                    quiet = FALSE) {
   fmt <- function(d) format(as.Date(d), "%Y-%m-%d")
 
   req <- httr2::request(base_url) |>
@@ -253,44 +261,37 @@ cgna_totalbr_fetch_page <- function(from, to, token, page,
 # =============================================================================
 cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_URL,
                                      per_page = CGNA_TOTALBR_PAGE_SIZE,
-                                     timeout = 300, quiet = FALSE) {
-  pages   <- list()
-  page    <- 1L
-  total   <- NA_integer_
-  n_pages <- NA_integer_
+                                     timeout = CGNA_TOTALBR_TIMEOUT,
+                                     quiet = FALSE) {
+  pages <- list()
+  page  <- 1L
   repeat {
     pp <- cgna_totalbr_fetch_page(from, to, token, page, base_url, per_page,
                                   timeout, quiet)
     if (!isTRUE(pp$ok))
       return(list(ok = FALSE, retryable = isTRUE(pp$retryable), status = pp$status))
-    if (page == 1L) { total <- pp$total; n_pages <- pp$total_pages }
     rows <- pp$rows
     if (is.null(rows) || nrow(rows) == 0) break
     rows <- tatic_flatten_lists(rows)      # a nested array cannot be written to CSV
     rows[] <- lapply(rows, as.character)
     pages[[length(pages) + 1L]] <- rows
 
-    # Stop on what the envelope says when it says it, and on a short page when
-    # it does not: an API that stops reporting total_pages must not turn into an
-    # endless loop, and one that reports it must not be probed for a page past
-    # the end on every single window.
-    if (!is.na(n_pages) && page >= n_pages) break
-    if (is.na(n_pages) && nrow(rows) < per_page) break
+    # A SHORT PAGE IS THE ONLY END-OF-RESULT SIGNAL THIS ENVELOPE GIVES. It
+    # reports `count` -- the rows in this page -- and nothing about the result as
+    # a whole, so there is no total to check the download against and no page
+    # count to stop on. A full page means "ask for the next one"; anything
+    # shorter is the last.
+    if (nrow(rows) < per_page) break
     page <- page + 1L
     if (page > 5000L) {                    # a guard, not an expectation
-      message("      stopped at 5000 pages -- the envelope never ended")
+      message("      stopped at 5000 pages -- the pages never got shorter")
       break
     }
   }
 
   df <- tatic_rbind_fill(pages)
   if (is.null(df)) df <- data.frame()
-  # The API told us how many rows the window has. Checking costs nothing and is
-  # the difference between a short answer that is noticed and one that is not.
-  if (!is.na(total) && nrow(df) != total && !quiet)
-    message(sprintf("      WARNING: %d row(s) fetched, API reported total=%d",
-                    nrow(df), total))
-  list(ok = TRUE, df = df, total = total)
+  list(ok = TRUE, df = df, pages = length(pages))
 }
 
 # =============================================================================
@@ -299,10 +300,12 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
 #   source(here::here("TOTALBR", "download_totalbr_cgna.R"))
 #   cgna_totalbr_check("2026-01-15")                  # datai = dataf = that day
 #   cgna_totalbr_check("2026-01-15", span = 1)        # dataf = the next day
-#   cgna_totalbr_check("2026-01-15", per_page = 1000) # the real page size
+#   cgna_totalbr_check("2026-01-15", per_page = 50)   # a smaller page
 #
 # Run this first, and whenever a download comes back empty or refused. It asks
-# for a single page and prints the URL, the query with the token redacted, the
+# for a single page -- at the SAME per_page the download uses, so it tests the
+# request that is actually made rather than a smaller one -- and prints the URL,
+# the query with the token redacted, the
 # HTTP status, the first of the raw body, and what the envelope was understood
 # to contain -- the row count, the column names, the page/total fields. An empty
 # day and a rejected request look identical from the outside; this is what
@@ -314,7 +317,8 @@ cgna_totalbr_fetch_range <- function(from, to, token, base_url = CGNA_TOTALBR_UR
 # two-day span is what makes the backend time out.
 # =============================================================================
 cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
-                               base_url = CGNA_TOTALBR_URL, per_page = 5L) {
+                               base_url = CGNA_TOTALBR_URL,
+                               per_page = CGNA_TOTALBR_PAGE_SIZE) {
   token <- Sys.getenv("TATIC_TOKEN", unset = "")
   if (!nzchar(token))
     stop("TATIC_TOKEN is not set. Put it in .Renviron (git-ignored) and restart R.")
@@ -330,7 +334,7 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
     httr2::req_url_query(token = token, datai = fmt(from), dataf = fmt(to),
                          page = 1L, per_page = per_page) |>
     httr2::req_user_agent("BRA-ingestion/totalbr-cgna") |>
-    httr2::req_timeout(300) |>
+    httr2::req_timeout(CGNA_TOTALBR_TIMEOUT) |>
     httr2::req_error(is_error = function(resp) FALSE) |>   # report it, do not throw
     bra_proxy()
 
@@ -355,12 +359,15 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
             "is an upstream timeout; an immediate one is the application refusing or\n",
             "restarting.")
     message("  The day is the finest window this endpoint has -- it takes no time of\n",
-            "  day -- so there is nothing narrower to ask for. What is left is\n",
-            "  span = 0 (already the default here), a smaller per_page, and time:\n",
-            "    cgna_totalbr_check(\"", format(day), "\", per_page = 50)\n",
-            "  and the same day again in a few minutes. download_totalbr_cgna()\n",
-            "  does exactly that on its own -- 1000, then 250 after 20s, then 50\n",
-            "  after 60s -- before leaving the day for the next run.")
+            "  day -- and per_page is not a lever either: the same day answered 502\n",
+            "  at 61s with per_page 5 and with 50 alike. Nothing in this client makes\n",
+            "  the question smaller.\n",
+            "  What DOES vary is the period. A recent day is served where an older one\n",
+            "  times out, so try:\n",
+            "    cgna_totalbr_check(Sys.Date() - 7)\n",
+            "  If that answers and this does not, the finding is about how far back\n",
+            "  the endpoint can reach inside the CGNA's own 60s gateway -- theirs to\n",
+            "  fix, not ours to work around.")
     return(invisible(NULL))
   }
 
@@ -375,14 +382,14 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
     return(invisible(parsed))
   }
   pp <- .cgna_totalbr_page_parts(parsed)
-  message("Envelope : page=", pp$page, " per_page=", pp$per_page,
-          " total=", pp$total, " total_pages=", pp$total_pages)
+  message("Envelope : count=", pp$count, " (rows in THIS page; the envelope says",
+          " nothing about the result as a whole)")
   if (is.null(pp$rows) || nrow(pp$rows) == 0) {
     message("Rows     : none found.")
-    message("  If `total` above is a number greater than 0, the rows are there and\n",
-            "  the envelope is shaped differently than expected -- send the body\n",
-            "  printed above. If `total` is 0 or absent, this day genuinely has no\n",
-            "  records, or the token does not cover it.")
+    message("  If `count` above is greater than 0, the rows are there and the\n",
+            "  envelope is shaped differently than expected -- send the body printed\n",
+            "  above. If it is 0 or absent, this day genuinely has no records, or\n",
+            "  the token does not cover it.")
   } else {
     message("Rows     : ", nrow(pp$rows), " x ", ncol(pp$rows))
     message("Columns  : ", paste(names(pp$rows), collapse = ", "))
@@ -390,6 +397,95 @@ cgna_totalbr_check <- function(day = Sys.Date() - 30, span = 0L,
     print(utils::head(as.data.frame(lapply(pp$rows, as.character)), 1))
   }
   invisible(pp)
+}
+
+# =============================================================================
+# ONE WHOLE DAY -- one date, and a retry that only waits
+#
+# data.frame (possibly 0 rows) on success, NULL on failure. The difference
+# matters: 0 rows is an answer ("no flights that day"), NULL must be retried on
+# a later run.
+#
+# THE RETRY DOES NOT ASK FOR LESS, BECAUSE THERE IS NO LESS TO ASK FOR. Measured
+# against the portal: the same day came back 502 at 61 seconds at per_page=5 and
+# at per_page=50 alike -- a fixed 60-second gateway timeout in front of a backend
+# that assembles the result before paging touches it. The page size is not a
+# lever on that failure, so every attempt asks at the ordinary page size; a
+# smaller one would only be a slower way to make the same request.
+#
+# What is left is time, for a backend that is momentarily loaded rather than
+# permanently too slow:
+#
+#   attempt 1   immediately
+#   attempt 2   after 20s
+#   attempt 3   after 60s
+#
+# A non-retryable failure (401, a bad parameter) stops at once: waiting does not
+# fix a token. A day that fails every attempt is left alone and named -- never
+# stored short, never silently skipped. CGNA_DAY did not record it, so the next
+# run asks for it again.
+#
+# If every day of a month fails all three attempts while a recent day is served,
+# this is not a retry problem: the endpoint cannot assemble that period inside
+# its own gateway's patience, which is the CGNA's to fix.
+# =============================================================================
+CGNA_TOTALBR_WAITS <- c(0, 20, 60)    # seconds before each attempt
+
+cgna_totalbr_fetch_day <- function(day, token, base_url = CGNA_TOTALBR_URL,
+                                   per_page = CGNA_TOTALBR_PAGE_SIZE,
+                                   timeout = CGNA_TOTALBR_TIMEOUT,
+                                   waits = CGNA_TOTALBR_WAITS) {
+  day <- as.Date(day)
+  for (w in waits) {
+    if (w > 0) {
+      message(sprintf("      waiting %ds before asking again ...", w))
+      Sys.sleep(w)
+    }
+    # ONE date, not a span: datai=d dataf=d+1 is two days if dataf is inclusive,
+    # and doubling the work behind a front end that is already timing out is the
+    # opposite of what is wanted. The trim below makes both readings equivalent.
+    res <- cgna_totalbr_fetch_range(day, day, token, base_url, per_page, timeout)
+    if (isTRUE(res$ok)) return(.cgna_totalbr_finish(res$df, day))
+    if (!isTRUE(res$retryable)) return(NULL)
+  }
+  NULL
+}
+
+# trim to the day, then stamp the day we asked for
+.cgna_totalbr_finish <- function(df, day) {
+  if (is.null(df) || nrow(df) == 0) return(data.frame())
+  df <- cgna_totalbr_trim_day(df, day)
+  if (nrow(df) == 0) return(data.frame())
+  df$CGNA_DAY <- format(as.Date(day))   # the day WE asked for
+  df
+}
+
+# ---- keep only the day we asked for -----------------------------------------
+# Returns the rows whose date column falls on `day`. A row with no usable stamp
+# is KEPT: dropping it would silently lose a flight over a parsing question, and
+# the CGNA_DAY column still records which request it arrived in.
+cgna_totalbr_trim_day <- function(df, day, date_cols = CGNA_TOTALBR_DATE_COLS) {
+  if (is.null(df) || nrow(df) == 0) return(df)
+  col <- intersect(date_cols, names(df))
+  if (length(col) == 0) return(df)
+  d <- substr(trimws(df[[col[1]]]), 1, 10)
+  keep <- is.na(d) | !nzchar(d) | d == format(as.Date(day))
+  if (!all(keep))
+    message(sprintf("      (%d row(s) outside %s dropped, on %s)",
+                    sum(!keep), format(as.Date(day)), col[1]))
+  df[keep, , drop = FALSE]
+}
+
+# which days does a month part already hold?
+cgna_totalbr_days_in_part <- function(path) {
+  if (!file.exists(path) || file.info(path)$size == 0) return(character(0))
+  d <- tryCatch(
+    data.table::fread(file = path, sep = TATIC_SEP, select = "CGNA_DAY",
+                      colClasses = "character", showProgress = FALSE,
+                      fill = Inf, header = TRUE)[[1]],
+    error = function(e) NULL)
+  if (is.null(d)) return(character(0))
+  unique(d[!is.na(d)])
 }
 
 # =============================================================================

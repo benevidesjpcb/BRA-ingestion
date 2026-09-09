@@ -201,6 +201,15 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
                                  quiet = FALSE) {
   out <- lapply(keys, function(k) {
     w  <- totalbr_cgna_window(year, from, to, month, key = k, quiet = quiet)
+    # A key built on a column one side does not carry is all-NA there, and would
+    # be reported as "nothing in common" -- a difference between the sources
+    # where there is only a missing column. Say which it is and skip the row.
+    if (all(is.na(w$a$KEY)) || all(is.na(w$b$KEY))) {
+      side <- if (all(is.na(w$a$KEY))) "ODIN" else "CGNA"
+      message("Key '", k, "' skipped: the ", side,
+              " file does not carry the column it is built from.")
+      return(NULL)
+    }
     ka <- w$a$KEY; kb <- w$b$KEY
     ua <- unique(ka[!is.na(ka)]); ub <- unique(kb[!is.na(kb)])
     both <- length(intersect(ua, ub))
@@ -221,6 +230,10 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
       MATCH_PCT = round(100 * both / max(1L, min(length(ua), length(ub))), 1)
     )
   })
+  out <- Filter(Negate(is.null), out)
+  if (length(out) == 0)
+    stop("None of the keys (", paste(keys, collapse = ", "),
+         ") can be built from both files.")
   data.table::rbindlist(out)[]
 }
 

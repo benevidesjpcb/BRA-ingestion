@@ -188,7 +188,7 @@ source(here::here("TOTALBR", "download_totalbr_cgna.R"))
 # one request, printed in full: the URL, the HTTP status, the raw body, the
 # columns. Run it first, and again whenever a download comes back empty.
 cgna_totalbr_check("2026-01-15")                    # datai = dataf = that day
-cgna_totalbr_check("2026-01-15", per_page = 50)    # if that came back 502
+cgna_totalbr_check(Sys.Date() - 7)                 # a recent day, if that came back 502
 cgna_totalbr_check("2026-01-15", span = 1)         # is dataf inclusive?
 
 download_totalbr_cgna(2026, month = 1)   # -> data-raw/totalbr/totalbr_2026cgna.csv
@@ -209,10 +209,12 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   too. **The day is the finest window this endpoint has.** That is not a formatting detail;
   it is what leaves the 502 below with so few answers.
 - **`per_page` defaults to 1 and caps at 1000.** Omitting it fetches a day one row at a
-  time, and the cap means a day of the national table is always several pages — so paging is
-  not an optimisation here, it is the only way to get a whole day. Every page of the
-  envelope is fetched and the rows are counted against the `total` the API itself reports; a
-  day that does not add up is named rather than quietly stored short.
+  time, and the cap means a day of the national table is always several pages — paging is
+  not an optimisation here, it is the only way to get a whole day. The envelope is
+  `{"count": N, "data": [...]}`: `count` is the rows *in that page*, and nothing describes
+  the result as a whole, so **a short page is the only end-of-result signal there is**. A
+  full page means ask for the next one. (There is consequently no `total` to check a day
+  against — a check the ODIN download does have, and this one cannot.)
 - **A day the portal refuses is asked for one date at a time, then smaller, then later.**
   Asked for a day, the portal has answered `HTTP 502 ... Error reading from remote server`:
   the CGNA's own Apache in front of the application, giving up on a backend that took longer
@@ -222,10 +224,11 @@ Three things this endpoint does differently from ODIN, each handled in the downl
   latter is a two-day span if `dataf` is inclusive, and doubling the work behind a front end
   that is already timing out is the opposite of what is wanted. (The answer is trimmed to
   the day locally either way, so both readings of `dataf` produce the same file.) Then a
-  retry that asks for less after a pause — `per_page` 1000, then 250 after 20s, then 50
-  after 60s: if the backend applies the page limit in its query it does less work per
-  request, and if it does not, nothing is lost but the attempt. A 401 stops at once, because
-  asking for less does not fix a token. A day that fails every attempt is **named and left
+  retry after a pause — immediately, then 20s, then 60s. `per_page` is **not** a lever, and
+  it was worth measuring rather than assuming: the same day answered 502 at 61 seconds at
+  `per_page` 5 and at 50 alike, which says the backend assembles the whole result before
+  paging touches it, behind a fixed 60-second gateway. A 401 stops at once, because waiting
+  does not fix a token. A day that fails every attempt is **named and left
   alone** — never stored short, never silently skipped; `CGNA_DAY` never recorded it, so the
   next run asks for it again.
 - **The window is walked one day at a time**, and the answer trimmed to that day on `dt_dia`.
