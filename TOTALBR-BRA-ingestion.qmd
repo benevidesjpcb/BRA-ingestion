@@ -185,8 +185,19 @@ whether the source is what we think it is, at a thirtieth of the cost of a year.
 
 source(here::here("TOTALBR", "download_totalbr_cgna.R"))
 
+# one request, printed in full: the URL, the HTTP status, the raw body, the
+# columns. Run it first, and again whenever a download comes back empty.
+cgna_totalbr_check("2026-01-15")
+
 download_totalbr_cgna(2026, month = 1)   # -> data-raw/totalbr/totalbr_2026cgna.csv
 ```
+
+An empty year and a rejected request look identical from the outside: a proxy that is not
+configured, an expired token and a date the endpoint refuses all arrive as "no rows".
+`cgna_totalbr_check()` is what separates them, and it is why the downloader points at one
+URL and lets it fail loudly rather than trying a list of candidate paths — a list turns
+every distinct failure into the same silence, five times over, and discards the explanation
+the API had already given in the body.
 
 Three things this endpoint does differently from ODIN, each handled in the downloader:
 

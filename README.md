@@ -309,8 +309,18 @@ asking rather than assuming — exactly as for `dstaxi`. The CGNA serves it at
 
 ```r
 source(here::here("TOTALBR", "download_totalbr_cgna.R"))
+
+cgna_totalbr_check("2026-01-15")           # one request, everything it answered
 download_totalbr_cgna(2026, month = 1)     # ONE MONTH first
 ```
+
+`cgna_totalbr_check()` is the first thing to run, and the thing to run again whenever a
+download comes back empty: it asks for a single page of one day and prints the URL, the HTTP
+status, the raw body and the columns it found. An empty year and a rejected request look
+identical from the outside — a missing proxy, an expired token and a date the endpoint
+refuses all produce "no rows" — and this is what separates them. For the same reason the
+downloader does **not** probe a list of candidate paths: five URLs failing for one reason,
+reported as five URLs with no rows, throws away the one thing the API actually said.
 
 ```bash
 Rscript TOTALBR/download_totalbr_cgna.R 2026 20260101 20260131

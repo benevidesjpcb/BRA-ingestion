@@ -25,12 +25,19 @@
 #   https://portal.cgna.decea.mil.br/apiv1/<table>?token=...&datai=&dataf=
 #
 # WHICH <table>. `voossisceab` -- "Consulta Voos SISCEAB", the CGNA's own name
-# for the national flight table. It takes token, datai, dataf, page and
-# per_page (default 1000), and the dates are YYYY-MM-DD. The path is documented
-# at https://portal.cgna.decea.mil.br/apiv1/apidocs/#/Indicadores. It is the
-# default here; CGNA_TOTALBR_URL overrides it, and if that default ever stops
-# answering the candidates below are probed in turn so a renamed path is
-# reported rather than read as an empty year.
+# for the national flight table, documented at
+# https://portal.cgna.decea.mil.br/apiv1/apidocs/#/Indicadores. It takes token,
+# datai, dataf, page and per_page, and the dates are YYYY-MM-DD. It is simply
+# the URL; CGNA_TOTALBR_URL overrides it if the path is ever renamed.
+#
+# There is deliberately NO endpoint probing. Trying a list of candidate paths
+# and taking the first that returns rows sounds defensive and is the opposite:
+# every reason a request can fail -- an expired token, a proxy that is not
+# configured, a date the endpoint rejects, an envelope shaped differently than
+# expected -- collapses into the same "no rows", for five URLs in a row, and the
+# one thing the API actually said is thrown away. A single URL that fails
+# loudly, printing the status and the body, says what is wrong on the first
+# attempt. cgna_totalbr_check() below is that request, on its own.
 #
 # NOT THE SAME DATE FORMAT AS TATIC. This API family answers
 # "Formato de data invalido. Utilize YYYY-MM-DD ou YYYY-MM-DD HH:MM:SS" to the
@@ -78,13 +85,9 @@
 # proxy) live with the other CGNA downloaders; sourcing only defines functions.
 source(here::here("API_TATIC", "download_tatic.R"))
 
-# Paths tried, in order, when CGNA_TOTALBR_URL is not set. `dstaxi` is served as
-# the ODIN name with the underscores dropped, so that spelling leads.
-CGNA_TOTALBR_CANDIDATES <- c("voossisceab", "totalbrasil", "total_brasil",
-                             "totalbr", "total-brasil")
-
-CGNA_TOTALBR_BASE <- Sys.getenv("CGNA_BASE_URL",
-                                unset = "https://portal.cgna.decea.mil.br/apiv1")
+CGNA_TOTALBR_URL <- Sys.getenv(
+  "CGNA_TOTALBR_URL",
+  unset = "https://portal.cgna.decea.mil.br/apiv1/voossisceab")
 
 # Rows per page. The endpoint documents per_page as optional with a default of
 # 1 and a MAXIMUM OF 1000, so 1000 is both the setting and the ceiling: asking
@@ -112,23 +115,29 @@ CGNA_TOTALBR_DATE_COLS <- c("dt_dia", "dhinicio", "dh_inicio")
 # =============================================================================
 # the paginated envelope
 # =============================================================================
-# The rows are found by SHAPE (the one data.frame in the object) rather than by
-# a hardcoded name: that name is the only part of the contract not visible in
-# the envelope itself, and it differs between endpoints of this API.
+# The rows are found by SHAPE rather than by a hardcoded name: the name of the
+# array is the only part of the contract not visible in the envelope itself, and
+# it differs between endpoints of this API. The search is RECURSIVE -- a payload
+# that nests the rows one level down (data$items, say) is the difference between
+# a working download and a year that reads as empty, and it is not worth a
+# second round trip to find out which shape this endpoint uses.
+.cgna_find_rows <- function(x, depth = 0L) {
+  if (depth > 4L) return(NULL)
+  if (is.data.frame(x)) return(if (nrow(x) > 0 || ncol(x) > 0) x else NULL)
+  if (!is.list(x) || length(x) == 0) return(NULL)
+  # a bare list of records (jsonlite did not simplify it) is the rows too
+  if (is.null(names(x)) && all(vapply(x, is.list, logical(1))))
+    return(tryCatch(do.call(rbind, lapply(x, as.data.frame)), error = function(e) NULL))
+  for (el in x) {
+    got <- .cgna_find_rows(el, depth + 1L)
+    if (!is.null(got)) return(got)
+  }
+  NULL
+}
+
 .cgna_totalbr_page_parts <- function(parsed) {
   num <- function(x) if (is.null(x)) NA_integer_ else suppressWarnings(as.integer(x[[1]]))
-  rows <- NULL
-  if (is.data.frame(parsed)) rows <- parsed
-  else if (is.list(parsed)) {
-    df <- Filter(is.data.frame, parsed)
-    if (length(df) >= 1) rows <- df[[1]]
-    else {
-      lst <- Filter(function(x) is.list(x) && !is.data.frame(x), parsed)
-      if (length(lst) == 1)
-        rows <- tryCatch(as.data.frame(lst[[1]]), error = function(e) NULL)
-    }
-  }
-  list(rows        = rows,
+  list(rows        = .cgna_find_rows(parsed),
        page        = num(parsed[["page"]]),
        per_page    = num(parsed[["per_page"]]),
        total       = num(parsed[["total"]]),
@@ -136,78 +145,113 @@ CGNA_TOTALBR_DATE_COLS <- c("dt_dia", "dhinicio", "dh_inicio")
 }
 
 # ---- one page ----------------------------------------------------------------
-# NULL on failure, the parts of the page on success. `quiet` exists for the
-# endpoint resolution below, where a failure is an expected answer ("not this
-# path") rather than something to report.
-cgna_totalbr_fetch_page <- function(day, token, page, base_url,
+# NULL on failure, the parts of the page on success. A failure is always
+# reported, with what the API said: this endpoint explains its refusals in the
+# body (a bad date format, an expired token), and swallowing that leaves
+# "FAILED" and a trip to the API docs to find out what it had already answered.
+cgna_totalbr_fetch_page <- function(day, token, page, base_url = CGNA_TOTALBR_URL,
                                     per_page = CGNA_TOTALBR_PAGE_SIZE,
-                                    timeout = 300, quiet = FALSE) {
+                                    timeout = 300) {
   fmt <- function(d) format(as.Date(d), "%Y-%m-%d")   # NOT the YYYYMMDD TATIC wants
   req <- httr2::request(base_url) |>
     httr2::req_url_query(token = token, datai = fmt(day), dataf = fmt(day + 1),
                          page = page, per_page = per_page) |>
     httr2::req_user_agent("BRA-ingestion/totalbr-cgna") |>
     httr2::req_timeout(timeout) |>
-    httr2::req_retry(max_tries = if (quiet) 1 else 4) |>
+    httr2::req_retry(max_tries = 4) |>
     bra_proxy()
 
   resp <- tryCatch(httr2::req_perform(req), error = function(e) e)
   if (!inherits(resp, "httr2_response")) {
-    if (!quiet) message("      transport error: ", conditionMessage(resp))
+    message("      transport error: ", conditionMessage(resp))
     return(NULL)
   }
-  # The API explains its refusals in the body (a bad date format, an expired
-  # token). Swallowing that leaves "FAILED" and a trip to the API docs to find
-  # out what it already said, so it is shown.
   if (httr2::resp_status(resp) != 200) {
-    if (!quiet) {
-      why <- tryCatch(httr2::resp_body_string(resp), error = function(e) "")
-      message(sprintf("      HTTP %d%s", httr2::resp_status(resp),
-                      if (nzchar(why)) paste0(": ", substr(why, 1, 300)) else ""))
-    }
+    why <- tryCatch(httr2::resp_body_string(resp), error = function(e) "")
+    message(sprintf("      HTTP %d%s", httr2::resp_status(resp),
+                    if (nzchar(why)) paste0(": ", substr(why, 1, 300)) else ""))
     return(NULL)
   }
 
   body <- httr2::resp_body_string(resp)
-  if (!jsonlite::validate(body)) return(NULL)
+  if (!jsonlite::validate(body)) {
+    message("      the answer is not JSON: ", substr(body, 1, 200))
+    return(NULL)
+  }
   parsed <- tryCatch(jsonlite::fromJSON(body, simplifyDataFrame = TRUE, flatten = TRUE),
                      error = function(e) NULL)
-  if (is.null(parsed)) return(NULL)
+  if (is.null(parsed)) {
+    message("      JSON that could not be parsed into a table.")
+    return(NULL)
+  }
   .cgna_totalbr_page_parts(parsed)
 }
 
 # =============================================================================
-# cgna_totalbr_url(day) -- which path serves this table
+# cgna_totalbr_check(day) -- ONE request, everything it answered
 #
-# Returns the endpoint URL, or stops with what was tried. CGNA_TOTALBR_URL wins
-# outright; otherwise the documented path (voossisceab) is tried first and the
-# rest only if it does not answer, so the normal run costs one small request.
+#   source(here::here("TOTALBR", "download_totalbr_cgna.R"))
+#   cgna_totalbr_check("2026-01-15")
+#
+# Run this first, and whenever a download comes back empty. It asks for a single
+# page of one day and prints the URL (with the token redacted), the HTTP status,
+# the first of the raw body, and what the envelope was understood to contain --
+# the row count, the column names, and the page/total fields. An empty year and
+# a rejected request look identical from the outside; this is what separates
+# them, and it is why nothing here guesses at a URL.
 # =============================================================================
-cgna_totalbr_url <- function(token, day = Sys.Date() - 30,
-                             candidates = CGNA_TOTALBR_CANDIDATES,
-                             base = CGNA_TOTALBR_BASE) {
-  fixed <- Sys.getenv("CGNA_TOTALBR_URL", unset = "")
-  if (nzchar(fixed)) return(fixed)
+cgna_totalbr_check <- function(day = Sys.Date() - 30, base_url = CGNA_TOTALBR_URL,
+                               per_page = 5L) {
+  token <- Sys.getenv("TATIC_TOKEN", unset = "")
+  if (!nzchar(token))
+    stop("TATIC_TOKEN is not set. Put it in .Renviron (git-ignored) and restart R.")
+  day <- as.Date(day)
+  fmt <- function(d) format(d, "%Y-%m-%d")
 
-  message("Resolving the CGNA endpoint for the national table (probing ",
-          format(as.Date(day)), ") ...")
-  for (cand in candidates) {
-    url <- paste0(sub("/+$", "", base), "/", cand)
-    pp  <- cgna_totalbr_fetch_page(day, token, page = 1L, base_url = url,
-                                   per_page = 1L, timeout = 120, quiet = TRUE)
-    if (!is.null(pp) && !is.null(pp$rows) && nrow(pp$rows) > 0) {
-      message("  -> ", url)
-      return(url)
-    }
-    message("  ", url, ": no rows")
+  message("URL      : ", base_url)
+  message("Query    : token=<", nchar(token), " chars> datai=", fmt(day),
+          " dataf=", fmt(day + 1), " page=1 per_page=", per_page)
+
+  req <- httr2::request(base_url) |>
+    httr2::req_url_query(token = token, datai = fmt(day), dataf = fmt(day + 1),
+                         page = 1L, per_page = per_page) |>
+    httr2::req_user_agent("BRA-ingestion/totalbr-cgna") |>
+    httr2::req_timeout(120) |>
+    httr2::req_error(is_error = function(resp) FALSE) |>   # report it, do not throw
+    bra_proxy()
+
+  resp <- tryCatch(httr2::req_perform(req), error = function(e) e)
+  if (!inherits(resp, "httr2_response")) {
+    message("Transport: FAILED -- ", conditionMessage(resp))
+    message("  A proxy that is not configured looks exactly like this. See proxy.R.")
+    return(invisible(NULL))
   }
-  stop("None of these CGNA paths returned rows:\n  ",
-       paste(paste0(sub("/+$", "", base), "/", candidates), collapse = "\n  "),
-       "\nSet CGNA_TOTALBR_URL in .Renviron to the correct one, e.g.\n",
-       "  CGNA_TOTALBR_URL=", sub("/+$", "", base), "/totalbrasil\n",
-       "A probe day with no traffic, an expired TATIC_TOKEN or a proxy that is ",
-       "not configured produce the same symptom -- check those before ",
-       "concluding the path is wrong.")
+  message("Status   : HTTP ", httr2::resp_status(resp))
+  body <- tryCatch(httr2::resp_body_string(resp), error = function(e) "")
+  message("Body[1:400]:\n", substr(body, 1, 400))
+
+  if (!jsonlite::validate(body)) {
+    message("\nThe answer is not JSON -- usually a login page or a proxy error page.")
+    return(invisible(body))
+  }
+  parsed <- jsonlite::fromJSON(body, simplifyDataFrame = TRUE, flatten = TRUE)
+  message("\nTop-level: ", paste(names(parsed), collapse = ", "))
+  pp <- .cgna_totalbr_page_parts(parsed)
+  message("Envelope : page=", pp$page, " per_page=", pp$per_page,
+          " total=", pp$total, " total_pages=", pp$total_pages)
+  if (is.null(pp$rows) || nrow(pp$rows) == 0) {
+    message("Rows     : none found.")
+    message("  If `total` above is a number greater than 0, the rows are there and\n",
+            "  the envelope is shaped differently than expected -- send the body\n",
+            "  printed above. If `total` is 0 or absent, this day genuinely has no\n",
+            "  records, or the token does not cover it.")
+  } else {
+    message("Rows     : ", nrow(pp$rows), " x ", ncol(pp$rows))
+    message("Columns  : ", paste(names(pp$rows), collapse = ", "))
+    message("\nFirst row:")
+    print(utils::head(as.data.frame(lapply(pp$rows, as.character)), 1))
+  }
+  invisible(pp)
 }
 
 # ---- keep only the day we asked for -----------------------------------------
@@ -229,7 +273,7 @@ cgna_totalbr_trim_day <- function(df, day, date_cols = CGNA_TOTALBR_DATE_COLS) {
 # ---- one whole day, every page ----------------------------------------------
 # data.frame (possibly 0 rows) on success, NULL on failure. The difference
 # matters: 0 rows is an answer ("no flights that day"), NULL must be retried.
-cgna_totalbr_fetch_day <- function(day, token, base_url,
+cgna_totalbr_fetch_day <- function(day, token, base_url = CGNA_TOTALBR_URL,
                                    per_page = CGNA_TOTALBR_PAGE_SIZE,
                                    timeout = 300) {
   pages   <- list()
@@ -308,7 +352,7 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
                                   to       = NULL,
                                   out_dir  = here::here("data-raw", "totalbr"),
                                   force    = FALSE,
-                                  base_url = NULL) {
+                                  base_url = CGNA_TOTALBR_URL) {
 
   token <- Sys.getenv("TATIC_TOKEN", unset = "")
   if (!nzchar(token))
@@ -341,12 +385,7 @@ download_totalbr_cgna <- function(years    = totalbr_cgna_default_years(),
   today   <- Sys.Date()
   written <- character(0)
 
-  # Resolved once, on a day inside the window actually being asked for: probing
-  # a day the source has no traffic for would reject every candidate path.
-  if (is.null(base_url)) {
-    probe <- if (!is.null(lo)) lo else min(as.Date(sprintf("%d-01-15", min(years))), today - 1)
-    base_url <- cgna_totalbr_url(token, day = min(probe, today - 1))
-  }
+  message("Endpoint: ", base_url)
 
   for (yr in years) {
     year_start <- as.Date(sprintf("%d-01-01", yr))
