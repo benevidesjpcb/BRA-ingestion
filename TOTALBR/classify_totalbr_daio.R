@@ -79,8 +79,22 @@ TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|AFIL|[0-9])"
 #   totalbr_country_lookup()                                   # auto-detect
 #   totalbr_country_lookup("data-raw/world-airports.csv")
 #
-# THE SCHEMA IS DETECTED, NOT ASSUMED. Two aerodrome databases have already been
-# used here and they disagree on both column names and contents:
+# WHERE THE FILES COME FROM -- written down because the next person to refresh
+# one will not remember, and the two are easy to confuse by their filenames:
+#
+#   data-raw/airports.csv        https://ourairports.com/data/
+#                                the full OurAirports dump. Columns ident, type,
+#                                icao_code, iata_code, gps_code, iso_country,
+#                                iso_region, ... Big (86k rows) because it counts
+#                                every heliport and closed strip; the part that
+#                                matters is the rows carrying an ICAO code.
+#
+#   data-raw/world-airports.csv  https://world-airport-database.com/download/
+#                                ~9k rows. Columns icao, iata, country, ...
+#                                Its iso_country column is EMPTY -- see below.
+#
+# THE SCHEMA IS DETECTED, NOT ASSUMED, because those two disagree on both the
+# column names and what is in them:
 #
 #   OurAirports          icao_code, iso_country ("BR")
 #   world-airport-db     icao, country ("Brazil"), iso_country ENTIRELY EMPTY
@@ -97,6 +111,16 @@ TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|AFIL|[0-9])"
 # unclassified, and that is a number worth seeing before trusting the output.
 # =============================================================================
 TOTALBR_ICAO_COLS    <- c("icao", "icao_code", "ident", "gps_code")
+
+# A SECOND KEY, WHERE THE FILE HAS ONE. In the OurAirports dump `icao_code` is
+# filled for a subset, while `ident` is the primary key and IS the ICAO code
+# wherever the aerodrome has one -- so keying on icao_code alone throws away
+# aerodromes the file knows perfectly well. `ident` is only trusted when it looks
+# like an ICAO code: four letters, nothing else. That excludes the local
+# identifiers the same column carries for small fields ("00A", "3B7"), which are
+# not ICAO codes and would collide with nothing but noise.
+TOTALBR_ALT_ICAO_COLS <- c("ident", "gps_code")
+TOTALBR_ICAO_RE       <- "^[A-Z]{4}$"
 TOTALBR_ISO_COLS     <- c("iso_country", "iso2c", "country_iso", "cntry_iso")
 TOTALBR_CNTRY_COLS   <- c("country", "country_name", "iso_country")
 
@@ -137,8 +161,10 @@ totalbr_country_lookup <- function(
 
   if (!file.exists(file))
     stop("Aerodrome database not found: ", file,
-         "\nPut one in data-raw/ (world-airports.csv) or data/ (oa-<yyyymm>.csv),",
-         "\nor pass file =.")
+         "\nDownload one and put it in data-raw/:",
+         "\n  https://ourairports.com/data/            -> airports.csv (preferred)",
+         "\n  https://world-airport-database.com/download/ -> world-airports.csv",
+         "\nor pass file =, or set BRA_AIRPORT_DB.")
 
   raw <- readr::read_csv(file, show_col_types = FALSE, progress = FALSE)
 
@@ -191,6 +217,22 @@ totalbr_country_lookup <- function(
   base <- tibble::tibble(ICAO = icao, CNTRY_ISO = iso, SOURCE = "db") |>
     dplyr::filter(!is.na(.data$ICAO), nzchar(.data$ICAO), !is.na(.data$CNTRY_ISO))
 
+  # Rows the primary key missed, recovered from a secondary one. Bound AFTER the
+  # primary, so the de-duplication below keeps the primary's answer wherever
+  # both have the code and this can only ever add aerodromes, never change one.
+  for (alt in setdiff(TOTALBR_ALT_ICAO_COLS, icao_col)) {
+    hit <- which(tolower(names(raw)) == alt)
+    if (length(hit) == 0) next
+    v <- toupper(trimws(as.character(raw[[hit[1]]])))
+    ok <- !is.na(v) & grepl(TOTALBR_ICAO_RE, v) & !is.na(iso) & !(v %in% base$ICAO)
+    if (!any(ok)) next
+    if (!quiet)
+      message(sprintf("  +%d aerodrome(s) keyed on %s where %s was empty",
+                      sum(ok), alt, icao_col))
+    base <- dplyr::bind_rows(
+      base, tibble::tibble(ICAO = v[ok], CNTRY_ISO = iso[ok], SOURCE = "db"))
+  }
+
   patch <- if (file.exists(patch_file)) {
     readr::read_csv(patch_file, comment = "#", show_col_types = FALSE,
                     progress = FALSE) |>
@@ -236,13 +278,17 @@ totalbr_oa_lookup <- totalbr_country_lookup
 totalbr_lookup_file <- function() {
   env <- Sys.getenv("BRA_AIRPORT_DB", unset = "")
   if (nzchar(env)) return(env)
-  cand <- c(here::here("data-raw", "world-airports.csv"),
+  # The OurAirports dump first: it carries both an ICAO column and a country
+  # code, so it needs no name translation and resolves the most codes.
+  cand <- c(here::here("data-raw", "airports.csv"),
+            here::here("data", "airports.csv"),
+            here::here("data-raw", "world-airports.csv"),
             here::here("data", "world-airports.csv"),
             sort(list.files(here::here("data"), pattern = "^oa-[0-9]{6}\\.csv$",
                             full.names = TRUE), decreasing = TRUE))
   hit <- cand[file.exists(cand)]
   if (length(hit) > 0) return(hit[1])
-  here::here("data-raw", "world-airports.csv")   # named, so the error says what to add
+  here::here("data-raw", "airports.csv")   # named, so the error says what to add
 }
 
 # =============================================================================
@@ -267,7 +313,9 @@ totalbr_lookup_file <- function() {
 # =============================================================================
 totalbr_lookup_coverage <- function(files = NULL, d = NULL) {
   if (is.null(files)) {
-    cand <- c(here::here("data-raw", "world-airports.csv"),
+    cand <- c(here::here("data-raw", "airports.csv"),
+              here::here("data", "airports.csv"),
+              here::here("data-raw", "world-airports.csv"),
               here::here("data", "world-airports.csv"),
               list.files(here::here("data"), pattern = "^oa-[0-9]{6}\\.csv$",
                          full.names = TRUE))
