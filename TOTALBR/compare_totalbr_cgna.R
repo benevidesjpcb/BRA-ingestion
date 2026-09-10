@@ -28,15 +28,26 @@
 # WHAT THE FIRST REAL MONTH SHOWED (2026-01, ODIN 179,836 rows vs CGNA 178,281)
 #
 #   * pk matches NOTHING. The hashes are computed differently; see the key notes.
-#   * The CGNA stamps dh_inicio 50 minutes BEFORE the ODIN, to the minute, on
-#     over 90% of pairs. A constant that sharp is mechanical, not operational --
-#     run totalbr_cgna_stamp_check() before reading anything else, because the
-#     keys carry the calendar DAY and a 50-minute displacement moves every flight
-#     in the first 50 minutes of a day into the previous one. That alone accounts
-#     for roughly 7 of the ~10 percentage points currently reported as one-sided.
+#   * THE CGNA REPORTS A WIDER WINDOW, NOT A DISPLACED CLOCK. Against the ODIN,
+#     its dh_inicio is -50 minutes and its dh_fim is +50, each constant to the
+#     minute on 92-97% of pairs, while dh_eobt agrees EXACTLY on 93.4%. A clock
+#     moves both ends the same way; this is symmetric, so one source is not
+#     reporting the movement times but an envelope around them -- and the ODIN
+#     is the one whose dh_inicio sits on the filed off-block time where a flight
+#     left on schedule.
 #
-# So the match rates below are a floor, not a verdict, until the shift is
-# understood.
+#     Nothing here is correctable. Which definition the study wants is a
+#     question for ICEA/CGNA; what this file does is refuse to hide it.
+#
+#   * dt_dia follows the CGNA's padded start, so it is displaced by the same -50.
+#     That is why the keys are dated on dh_eobt instead: a displaced day cannot
+#     match a flight in the first 50 minutes of a day at all -- the ODIN files it
+#     on the 15th, the CGNA on the 14th -- and it is reported as one-sided on
+#     BOTH sides while nothing is missing.
+#
+#   * ODIN writes 1970-01-01 into dh_eobt as a null sentinel where the CGNA
+#     carries a real filed time (qmd open point 2). Do not average or compare
+#     that column without excluding epoch dates.
 #
 # THE WINDOW. Everything except totalbr_cgna_daily() compares only the days the
 # CGNA file holds, because a half-downloaded year is the normal state and its
@@ -176,7 +187,21 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
   des  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_addes"))
   reg  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_matricula"))
   eobt <- totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_eobt"))
-  day  <- totalbr_cgna_day(d)
+
+  # THE KEY IS DATED ON dh_eobt, NOT ON dt_dia. Measured on 2026-01: dh_eobt
+  # agrees exactly between the two sources on 93.4% of pairs, while dt_dia is
+  # displaced by the same -50 minutes as dh_inicio -- because the CGNA derives
+  # it from its own padded start. A key carrying a displaced day cannot match a
+  # flight in the first 50 minutes of a day at all: the ODIN puts it on the 15th
+  # and the CGNA on the 14th, and it is reported as one-sided on BOTH sides
+  # while nothing is missing. That arithmetic alone (50 of 1440 minutes, both
+  # directions) covers roughly 7 of the ~10 percentage points of one-sided rows.
+  #
+  # dt_dia is the fallback for a row with no filed time, and it is still what
+  # totalbr_cgna_day() gives the WINDOW -- which days a file covers is a
+  # question about the file, not about pairing flights.
+  fallback <- totalbr_cgna_day(d)
+  day <- ifelse(is.na(eobt) | !nzchar(eobt), fallback, substr(eobt, 1, 10))
 
   # Numbers the rotations of one route within one day, earliest first, so a side
   # holding three legs and a side holding two match leg-to-leg and leave the
@@ -452,23 +477,34 @@ totalbr_cgna_stamp_check <- function(year, month = NULL, key = "reg_seq",
     START_ODIN = totalbr_cgna_col(a, "dh_inicio")[show],
     START_CGNA = totalbr_cgna_col(b, "dh_inicio")[show]))
 
-  eobt <- out[COLUMN == "dh_eobt"]
-  ini  <- out[COLUMN == "dh_inicio"]
-  if (nrow(eobt) && nrow(ini) && !is.na(eobt$MEDIAN_MIN) && !is.na(ini$MEDIAN_MIN)) {
-    if (abs(eobt$MEDIAN_MIN - ini$MEDIAN_MIN) < 1)
-      message("\nVERDICT: dh_eobt moves with dh_inicio (both ~",
-              round(ini$MEDIAN_MIN), " min). A PLANNED field cannot drift, so this\n",
-              "  is a CLOCK: every stamp in one file is displaced. Fix the reading.")
-    else if (abs(eobt$MEDIAN_MIN) < 1)
-      message("\nVERDICT: dh_eobt agrees exactly and only dh_inicio moves (~",
-              round(ini$MEDIAN_MIN), " min).\n",
-              "  The clocks are fine; the two sources define the start of a flight\n",
-              "  differently. That is a finding for ICEA/CGNA, not something to correct.")
-    else
-      message("\nVERDICT: dh_eobt moves by ", round(eobt$MEDIAN_MIN),
-              " min and dh_inicio by ", round(ini$MEDIAN_MIN),
-              " min -- neither\n  a clean clock nor a clean event difference. Read the raw stamps above.")
+  pick <- function(cl) {
+    r <- out[COLUMN == cl]
+    if (nrow(r) == 0 || is.na(r$MEDIAN_MIN)) NA_real_ else r$MEDIAN_MIN
   }
+  e <- pick("dh_eobt"); i <- pick("dh_inicio"); f <- pick("dh_fim")
+
+  # The three cases differ by the SIGNS, and reading only eobt-against-inicio
+  # gets the third of them wrong -- which it did on the first real month.
+  if (!is.na(e) && !is.na(i) && abs(e - i) < 1 && abs(e) >= 1)
+    message("\nVERDICT: dh_eobt moves with dh_inicio (both ~", round(i),
+            " min). A PLANNED field\n  cannot drift between two sources copying it, so this is a CLOCK: every\n",
+            "  stamp in one file is displaced. Fix the reading, not the data.")
+  else if (!is.na(e) && abs(e) < 1 && !is.na(i) && !is.na(f) &&
+           sign(i) != sign(f) && abs(abs(i) - abs(f)) < 1 && abs(i) >= 1)
+    message("\nVERDICT: dh_eobt agrees, and the flight WINDOW is padded: dh_inicio ",
+            round(i), " min\n  and dh_fim ", sprintf("%+d", round(f)),
+            " min. A displaced clock moves both the same way; this is\n",
+            "  symmetric, so one source is not reporting the movement times but an\n",
+            "  ENVELOPE around them. Nothing here is correctable -- decide which\n",
+            "  definition the study needs, and confirm it with ICEA/CGNA.")
+  else if (!is.na(e) && abs(e) < 1 && !is.na(i) && abs(i) >= 1)
+    message("\nVERDICT: dh_eobt agrees exactly and only dh_inicio moves (~", round(i),
+            " min).\n  The clocks are fine; the two sources define the START of a flight\n",
+            "  differently. A finding for ICEA/CGNA, not something to correct.")
+  else
+    message("\nVERDICT: no clean pattern -- eobt ", round(e), ", inicio ", round(i),
+            ", fim ", round(f), " min. Read the raw stamps above.")
+
   out[]
 }
 
