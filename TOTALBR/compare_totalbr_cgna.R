@@ -40,7 +40,11 @@
 # match rate of each, because a low rate is a finding about the KEY before it is
 # a finding about the data:
 #
-#   "reg_seq"   THE DEFAULT. Registration + aerodrome pair + calendar day, plus
+#   "pk"        TRY THIS FIRST. Measured at 100% populated on both sides for
+#               2026-01, so if the two APIs compute the hash the same way it
+#               settles the comparison outright and nothing below matters.
+#
+#   "reg_seq"   Registration + aerodrome pair + calendar day, plus
 #               the rotation number within that day. The registration is the
 #               AIRFRAME, which is what physically flew; a callsign is an
 #               operational label that gets reused and re-filed. No time of day
@@ -48,10 +52,16 @@
 #               stamping the same event differently -- which is the failure the
 #               planned-time keys are exposed to.
 #
-#               Its own exposure is co_matricula: a key on a column one side
-#               leaves empty reports two identical files as sharing nothing.
-#               RUN totalbr_cgna_fill() FIRST. This project has recorded that
-#               column as "largely null" in an early sample.
+#               Its own exposure is co_matricula, measured at 61.3% (ODIN) and
+#               60.5% (CGNA) for 2026-01 -- not the "largely null" the qmd's open
+#               point 4 recorded from an early sample, but 39% of flights that
+#               this key cannot pair. They are reported as KEYLESS rather than
+#               matched to each other. Run totalbr_cgna_fill() on any new period
+#               before relying on it.
+#
+#   "flight_seq" The registration where it is known, the callsign where it is
+#               not. Keeps the 39% at the cost of a weaker identifier on that
+#               part. Read beside reg_seq, not instead of it.
 #
 #   "eobt_seq"  Callsign + aerodrome pair + the day of the filed off-block time,
 #               plus the rotation number. dh_eobt is PLANNED, not observed --
@@ -61,9 +71,7 @@
 #               Kept as the counterweight: if it matches far better than
 #               reg_seq, the registration is the problem, and vice versa.
 #
-#   "pk"        The row hash, case-folded. It matches only if both sides compute
-#               it the same way, which is itself the thing being tested.
-#
+
 # WHY THE ROTATION NUMBER. Without it, aerodrome pair plus day is ONE key for
 # every rotation of a route in a day, so a side holding three legs of
 # SBRJ-SBSP and a side holding two still "match" and the missing leg is never
@@ -141,6 +149,9 @@ totalbr_cgna_norm_time <- function(x) {
 }
 
 # ---- the keys ----------------------------------------------------------------
+# blank the key wherever the column it rests on is missing
+.tb_na_if_missing <- function(k, on) ifelse(is.na(on) | !nzchar(on), NA_character_, k)
+
 totalbr_cgna_key <- function(d, key = "reg_seq") {
   cs   <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_indicativo"))
   dep  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_addep"))
@@ -179,13 +190,29 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
     # key built on a mostly-empty column reports two identical files as sharing
     # nothing. totalbr_cgna_fill() measures it, per side, before any of this is
     # believed.
-    reg_day  = paste(reg, dep, des, day, sep = "|"),
-    reg_seq  = seq_within(paste(reg, dep, des, day, sep = "|"),
+    # NA where the registration is missing, NOT the string "NA". paste() turns a
+    # missing value into the literal "NA", which would collapse every
+    # registration-less flight of a route-day into ONE key and then match them
+    # to each other by rotation order -- a false pairing, arrived at silently.
+    # A flight with no registration simply cannot be matched on the airframe,
+    # and is reported as unmatched, which is the truth.
+    reg_day  = .tb_na_if_missing(paste(reg, dep, des, day, sep = "|"), reg),
+    reg_seq  = .tb_na_if_missing(seq_within(paste(reg, dep, des, day, sep = "|"),
                           # ordered on the filed time where there is one, since
                           # it is the field least likely to differ between the
                           # sources; the observed start breaks the remaining ties
                           paste0(eobt, totalbr_cgna_norm_time(
-                            totalbr_cgna_col(d, "dh_inicio")))),
+                            totalbr_cgna_col(d, "dh_inicio")))), reg),
+
+    # The practical key when the registration is only partly there, as it is:
+    # the airframe where it is known, the callsign where it is not. The callsign
+    # is a weaker identifier -- reused, re-filed -- but it is present on every
+    # row, so this keeps the 39% of flights reg_seq has to drop. Which half a
+    # match came from is not distinguished, so read it beside reg_seq rather
+    # than instead of it.
+    flight_seq = seq_within(
+      paste(ifelse(is.na(reg), cs, reg), dep, des, day, sep = "|"),
+      paste0(eobt, totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio")))),
 
     # ---- the planned-time keys ---------------------------------------------
     # dh_eobt is a PLANNED value, not an observed one. Both sources copy it from
@@ -198,7 +225,7 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
     eobt_day = paste(cs, dep, des, substr(eobt, 1, 10), sep = "|"),
     eobt_seq = seq_within(paste(cs, dep, des, substr(eobt, 1, 10), sep = "|"), eobt),
     stop("Unknown key '", key,
-         "'. Use pk, reg_day, reg_seq, eobt, eobt_day or eobt_seq.")
+         "'. Use pk, reg_day, reg_seq, flight_seq, eobt, eobt_day or eobt_seq.")
   )
 }
 
@@ -351,7 +378,7 @@ totalbr_cgna_time_shift <- function(year, month = NULL, key = "reg_day",
 #                 flights.
 # =============================================================================
 compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
-                                 keys = c("pk", "reg_seq", "eobt_seq"),
+                                 keys = c("pk", "reg_seq", "flight_seq", "eobt_seq"),
                                  quiet = FALSE) {
   out <- lapply(keys, function(k) {
     w  <- totalbr_cgna_window(year, from, to, month, key = k, quiet = quiet)
@@ -370,6 +397,7 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
     data.table::data.table(
       YEAR      = year,
       KEY       = k,
+      KEYLESS   = sum(is.na(ka)) + sum(is.na(kb)),
       FROM      = w$from,
       TO        = w$to,
       ROWS_ODIN = length(ka),
@@ -381,6 +409,8 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
       BOTH      = both,
       ONLY_ODIN = length(setdiff(ua, ub)),
       ONLY_CGNA = length(setdiff(ub, ua)),
+      # over the keys that EXIST: a row the key cannot be built for is counted
+      # in KEYLESS, not held against the sources
       MATCH_PCT = round(100 * both / max(1L, min(length(ua), length(ub))), 1)
     )
   })
