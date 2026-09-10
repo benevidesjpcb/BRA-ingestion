@@ -10,6 +10,7 @@
 #   totalbr_cgna_daily(2026)                  # START HERE -- rows per day, both sides
 #   totalbr_cgna_fill(2026, month = 1)        # THEN THIS -- is the key column there?
 #   totalbr_cgna_time_shift(2026, month = 1)  # how far apart the two stamp
+#   totalbr_cgna_stamp_check(2026, month = 1) # ... and whether that is a clock
 #   compare_totalbr_cgna(2026)                # the summary, over the common window
 #   compare_totalbr_cgna(2026, month = 1)     # the month PARTS, not the merged years
 #   totalbr_cgna_field_diffs(2026, month = 1) # same flight, different values
@@ -322,7 +323,15 @@ totalbr_cgna_fill <- function(year, month = NULL,
 # totalbr_cgna_time_shift(year, month) -- how far apart the two sources stamp
 #
 # Pairs flights on the airframe key (which carries no time) and reports the
-# distribution of the difference in dh_inicio. It is the measurement that must
+# distribution of the difference in dh_inicio.
+#
+# reg_seq, not reg_day: on a route-day with several legs, reg_day takes whichever
+# leg happens to come first in each file, and the two files are not in the same
+# order -- so it can difference one leg against another and produce outliers that
+# look like data (a MIN of -364 and a MAX of 1430 minutes came from exactly
+# that). The rotation number pairs leg to leg. A constant offset preserves the
+# ordering it is built on, so this stays sound even while the offset is what is
+# being measured. It is the measurement that must
 # come before any tolerance is chosen: picking "15 minutes" because it sounds
 # reasonable is how a systematic offset gets absorbed into a tolerance and
 # reported as agreement.
@@ -333,7 +342,7 @@ totalbr_cgna_fill <- function(year, month = NULL,
 # straddle; a wide spread means they are measuring different events, and no
 # window makes them the same.
 # =============================================================================
-totalbr_cgna_time_shift <- function(year, month = NULL, key = "reg_day",
+totalbr_cgna_time_shift <- function(year, month = NULL, key = "reg_seq",
                                     from = NULL, to = NULL) {
   w <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
   a <- w$a[!duplicated(KEY) & !is.na(KEY)]
@@ -363,6 +372,87 @@ totalbr_cgna_time_shift <- function(year, month = NULL, key = "reg_day",
                  EQUAL_PCT   = round(100 * mean(diff_min == 0), 1),
                  WITHIN_1    = round(100 * mean(abs(diff_min) <= 1), 1),
                  WITHIN_15   = round(100 * mean(abs(diff_min) <= 15), 1))
+}
+
+# =============================================================================
+# totalbr_cgna_stamp_check(year, month) -- IS THE SHIFT A CLOCK OR AN EVENT?
+#
+# The decisive test, and a cheap one. dh_eobt is a PLANNED value: both sources
+# copy it from the same flight plan, so it is the same number on both sides
+# unless something mechanical is moving every timestamp -- a timezone label
+# taken at face value, a parse in the session's zone instead of UTC, a source
+# writing local time.
+#
+#   dh_eobt shifts by the same amount as dh_inicio  -> A CLOCK. Every stamp in
+#       one of the files is displaced. Fix the reading, not the data. This
+#       project has been here before: the archive-vs-ODIN offset was measured at
+#       +50 minutes while the parquet's Europe/Paris label was read as real, and
+#       the true figure was 50 - 60 = -10 once the spurious hour came out
+#       (TOTALBR_SHIFT_MIN in compare_totalbr_sources.R).
+#
+#   dh_eobt agrees and only dh_inicio moves      -> AN EVENT. The two sources
+#       define the start of a flight differently, and no correction is
+#       legitimate: it is a finding about the sources, to take to ICEA/CGNA.
+#
+# Also prints raw strings for a few paired flights, because a displaced clock is
+# usually obvious the moment the two are seen side by side.
+# =============================================================================
+totalbr_cgna_stamp_check <- function(year, month = NULL, key = "reg_seq",
+                                     n = 8, from = NULL, to = NULL) {
+  w <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
+  a <- w$a[!duplicated(KEY) & !is.na(KEY)]
+  b <- w$b[!duplicated(KEY) & !is.na(KEY)]
+  common <- intersect(a$KEY, b$KEY)
+  if (length(common) == 0) stop("No pairs under key '", key, "'.")
+  a <- a[KEY %in% common][order(KEY)]
+  b <- b[KEY %in% common][order(KEY)]
+
+  ts <- function(d, cl) as.POSIXct(
+    totalbr_cgna_norm_time(totalbr_cgna_col(d, cl)), tz = "UTC")
+
+  cols <- c("dh_eobt", "dh_inicio", "dh_fim", "dt_dia")
+  out <- data.table::rbindlist(lapply(cols, function(cl) {
+    dm <- as.numeric(difftime(ts(b, cl), ts(a, cl), units = "mins"))
+    dm <- dm[is.finite(dm)]
+    if (length(dm) == 0)
+      return(data.table::data.table(COLUMN = cl, PAIRS = 0L, MEDIAN_MIN = NA_real_,
+                                    EQUAL_PCT = NA_real_, SAME_AS_MEDIAN_PCT = NA_real_))
+    md <- stats::median(dm)
+    data.table::data.table(
+      COLUMN = cl, PAIRS = length(dm), MEDIAN_MIN = md,
+      EQUAL_PCT = round(100 * mean(dm == 0), 1),
+      # how CONSTANT the shift is: a clock displaces everything by one number,
+      # an event difference spreads
+      SAME_AS_MEDIAN_PCT = round(100 * mean(dm == md), 1))
+  }))
+
+  message("Raw stamps for ", min(n, nrow(a)), " paired flight(s):")
+  show <- utils::head(seq_len(nrow(a)), n)
+  print(data.table::data.table(
+    KEY        = a$KEY[show],
+    EOBT_ODIN  = totalbr_cgna_col(a, "dh_eobt")[show],
+    EOBT_CGNA  = totalbr_cgna_col(b, "dh_eobt")[show],
+    START_ODIN = totalbr_cgna_col(a, "dh_inicio")[show],
+    START_CGNA = totalbr_cgna_col(b, "dh_inicio")[show]))
+
+  eobt <- out[COLUMN == "dh_eobt"]
+  ini  <- out[COLUMN == "dh_inicio"]
+  if (nrow(eobt) && nrow(ini) && !is.na(eobt$MEDIAN_MIN) && !is.na(ini$MEDIAN_MIN)) {
+    if (abs(eobt$MEDIAN_MIN - ini$MEDIAN_MIN) < 1)
+      message("\nVERDICT: dh_eobt moves with dh_inicio (both ~",
+              round(ini$MEDIAN_MIN), " min). A PLANNED field cannot drift, so this\n",
+              "  is a CLOCK: every stamp in one file is displaced. Fix the reading.")
+    else if (abs(eobt$MEDIAN_MIN) < 1)
+      message("\nVERDICT: dh_eobt agrees exactly and only dh_inicio moves (~",
+              round(ini$MEDIAN_MIN), " min).\n",
+              "  The clocks are fine; the two sources define the start of a flight\n",
+              "  differently. That is a finding for ICEA/CGNA, not something to correct.")
+    else
+      message("\nVERDICT: dh_eobt moves by ", round(eobt$MEDIAN_MIN),
+              " min and dh_inicio by ", round(ini$MEDIAN_MIN),
+              " min -- neither\n  a clean clock nor a clean event difference. Read the raw stamps above.")
+  }
+  out[]
 }
 
 # =============================================================================
