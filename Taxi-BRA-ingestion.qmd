@@ -190,6 +190,43 @@ Whether the two sources actually agree is measured, not assumed —
 the per-day profile that separates a truncation from a coverage gap from a scope
 difference.
 
+Run it **after each download**, on the months just fetched. The per-day profile comes
+first: a total cannot tell a source that reports less from a download that stopped early,
+and a ratio far from 1.00 on a handful of days is the only thing that shows the difference.
+
+```{r}
+#| label: compare-bra-taxi-data-cgna
+#| eval: false
+
+source(here::here("TAXI", "compare_taxi_cgna.R"))
+
+# 1. the per-day profile -- START HERE. Only the CGNA month parts exist while a
+#    year is being filled in, so compare the PARTS (month = 4), not the merged years.
+taxi_cgna_daily(2026, month = 4)
+
+# 2. the summary over the days both files hold
+compare_taxi_cgna(2026, month = 4)
+
+# 3. which columns disagree on the movements both sources report
+taxi_cgna_field_diffs(2026, month = 4)
+```
+
+Reading the profile: a day whose CGNA count is a fraction of the ODIN one is a **truncated
+day** — the download stopped inside it. The resume logic skips any day already recorded,
+truncated or not, so re-running does not repair it; refetch that day alone with `force`,
+which rewrites those days and leaves the rest of the month untouched:
+
+```{r}
+#| label: refetch-bra-taxi-data-cgna
+#| eval: false
+
+download_taxi_cgna(2026, from = "20260429", to = "20260430", force = TRUE)
+```
+
+A day **absent** from the CGNA file needs no `force` — the next run picks it up. And a day
+that comes back at the same short count on a second fetch is not truncated at all: the
+source has no more, and that is a finding about the source, not a download to repeat.
+
 ```{r}
 #| label: check-bra-taxi-data
 
