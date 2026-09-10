@@ -309,20 +309,26 @@ download_taxi_cgna <- function(years    = taxi_cgna_default_years(),
         if (is.null(df)) {
           message(sprintf("    %s  FAILED (retried; will be picked up next run)", need[i]))
           failed <- c(failed, need[i])
-          next
-        }
-        if (nrow(df) == 0) {
-          # A day with no movements is an answer, not a failure. Recorded as one
-          # row carrying only the day, so the resume logic knows it was asked
-          # for and does not request it again on every run.
-          df <- data.frame(CGNA_DAY = need[i], stringsAsFactors = FALSE)
-          message(sprintf("    %s  no records", need[i]))
         } else {
-          message(sprintf("    %s  %d record(s)", need[i], nrow(df)))
+          if (nrow(df) == 0) {
+            # A day with no movements is an answer, not a failure. Recorded as one
+            # row carrying only the day, so the resume logic knows it was asked
+            # for and does not request it again on every run.
+            df <- data.frame(CGNA_DAY = need[i], stringsAsFactors = FALSE)
+            message(sprintf("    %s  no records", need[i]))
+          } else {
+            message(sprintf("    %s  %d record(s)", need[i], nrow(df)))
+          }
+          fetched[[length(fetched) + 1L]] <- df
         }
-        fetched[[length(fetched) + 1L]] <- df
 
-        # persist as we go: an interrupt costs one day, not the month
+        # persist as we go: an interrupt costs one day, not the month. The
+        # checkpoint is OUTSIDE the success branch on purpose: a day that fails
+        # must cost that day only. Skipping to the next iteration on failure --
+        # as this loop used to -- means a failure on the LAST needed day never
+        # reaches the `i == length(need)` checkpoint, and every day fetched
+        # since the previous one is discarded. Asked for three days and given a
+        # 502 on the third, this wrote none of them.
         if (i %% 5 == 0 || i == length(need)) {
           part <- tatic_rbind_fill(c(list(keep), fetched))
           if (!is.null(part)) {
