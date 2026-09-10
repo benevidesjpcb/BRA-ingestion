@@ -25,6 +25,19 @@
 # assume nothing about a shift, measure it, and only then decide what the key
 # has to survive.
 #
+# WHAT THE FIRST REAL MONTH SHOWED (2026-01, ODIN 179,836 rows vs CGNA 178,281)
+#
+#   * pk matches NOTHING. The hashes are computed differently; see the key notes.
+#   * The CGNA stamps dh_inicio 50 minutes BEFORE the ODIN, to the minute, on
+#     over 90% of pairs. A constant that sharp is mechanical, not operational --
+#     run totalbr_cgna_stamp_check() before reading anything else, because the
+#     keys carry the calendar DAY and a 50-minute displacement moves every flight
+#     in the first 50 minutes of a day into the previous one. That alone accounts
+#     for roughly 7 of the ~10 percentage points currently reported as one-sided.
+#
+# So the match rates below are a floor, not a verdict, until the shift is
+# understood.
+#
 # THE WINDOW. Everything except totalbr_cgna_daily() compares only the days the
 # CGNA file holds, because a half-downloaded year is the normal state and its
 # missing months are not a difference between the sources. totalbr_cgna_daily()
@@ -41,9 +54,13 @@
 # match rate of each, because a low rate is a finding about the KEY before it is
 # a finding about the data:
 #
-#   "pk"        TRY THIS FIRST. Measured at 100% populated on both sides for
-#               2026-01, so if the two APIs compute the hash the same way it
-#               settles the comparison outright and nothing below matters.
+#   "pk"        MEASURED AT ZERO. It is 100% populated on both sides, and not one
+#               of 179,836 ODIN rows shares a pk with any of 178,276 CGNA rows
+#               for 2026-01. The two APIs compute the row hash differently, so
+#               pk cannot pair anything across them. It is kept in the default
+#               set precisely so that stays visible: a future run finding a
+#               non-zero match here would mean one of them changed how it
+#               hashes, which is worth knowing.
 #
 #   "reg_seq"   Registration + aerodrome pair + calendar day, plus
 #               the rotation number within that day. The registration is the
