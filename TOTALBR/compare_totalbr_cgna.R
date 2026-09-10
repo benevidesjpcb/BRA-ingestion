@@ -49,6 +49,17 @@
 #     carries a real filed time (qmd open point 2). Do not average or compare
 #     that column without excluding epoch dates.
 #
+#   * THE REGISTRATION IS THE BETTER IDENTIFIER, measured. Once the keys were
+#     dated on dh_eobt, reg_seq matched 96.1% against 92.2% for flight_seq
+#     (registration where present, callsign where not) and 92.3% for eobt_seq
+#     (callsign throughout). The two callsign-bearing keys landing within 0.1
+#     point of each other says the callsign is what caps them, not the date or
+#     the route.
+#
+#     But reg_seq covers only the 61% of flights carrying a registration, so its
+#     96.1% and flight_seq's 92.2% are not rates over the same population. Read
+#     MATCH_PCT beside KEYED_ODIN/KEYED_CGNA, always.
+#
 # THE WINDOW. Everything except totalbr_cgna_daily() compares only the days the
 # CGNA file holds, because a half-downloaded year is the normal state and its
 # missing months are not a difference between the sources. totalbr_cgna_daily()
@@ -535,25 +546,31 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
       return(NULL)
     }
     ka <- w$a$KEY; kb <- w$b$KEY
-    ua <- unique(ka[!is.na(ka)]); ub <- unique(kb[!is.na(kb)])
+    # A row the key cannot be built for is KEYLESS, not a duplicate. Subtracting
+    # distinct keys from row count conflates the two, and on reg_seq -- which
+    # numbers rotations and so cannot produce a true duplicate -- it reported
+    # 69,601 "duplicates" that were simply flights with no registration.
+    na_a <- sum(is.na(ka)); na_b <- sum(is.na(kb))
+    ka <- ka[!is.na(ka)];   kb <- kb[!is.na(kb)]
+    ua <- unique(ka);       ub <- unique(kb)
     both <- length(intersect(ua, ub))
     data.table::data.table(
       YEAR      = year,
       KEY       = k,
-      KEYLESS   = sum(is.na(ka)) + sum(is.na(kb)),
       FROM      = w$from,
       TO        = w$to,
-      ROWS_ODIN = length(ka),
-      ROWS_CGNA = length(kb),
-      KEYS_ODIN = length(ua),
-      KEYS_CGNA = length(ub),
+      ROWS_ODIN = length(w$a$KEY),
+      ROWS_CGNA = length(w$b$KEY),
+      # rows this key could be built for -- the population the rate is over
+      KEYED_ODIN   = length(ka),
+      KEYED_CGNA   = length(kb),
+      KEYLESS_ODIN = na_a,
+      KEYLESS_CGNA = na_b,
       DUP_ODIN  = length(ka) - length(ua),
       DUP_CGNA  = length(kb) - length(ub),
       BOTH      = both,
       ONLY_ODIN = length(setdiff(ua, ub)),
       ONLY_CGNA = length(setdiff(ub, ua)),
-      # over the keys that EXIST: a row the key cannot be built for is counted
-      # in KEYLESS, not held against the sources
       MATCH_PCT = round(100 * both / max(1L, min(length(ua), length(ub))), 1)
     )
   })
