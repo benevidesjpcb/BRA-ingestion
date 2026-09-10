@@ -51,7 +51,15 @@
 #     carries a real filed time (qmd open point 2). Do not average or compare
 #     that column without excluding epoch dates.
 #
-#   * THE REGISTRATION IS THE BETTER IDENTIFIER, measured. Once the keys were
+#   * THE KEYS ARE DATED ON THE OBSERVED dt_dia, NOT ON dh_eobt. The filed time
+#     was tried as the date and dropped: it reaches the same 91.5% (164,518
+#     against 164,469 flights, 49 apart in 180,000), so it never carried the
+#     match, while it is a PLANNED value that a re-file changes and it carries
+#     the 1970 sentinel on 10,466 ODIN rows. The day displacement it was brought
+#     in to dodge is handled where it is visible instead -- the cascade retries
+#     the CGNA's adjacent day as a named step worth 2,876 pairs.
+#
+#   * THE REGISTRATION IS THE BETTER IDENTIFIER, measured. Under keys
 #     dated on dh_eobt, reg_seq matched 96.1% against 92.2% for flight_seq
 #     (registration where present, callsign where not) and 92.3% for eobt_seq
 #     (callsign throughout). The two callsign-bearing keys landing within 0.1
@@ -201,20 +209,29 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
   reg  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_matricula"))
   eobt <- totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_eobt"))
 
-  # THE KEY IS DATED ON dh_eobt, NOT ON dt_dia. Measured on 2026-01: dh_eobt
-  # agrees exactly between the two sources on 93.4% of pairs, while dt_dia is
-  # displaced by the same -50 minutes as dh_inicio -- because the CGNA derives
-  # it from its own padded start. A key carrying a displaced day cannot match a
-  # flight in the first 50 minutes of a day at all: the ODIN puts it on the 15th
-  # and the CGNA on the 14th, and it is reported as one-sided on BOTH sides
-  # while nothing is missing. That arithmetic alone (50 of 1440 minutes, both
-  # directions) covers roughly 7 of the ~10 percentage points of one-sided rows.
+  # THE KEY IS DATED ON dt_dia, THE OBSERVED DAY -- NOT ON dh_eobt.
   #
-  # dt_dia is the fallback for a row with no filed time, and it is still what
-  # totalbr_cgna_day() gives the WINDOW -- which days a file covers is a
-  # question about the file, not about pairing flights.
-  fallback <- totalbr_cgna_day(d)
-  day <- ifelse(is.na(eobt) | !nzchar(eobt), fallback, substr(eobt, 1, 10))
+  # Dating on dh_eobt was tried and dropped. It costs nothing to drop: pairing
+  # the same month with the observed day instead reaches 91.5% either way
+  # (164,469 flights against 164,518, 49 apart in 180,000), so the filed time
+  # was never carrying the match. And it costs two things to keep:
+  #
+  #   * dh_eobt is a PLANNED time. It changes when the plan is re-filed, and the
+  #     two sources snapshot the plan at different moments.
+  #   * the ODIN writes the epoch 1970-01-01 into it as a null sentinel on
+  #     10,466 rows of 2026-01. Dating on it collapses every sentinel-bearing
+  #     flight of a route onto the single day "1970-01-01" -- eight distinct
+  #     CMP745 MPTO-SANT flights, on the 1st, 4th, 6th, 8th, 10th, 13th, 15th
+  #     and 18th of January, become one route-day holding eight rows that then
+  #     look like repeats of one another.
+  #
+  # The known cost of the observed day is that the CGNA's dt_dia follows its
+  # padded start and is displaced -50 minutes, so a flight in the first 50
+  # minutes of a day is filed on the 15th by the ODIN and the 14th by the CGNA.
+  # That is absorbed where it belongs -- in the cascade, which retries the
+  # adjacent day and SAYS it did so (totalbr_cgna_pair) -- not by swapping in a
+  # different date column and hoping.
+  day <- totalbr_cgna_day(d)
 
   # Numbers the rotations of one route within one day, earliest first, so a side
   # holding three legs and a side holding two match leg-to-leg and leave the
@@ -253,12 +270,12 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
     # A flight with no registration simply cannot be matched on the airframe,
     # and is reported as unmatched, which is the truth.
     reg_day  = .tb_na_if_missing(paste(reg, dep, des, day, sep = "|"), reg),
+    # ordered on the observed start: the rotations of a route within a day only
+    # need to be put in order, and dh_inicio is displaced by a constant, so it
+    # orders them identically on both sides
     reg_seq  = .tb_na_if_missing(seq_within(paste(reg, dep, des, day, sep = "|"),
-                          # ordered on the filed time where there is one, since
-                          # it is the field least likely to differ between the
-                          # sources; the observed start breaks the remaining ties
-                          paste0(eobt, totalbr_cgna_norm_time(
-                            totalbr_cgna_col(d, "dh_inicio")))), reg),
+                          totalbr_cgna_norm_time(
+                            totalbr_cgna_col(d, "dh_inicio"))), reg),
 
     # The practical key when the registration is only partly there, as it is:
     # the airframe where it is known, the callsign where it is not. The callsign
@@ -268,9 +285,18 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
     # than instead of it.
     flight_seq = seq_within(
       paste(ifelse(is.na(reg), cs, reg), dep, des, day, sep = "|"),
-      paste0(eobt, totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio")))),
+      totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio"))),
 
-    # ---- the planned-time keys ---------------------------------------------
+    # The callsign key on the OBSERVED day -- the second pass of the cascade.
+    # eobt_seq below is the same shape dated on the filed time, and is kept only
+    # as a diagnostic to compare against; this is the one that pairs.
+    cs_seq   = seq_within(paste(cs, dep, des, day, sep = "|"),
+                          totalbr_cgna_norm_time(
+                            totalbr_cgna_col(d, "dh_inicio"))),
+
+    # ---- the planned-time keys: DIAGNOSTIC ONLY ----------------------------
+    # Not used by the cascade. They date on dh_eobt, which is why they are kept
+    # around -- to be compared against the observed-day keys, not to pair with.
     # dh_eobt is a PLANNED value, not an observed one. Both sources copy it from
     # the same flight plan, which is why it survives a shift in the observed
     # stamps -- but a re-filed off-block time changes it, and two sources that
@@ -281,7 +307,7 @@ totalbr_cgna_key <- function(d, key = "reg_seq") {
     eobt_day = paste(cs, dep, des, substr(eobt, 1, 10), sep = "|"),
     eobt_seq = seq_within(paste(cs, dep, des, substr(eobt, 1, 10), sep = "|"), eobt),
     stop("Unknown key '", key,
-         "'. Use pk, reg_day, reg_seq, flight_seq, eobt, eobt_day or eobt_seq.")
+         "'. Use pk, reg_day, reg_seq, flight_seq, cs_seq, eobt, eobt_day or eobt_seq.")
   )
 }
 
@@ -609,58 +635,81 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
 # Marks PAIRED_BY on both sides of an already-loaded window. Split out so the
 # unpaired diagnostic classifies exactly the rows this pairing left over, rather
 # than a second implementation that could drift from it.
+#
+# FOUR PASSES, NOT TWO, because the keys are dated on the observed dt_dia and
+# the CGNA's is displaced -50 minutes. A flight leaving in the first 50 minutes
+# of a day is filed on the 15th by the ODIN and the 14th by the CGNA, so after
+# each pass the leftovers are retried against the CGNA's NEXT day. That retry is
+# a separate, named step precisely so the displacement stays visible in the
+# output instead of being folded into the match rate: it recovers 2,876 pairs on
+# 2026-01, and if a future month recovers far more or none at all, that is a
+# change in the displacement and it should be seen.
+#
+# The rotation number is recomputed at every pass, over the leftovers only.
+# Reusing the numbering from the full month would count rotations that have
+# already been paired, and the second leg of a route would look for a partner
+# that is no longer there.
 .totalbr_cgna_cascade <- function(w) {
   a <- data.table::copy(w$a); b <- data.table::copy(w$b)
+  a[, PAIRED_BY := NA_character_]; b[, PAIRED_BY := NA_character_]
 
-  # ---- pass 1: the airframe ------------------------------------------------
-  ua <- a$KEY; ub <- b$KEY
-  dup_a <- duplicated(ua) & !is.na(ua)
-  dup_b <- duplicated(ub) & !is.na(ub)
-  hit   <- !is.na(ua) & !dup_a & ua %in% ub[!is.na(ub) & !dup_b]
-  a[, PAIRED_BY := data.table::fifelse(hit, "registration", NA_character_)]
-  b[, PAIRED_BY := data.table::fifelse(
-    !is.na(ub) & !dup_b & ub %in% ua[!is.na(ua) & !dup_a], "registration", NA_character_)]
-
-  # ---- pass 2: the callsign, among what pass 1 left ------------------------
-  # The rotation number is recomputed over the leftovers. Reusing the numbering
-  # from the full month would count rotations that have already been paired, and
-  # the second leg of a route would look for a partner that is no longer there.
-  left_a <- which(is.na(a$PAIRED_BY)); left_b <- which(is.na(b$PAIRED_BY))
-  if (length(left_a) > 0 && length(left_b) > 0) {
-    ka <- totalbr_cgna_key(a[left_a], "eobt_seq")
-    kb <- totalbr_cgna_key(b[left_b], "eobt_seq")
+  # one pass: build `key` over what is still unpaired, optionally moving the
+  # CGNA's day forward by one to absorb the displacement, and mark what matches
+  pass <- function(key, label, shift_cgna) {
+    ia <- which(is.na(a$PAIRED_BY)); ib <- which(is.na(b$PAIRED_BY))
+    if (length(ia) == 0 || length(ib) == 0) return(invisible(NULL))
+    A <- a[ia]; B <- b[ib]
+    # The shift has to move the COLUMN the key dates itself on, not the derived
+    # DAY: totalbr_cgna_key() reads dt_dia afresh, so shifting DAY alone leaves
+    # the key untouched and the pass silently recovers nothing.
+    if (shift_cgna) {
+      cn <- which(gsub("[^a-z0-9]", "", tolower(names(B))) == "dtdia")
+      if (length(cn) == 0) return(invisible(NULL))
+      B <- data.table::copy(B)
+      shifted <- as.character(as.Date(substr(
+        totalbr_cgna_norm_time(B[[cn[1]]]), 1, 10)) + 1)
+      data.table::set(B, j = cn[1], value = shifted)
+      B[, DAY := totalbr_cgna_day(B)]
+    }
+    ka <- totalbr_cgna_key(A, key); kb <- totalbr_cgna_key(B, key)
     ok_a <- !is.na(ka) & !duplicated(ka)
     ok_b <- !is.na(kb) & !duplicated(kb)
-    a$PAIRED_BY[left_a[ok_a & ka %in% kb[ok_b]]] <- "callsign"
-    b$PAIRED_BY[left_b[ok_b & kb %in% ka[ok_a]]] <- "callsign"
+    a$PAIRED_BY[ia[ok_a & ka %in% kb[ok_b]]] <<- label
+    b$PAIRED_BY[ib[ok_b & kb %in% ka[ok_a]]] <<- label
   }
+
+  pass("reg_seq", "registration",        FALSE)
+  pass("reg_seq", "registration +-1d",   TRUE)
+  pass("cs_seq",  "callsign",            FALSE)
+  pass("cs_seq",  "callsign +-1d",       TRUE)
   list(a = a, b = b)
 }
 
+TOTALBR_CGNA_STEPS <- c("registration", "registration +-1d",
+                        "callsign", "callsign +-1d")
+
 totalbr_cgna_pair <- function(year, month = NULL, from = NULL, to = NULL,
                               detail = FALSE, quiet = FALSE) {
-  # reg_seq carries the airframe key; the callsign pass is built on the
-  # leftovers, so the window is only read once
   w <- totalbr_cgna_window(year, from, to, month, key = "reg_seq", quiet = quiet)
   ab <- .totalbr_cgna_cascade(w); a <- ab$a; b <- ab$b
 
   n <- function(d, v) sum(d$PAIRED_BY %in% v)
+  cnt <- function(d) vapply(TOTALBR_CGNA_STEPS, function(x) n(d, x), integer(1))
   out <- tibble::tibble(
-    STEP = c("registration", "callsign", "unpaired", "TOTAL"),
-    ODIN = c(n(a, "registration"), n(a, "callsign"),
-             sum(is.na(a$PAIRED_BY)), nrow(a)),
-    CGNA = c(n(b, "registration"), n(b, "callsign"),
-             sum(is.na(b$PAIRED_BY)), nrow(b)))
+    STEP = c(TOTALBR_CGNA_STEPS, "unpaired", "TOTAL"),
+    ODIN = c(cnt(a), sum(is.na(a$PAIRED_BY)), nrow(a)),
+    CGNA = c(cnt(b), sum(is.na(b$PAIRED_BY)), nrow(b)))
   out$ODIN_PCT <- round(100 * out$ODIN / nrow(a), 1)
   out$CGNA_PCT <- round(100 * out$CGNA / nrow(b), 1)
 
   if (!quiet) {
-    paired <- n(a, c("registration", "callsign"))
-    message(sprintf("Paired %s of %s ODIN flight(s) (%.1f%%): %s on the airframe, %s on the callsign.",
+    paired <- n(a, TOTALBR_CGNA_STEPS)
+    message(sprintf("Paired %s of %s ODIN flight(s) (%.1f%%): %s on the airframe, %s on the callsign, %s of them only on the CGNA's adjacent day.",
                     format(paired, big.mark = ","), format(nrow(a), big.mark = ","),
                     100 * paired / nrow(a),
-                    format(n(a, "registration"), big.mark = ","),
-                    format(n(a, "callsign"), big.mark = ",")))
+                    format(n(a, c("registration", "registration +-1d")), big.mark = ","),
+                    format(n(a, c("callsign", "callsign +-1d")), big.mark = ","),
+                    format(n(a, c("registration +-1d", "callsign +-1d")), big.mark = ",")))
   }
   if (detail) return(a[])
   out
@@ -669,8 +718,8 @@ totalbr_cgna_pair <- function(year, month = NULL, from = NULL, to = NULL,
 # =============================================================================
 # totalbr_cgna_unpaired(year, month) -- WHAT THE CASCADE COULD NOT PAIR, AND WHY
 #
-# The cascade pairs 91.5% of ODIN's 2026-01 rows, and the remaining 15,318 ODIN
-# / 13,763 CGNA rows are the question this answers. The first thing to rule out
+# The cascade pairs 91.5% of ODIN's 2026-01 rows, and the remaining 15,367 ODIN
+# / 13,812 CGNA rows are the question this answers. The first thing to rule out
 # is the KEY -- an 8.5% residual that is really a keying artefact would be
 # repaired by a different key, not investigated as data. It is not:
 #
@@ -679,48 +728,50 @@ totalbr_cgna_pair <- function(year, month = NULL, from = NULL, to = NULL,
 #     pile up at the ends.
 #   * NOT THE MISSING CALLSIGN. co_indicativo is populated on 100% of unpaired
 #     rows on both sides, so the callsign pass was attempted on all of them.
-#   * NOT THE DATE THE KEY CARRIES. Re-keying the leftovers on dt_dia instead of
-#     dh_eobt, and again allowing the CGNA's -50-minute day displacement,
-#     rescues 20 of 15,318. The dh_eobt dating is doing its job.
-#   * NOT THE 1970 SENTINEL, though it looks like it. Half the unpaired ODIN
-#     rows (7,766) carry the epoch in dh_eobt against 447 on the CGNA side, so
-#     the sentinel looks one-sided -- but on the 103,674 flights the airframe
-#     paired, dh_eobt is the epoch on 1,794 rows and it is the epoch on BOTH
-#     sides every single time, never one. The sentinel is a shared property of
-#     the flight, not an ODIN artefact, and it concentrates in the unpaired
-#     population rather than causing it.
+#   * NOT THE DAY DISPLACEMENT. The cascade already retries the CGNA's adjacent
+#     day, and that pass is reported separately: it recovers 2,876 pairs, and
+#     what is left over here is what survived it.
+#   * NOT THE FILED TIME. Dating the keys on dh_eobt instead reaches the same
+#     91.5% (164,518 against 164,469, 49 apart in 180,000), so the residual is
+#     not something a planned-time key would have caught.
 #
-# So the residual is the data. It splits three ways, and the split is strongly
-# ASYMMETRIC -- which is the finding:
+# So the residual is the data. It splits three ways, and the split is almost
+# perfectly one-directional -- which is the finding:
 #
-#   "odin duplicate"  2,212 ODIN rows repeat a route-day the CGNA also reports,
-#                     matching an ALREADY-PAIRED ODIN row down to the filed
-#                     minute. Same callsign, same aerodromes, same day, same
-#                     dh_eobt: the same flight carried twice. Only 753 carry a
-#                     registration, which is why the airframe pass does not
-#                     collapse them.
+#   "extra rotation"  15,260 of ODIN's 15,367 unpaired rows -- 99.3% of them --
+#                     are on a route-day the CGNA ALSO reports, but are
+#                     rotations it does not carry. The CGNA is reporting a
+#                     subset: PRMES SBPS-SD49 on 2026-01-01 is ten rotations in
+#                     the ODIN (04:45, 08:20, 16:00, 17:40, 18:10, 19:10, 19:40,
+#                     20:00, 20:25, 21:15) and three in the CGNA (03:55, 07:30,
+#                     15:10) -- and those three are the first three of the ten,
+#                     each 50 minutes earlier, which is the padded window again.
+#                     Only 6,312 of the 15,260 carry a registration.
 #
-#   "odin extra leg"  5,875 more ODIN rows on a route-day both sides report, but
-#                     with a DISTINCT filed time -- a rotation the CGNA does not
-#                     carry. Across 157,836 route-days present on both sides,
-#                     ODIN holds more rows on 7,204 and the CGNA holds more on
-#                     10. Where the two sources agree a route-day happened, the
-#                     ODIN essentially never reports fewer flights.
+#   "one side only"   13,671 CGNA rows against 36 ODIN ones: flights on a
+#                     route-day the other source does not report at all. This is
+#                     the CGNA's side of the ledger, and it is a different
+#                     population rather than a shortfall -- these depart the
+#                     general-aviation and secondary fields (SBJR, SBJD, SBBI,
+#                     SBYS, SBNV, SBBH, SBSJ, and ZZZZ) that the ODIN does not
+#                     appear to cover.
 #
-#   "one side only"   7,231 ODIN and 13,749 CGNA rows on a route-day the other
-#                     source does not report at all. These are different
-#                     populations, not a shortfall: the CGNA-only flights depart
-#                     the general-aviation and secondary fields (SBJR, SBJD,
-#                     SBBI, SBYS, SBNV, SBBH, SBSJ, and ZZZZ), while the
-#                     ODIN-only ones depart the major hubs (SBGR, SBBR, SBGL,
-#                     SBSP). 38.8% of the CGNA-only departures are from a
-#                     non-SB* aerodrome against 24.8% of the ODIN-only ones and
-#                     30.4% of everything paired.
+#   "duplicate record" 71 ODIN and 3 CGNA rows repeat a route-day down to the
+#                     observed minute of an ALREADY-PAIRED row on their own
+#                     side. A real but negligible count.
 #
-# WHAT THIS DOES NOT DECIDE. Whether ODIN's duplicate pairs are a re-filed plan
-# legitimately counted twice, and whether the CGNA's general-aviation traffic
-# belongs in the study, are questions for ICEA/CGNA. Neither side is corrected
-# here; both are counted and named.
+# SO THE TWO SOURCES DISAGREE IN TWO SEPARATE DIRECTIONS: the ODIN sees more
+# rotations of the flights they both know, and the CGNA sees aerodromes the ODIN
+# does not. Neither is a subset of the other.
+#
+# AN EARLIER VERSION OF THIS FUNCTION REPORTED THIS WRONG, and the reason is
+# worth keeping. It dated the route-day on dh_eobt, whose 1970 sentinel collapses
+# every sentinel-bearing flight of a route onto the single day "1970-01-01":
+# eight distinct CMP745 MPTO-SANT flights, spread from the 1st to the 18th of
+# January, read as eight repeats of one. That produced 2,212 "duplicates" and
+# 7,231 ODIN-only rows, of which 30% and 98% respectively were nothing but the
+# sentinel. Dating on the observed dt_dia, as the pairing keys do, is what these
+# numbers rest on now.
 #
 #   totalbr_cgna_unpaired(2026, month = 1)               # the classification
 #   totalbr_cgna_unpaired(2026, month = 1, detail = TRUE) # the rows, with REASON
@@ -733,19 +784,35 @@ totalbr_cgna_unpaired <- function(year, month = NULL, from = NULL, to = NULL,
   # The pairing key WITHOUT the rotation number: it answers "does the other
   # source report this route on this day at all", which is what separates a
   # surplus rotation from a flight the other side never saw.
+  # Dated on the observed dt_dia, like the keys that did the pairing -- see the
+  # note in totalbr_cgna_key(). Dating this on dh_eobt was tried and was wrong:
+  # its 1970 sentinel collapses every sentinel-bearing flight of a route onto
+  # the single day "1970-01-01", so eight distinct CMP745 MPTO-SANT flights
+  # spread across January read as eight repeats of one, and the first version of
+  # this classification duly called them duplicates.
   route_day <- function(d) {
-    e   <- totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_eobt"))
-    day <- ifelse(is.na(e) | !nzchar(e), totalbr_cgna_day(d), substr(e, 1, 10))
     paste(totalbr_cgna_norm(totalbr_cgna_col(d, "co_indicativo")),
           totalbr_cgna_norm(totalbr_cgna_col(d, "co_addep")),
-          totalbr_cgna_norm(totalbr_cgna_col(d, "co_addes")), day, sep = "|")
+          totalbr_cgna_norm(totalbr_cgna_col(d, "co_addes")),
+          totalbr_cgna_day(d), sep = "|")
   }
-  # ... and the same plus the filed minute, which is what tells a repeat of one
-  # flight from a genuinely different rotation of the same route
+  # ... and the same plus the observed start to the minute, which is what tells
+  # a repeat of one flight from a genuinely different rotation of the same route
   minute_sig <- function(d, rd) paste(rd, substr(
-    totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_eobt")), 1, 16))
+    totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio")), 1, 16))
 
+  # The -50-minute displacement applies here exactly as it does in the cascade:
+  # a CGNA flight just after midnight is filed on the previous day, so asking
+  # only "is this route-day on the other side" would report its ODIN partner as
+  # a rotation the CGNA does not carry. The other side's route-days are
+  # therefore taken on their own day AND on the next one.
+  shift_day <- function(rd) {
+    p <- data.table::tstrsplit(rd, "|", fixed = TRUE)
+    paste(p[[1]], p[[2]], p[[3]], as.character(as.Date(p[[4]]) + 1), sep = "|")
+  }
   rd_a <- route_day(a); rd_b <- route_day(b)
+  seen_by_b <- c(rd_b, shift_day(rd_b))
+  seen_by_a <- c(rd_a, shift_day(rd_a))
   classify <- function(d, rd, rd_other, paired_sig) {
     un <- is.na(d$PAIRED_BY)
     r  <- rep(NA_character_, nrow(d))
@@ -760,8 +827,8 @@ totalbr_cgna_unpaired <- function(year, month = NULL, from = NULL, to = NULL,
   }
   sig_pa <- minute_sig(a, rd_a)[!is.na(a$PAIRED_BY)]
   sig_pb <- minute_sig(b, rd_b)[!is.na(b$PAIRED_BY)]
-  a[, REASON := classify(a, rd_a, rd_b, sig_pa)]
-  b[, REASON := classify(b, rd_b, rd_a, sig_pb)]
+  a[, REASON := classify(a, rd_a, seen_by_b, sig_pa)]
+  b[, REASON := classify(b, rd_b, seen_by_a, sig_pb)]
 
   if (detail) return(a[!is.na(REASON)][])
 
