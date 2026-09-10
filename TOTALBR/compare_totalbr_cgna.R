@@ -582,6 +582,80 @@ compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
 }
 
 # =============================================================================
+# totalbr_cgna_pair(year, month) -- MATCH IN CASCADE, AND SAY HOW
+#
+# The registration is the better identifier and the callsign is the one that is
+# always there, and the month says both at once: reg_seq matched 96.1% but only
+# of the 61% of flights carrying a registration (103,674 flights), while the
+# callsign keys matched 92.3% of everything (164,522). Choosing between them
+# throws away either reliability or 60,848 pairings.
+#
+# So neither is chosen. Flights are paired on the AIRFRAME first, and whatever
+# is left over is then paired on the CALLSIGN -- among the leftovers only, with
+# the rotation numbers recomputed there, or the sequence would refer to a
+# population that has already been reduced.
+#
+# Every pairing carries how it was made, for the same reason DAIO carries how
+# each country was decided: "these two rows are the same flight" is a claim, and
+# a claim made on a reused operational label is weaker than one made on an
+# airframe. A count that mixes them without saying so cannot be audited.
+#
+#   totalbr_cgna_pair(2026, month = 1)               # the summary
+#   totalbr_cgna_pair(2026, month = 1, detail = TRUE) # ODIN rows + PAIRED_BY
+# =============================================================================
+totalbr_cgna_pair <- function(year, month = NULL, from = NULL, to = NULL,
+                              detail = FALSE, quiet = FALSE) {
+  # reg_seq carries the airframe key; the callsign pass is built here, on the
+  # leftovers, so the window is only read once
+  w <- totalbr_cgna_window(year, from, to, month, key = "reg_seq", quiet = quiet)
+  a <- data.table::copy(w$a); b <- data.table::copy(w$b)
+
+  # ---- pass 1: the airframe ------------------------------------------------
+  ua <- a$KEY; ub <- b$KEY
+  dup_a <- duplicated(ua) & !is.na(ua)
+  dup_b <- duplicated(ub) & !is.na(ub)
+  hit   <- !is.na(ua) & !dup_a & ua %in% ub[!is.na(ub) & !dup_b]
+  a[, PAIRED_BY := data.table::fifelse(hit, "registration", NA_character_)]
+  b[, PAIRED_BY := data.table::fifelse(
+    !is.na(ub) & !dup_b & ub %in% ua[!is.na(ua) & !dup_a], "registration", NA_character_)]
+
+  # ---- pass 2: the callsign, among what pass 1 left ------------------------
+  # The rotation number is recomputed over the leftovers. Reusing the numbering
+  # from the full month would count rotations that have already been paired, and
+  # the second leg of a route would look for a partner that is no longer there.
+  left_a <- which(is.na(a$PAIRED_BY)); left_b <- which(is.na(b$PAIRED_BY))
+  if (length(left_a) > 0 && length(left_b) > 0) {
+    cs_key <- function(d, idx) totalbr_cgna_key(d[idx], "eobt_seq")
+    ka <- cs_key(a, left_a); kb <- cs_key(b, left_b)
+    ok_a <- !is.na(ka) & !duplicated(ka)
+    ok_b <- !is.na(kb) & !duplicated(kb)
+    a$PAIRED_BY[left_a[ok_a & ka %in% kb[ok_b]]] <- "callsign"
+    b$PAIRED_BY[left_b[ok_b & kb %in% ka[ok_a]]] <- "callsign"
+  }
+
+  n <- function(d, v) sum(d$PAIRED_BY %in% v)
+  out <- tibble::tibble(
+    STEP = c("registration", "callsign", "unpaired", "TOTAL"),
+    ODIN = c(n(a, "registration"), n(a, "callsign"),
+             sum(is.na(a$PAIRED_BY)), nrow(a)),
+    CGNA = c(n(b, "registration"), n(b, "callsign"),
+             sum(is.na(b$PAIRED_BY)), nrow(b)))
+  out$ODIN_PCT <- round(100 * out$ODIN / nrow(a), 1)
+  out$CGNA_PCT <- round(100 * out$CGNA / nrow(b), 1)
+
+  if (!quiet) {
+    paired <- n(a, c("registration", "callsign"))
+    message(sprintf("Paired %s of %s ODIN flight(s) (%.1f%%): %s on the airframe, %s on the callsign.",
+                    format(paired, big.mark = ","), format(nrow(a), big.mark = ","),
+                    100 * paired / nrow(a),
+                    format(n(a, "registration"), big.mark = ","),
+                    format(n(a, "callsign"), big.mark = ",")))
+  }
+  if (detail) return(a[])
+  out
+}
+
+# =============================================================================
 # totalbr_cgna_field_diffs(year) -- same flight, different values
 #
 # Paired on the key, then compared column by column. summary_only = TRUE gives
