@@ -198,6 +198,25 @@ TOTALBR_FLAG_EU <- local({
 }
 
 # =============================================================================
+# totalbr_panel_months(year, feed) -- the months actually on disk
+#
+# Written because the obvious expectation was the wrong one: months = 1:6 was a
+# hard default, so downloading July and re-running the same call silently kept
+# rendering January-June. Nothing scanned anything. "It reads the parts folder,
+# so it should pick up the new month" is what a person reasonably assumes, and
+# now it is true.
+#
+# Returns the months the FEED has as month parts, in order. The archive is not
+# consulted: this answers "what has been downloaded", and a year that lives only
+# in the archive has no parts to find -- ask for its months explicitly.
+# =============================================================================
+totalbr_panel_months <- function(year, feed = "cgna") {
+  have <- vapply(1:12, function(m) file.exists(totalbr_daio_part(year, m, feed = feed)),
+                 logical(1))
+  which(have)
+}
+
+# =============================================================================
 # totalbr_panel_year(year, months) -- a year's rows, from wherever they live
 #
 # The month parts only exist for the years this project has downloaded; earlier
@@ -461,7 +480,8 @@ TOTALBR_PANEL_CSS <- '<style>
 # =============================================================================
 # totalbr_panel_render(year, ref_year) -- build the page
 #
-#   totalbr_panel_render(2026, 2025)                  # jan-jun, both years
+#   totalbr_panel_render(2026, 2025)                  # every month downloaded
+#   totalbr_panel_render(2026, 2025, months = 7)      # July alone, vs July 2025
 #   totalbr_panel_render(2026, 2025, months = 1:3)    # a quarter
 #   totalbr_panel_render(2026, NULL)                  # one year, no comparison
 #
@@ -474,12 +494,29 @@ TOTALBR_PANEL_CSS <- '<style>
 # frame (or a path) when the parts are not there -- totalbr_daio() on the
 # archive, sliced to the year, is the usual thing to hand it.
 # =============================================================================
-totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
+totalbr_panel_render <- function(year = 2026, ref_year = 2025,
+                                 months = "available",
                                  feed = "cgna", d = NULL, ref_d = NULL,
                                  out_dir = TOTALBR_OUT_DIR, file = NULL,
                                  logo_left = getOption("totalbr.logo.decea"),
                                  logo_right = getOption("totalbr.logo.eurocontrol"),
                                  quiet = FALSE) {
+  # "available" means every month this feed has downloaded, so a new month is
+  # picked up by re-running the same call. THE REFERENCE YEAR IS THEN FORCED TO
+  # THE SAME MONTHS, never to its own availability: comparing a seven-month 2026
+  # against a twelve-month 2025 is not a comparison, and it would look like a
+  # collapse in traffic rather than a mismatch of periods.
+  if (identical(months, "available")) {
+    months <- totalbr_panel_months(year, feed)
+    if (length(months) == 0)
+      stop("No month part on disk for ", year, " (", toupper(feed), "). ",
+           "Download one, or pass months = explicitly to read the archive.")
+    if (!quiet)
+      message("Months on disk for ", year, ": ",
+              paste(month.abb[months], collapse = ", "))
+  }
+  months <- sort(unique(as.integer(months)))
+
   if (!is.null(logo_left) || !is.null(logo_right))
     if (!requireNamespace("base64enc", quietly = TRUE))
       stop("Embedding a logo needs the 'base64enc' package, or pass no logo and ",
@@ -785,7 +822,7 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
 '
 
 # ---- run as a script ---------------------------------------------------------
-# Rscript TOTALBR/render_totalbr_panel.R                # 2026 vs 2025, jan-jun
+# Rscript TOTALBR/render_totalbr_panel.R                # every month downloaded
 # Rscript TOTALBR/render_totalbr_panel.R 2026 2025      # the same, said out loud
 # Rscript TOTALBR/render_totalbr_panel.R 2026 2025 7    # JULY ALONE, vs July 2025
 # Rscript TOTALBR/render_totalbr_panel.R 2026 2025 1-6  # a range
@@ -794,6 +831,10 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
 # A bare number is THAT MONTH, not "the first N months". The earlier reading
 # made a monthly panel impossible to ask for from here, and "7" meaning
 # January-to-July is not what anyone types it for.
+#
+# With no month argument the period is every month the feed has on disk, so
+# downloading a month and re-running this picks it up. The reference year is
+# held to the same months either way.
 #
 # sys.nframe() is 0 only when this file is the script being run, so sourcing it
 # from an R session does nothing here.
@@ -817,7 +858,7 @@ if (sys.nframe() == 0L) {
   yr <- if (length(a) >= 1) as.integer(a[1]) else 2026
   rf <- if (length(a) >= 2) (if (tolower(a[2]) %in% c("none", "na", "-")) NULL
                              else as.integer(a[2])) else yr - 1L
-  mo <- if (length(a) >= 3) .tb_months(a[3]) else 1:6
+  mo <- if (length(a) >= 3) .tb_months(a[3]) else "available"
   f  <- totalbr_panel_render(yr, rf, months = mo)
   message("Open it with:  open ", f)
 }
