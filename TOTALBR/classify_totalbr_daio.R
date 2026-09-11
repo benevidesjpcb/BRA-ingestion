@@ -37,9 +37,9 @@
 #      Brazilian ICAO prefix (SB, SD, SI, SJ, SN, SS, SW), so the aerodrome is
 #      in Brazil even though no file lists it. Deliberately narrow -- see
 #      TOTALBR_BR_PREFIX below.                           _SRC = "prefix"
-#   4. a Brazilian offshore platform (9P..): not an aerodrome, not in any
+#   4. a Brazilian offshore platform (9P.., S9..): not an aerodrome, not in any
 #      database, but its location is not in doubt.        _SRC = "platform"
-#   5. codes that are not aerodromes at all (ZZZZ, XXXX, AFIL, other numeric),
+#   5. codes that are not aerodromes at all (ZZZZ, XXXX, AFIL, AFIS, numeric),
 #      ASSUMED Brazilian. The only step that invents an answer; measure it with
 #      totalbr_daio_assumption_cost().                    _SRC = "assumed"
 #   6. anything still unknown stays NA, and DAIO stays NA with it.
@@ -97,10 +97,15 @@ TOTALBR_BR_PREFIX    <- "^S[BDIJNSW]"
 #   from another angle: a plan opened in the air is a flight that departed
 #   outside controlled airspace, which is a domestic circumstance.
 #
+# AFIS joins them on the same reasoning: it is the Aerodrome Flight Information
+# Service, a service and not a place, so what it marks is a field served by AFIS
+# rather than a field with a code -- again a domestic circumstance in this feed.
+# It is one flight in 2026-01, so nothing currently rests on it.
+#
 # The assumption is still measured rather than trusted -- see
 # totalbr_daio_assumption_cost(), which prices it per class. Turn it off with
 # totalbr_daio(assume_unknown_is_br = FALSE) to see the lookup-only floor.
-TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|XXXX|AFIL|[0-9])"
+TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|XXXX|AFIL|AFIS|[0-9])"
 
 # 9P.. IS NOT AN ASSUMPTION. These are Brazilian OFFSHORE PLATFORMS -- the oil
 # installations off Rio and Espírito Santo that helicopters shuttle to from
@@ -116,7 +121,15 @@ TOTALBR_UNKNOWN_ADEP <- "^(ZZZZ|XXXX|AFIL|[0-9])"
 #   * they are HELICOPTER SHUTTLES, not airline movements. For anything that
 #     compares airports or airline networks, filter them out:
 #       d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]
-TOTALBR_BR_PLATFORM <- "^9P"
+#
+# S9.. is the same thing under another spelling and is counted with them. Its
+# weight is nothing like 9P..'s: 112 distinct 9P codes carry 6,078 movements in
+# 2026-01, while S9 is the single code S9FN on a single flight. Worth knowing
+# before reading anything into it -- SN9F, a Brazilian-prefixed code one
+# character away, carries 416 movements in the same month, so S9FN may well be
+# that code mistyped rather than a platform of its own. It is classified
+# Brazilian either way, which is why this is a note and not a blocker.
+TOTALBR_BR_PLATFORM <- "^(9P|S9)"
 
 # =============================================================================
 # totalbr_country_lookup() -- ICAO -> ISO2 country, from whatever file you have
