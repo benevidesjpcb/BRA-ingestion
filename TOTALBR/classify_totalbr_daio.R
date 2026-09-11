@@ -431,7 +431,26 @@ TOTALBR_DAIO_COLS <- list(
   ADES  = c("co_addes"),
   TYPE  = c("co_modelo"),
   DATE  = c("dt_dia"),
-  SVC   = c("li_tipovoo", "co_tipo_voo")   # ODIN, then CGNA
+  # THE VALIDATED FLIGHT TYPE FIRST, the raw one only where it is all there is.
+  # Three columns carry a flight type and they are not interchangeable, measured
+  # on 2026-01:
+  #
+  #   li_tp_voo_validado  the validated type, ONE VALUE PER LEG: "S,S,S",
+  #                       "G,G", "G,G,G". Chosen here.
+  #   li_tipovoo          the same shape, not validated. The ODIN feed carries
+  #                       only this one, so it stays as the fallback rather than
+  #                       leaving that feed with no SVC at all.
+  #   TP_VOO_VALIDADO     the validated type as a SINGLE code per flight --
+  #                       S 89,089, G 78,665, M 5,366, N 5,161. Not a list.
+  #                       Put it first in this vector instead if one value per
+  #                       flight is what the analysis wants; the "li_" prefix in
+  #                       this dataset means a list column, and reading one as
+  #                       though it were scalar is how "S,S,S" becomes a
+  #                       category of its own.
+  #
+  # "co_tipo_voo" stood here and exists in NEITHER feed; it never matched
+  # anything and its presence suggested a CGNA spelling that is not real.
+  SVC   = c("li_tp_voo_validado", "li_tipovoo")
 )
 
 # SVC is not required: a feed that omits it narrows the result instead of
@@ -440,12 +459,22 @@ TOTALBR_DAIO_COLS <- list(
 TOTALBR_DAIO_REQUIRED <- c("FLTID", "ADEP", "ADES", "TYPE", "DATE")
 
 # canonical name -> the column actually present, or NA
+# THE CANDIDATES ARE A PREFERENCE ORDER, and this has to walk them in THAT
+# order. `which(fh %in% flat(cands))[1]` -- what stood here -- returns the first
+# match in the order the FILE happens to list its columns, so the preference was
+# silently inverted whenever the less-wanted column came first on disk. That is
+# exactly what happened with the flight type: li_tipovoo sits before
+# li_tp_voo_validado in the CGNA part, so naming the validated column first
+# changed nothing at all, and the change looked applied because it ran cleanly.
 .tb_daio_match <- function(have, want = TOTALBR_DAIO_COLS) {
   flat <- function(x) gsub("[^a-z0-9]", "", tolower(x))
   fh   <- flat(have)
   lapply(want, function(cands) {
-    hit <- which(fh %in% flat(cands))
-    if (length(hit) == 0) NA_character_ else have[hit[1]]
+    for (cd in cands) {
+      hit <- which(fh == flat(cd))
+      if (length(hit) > 0) return(have[hit[1]])
+    }
+    NA_character_
   })
 }
 
