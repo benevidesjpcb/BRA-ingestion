@@ -51,3 +51,15 @@ GQNN,MR,Mauritania
 SYEC,GN,CHECK: SY.. is a Guyana prefix; GN is Guinea (Guyana is GY)
 SADF,AG,CHECK: author wrote 'argentina'; AG is Antigua and Barbuda (Argentina is AR)
 FOAR,ZA,CHECK: author wrote 'South africa'; FO.. is a Gabon prefix (South Africa is ZA)
+# Turned up by totalbr_daio_unresolved() on 2026-01 (CGNA feed), one flight
+# each. THE COUNTRY HERE COMES FROM THE ICAO PREFIX ALLOCATION, NOT FROM
+# IDENTIFYING THE AERODROME: SL.. is Bolivia, SM.. Suriname, SP.. Peru and
+# SU.. Uruguay, and those allocations are not in doubt. Which field each code
+# is remains unchecked, so a later reader can correct the name without
+# reopening the country.
+SLJY,BO,prefix SL = Bolivia; aerodrome not identified
+SMOE,SR,prefix SM = Suriname; aerodrome not identified
+SMUB,SR,prefix SM = Suriname; aerodrome not identified
+SPCB,PE,prefix SP = Peru; aerodrome not identified
+SPPT,PE,prefix SP = Peru; aerodrome not identified
+SUTQ,UY,prefix SU = Uruguay; aerodrome not identified
