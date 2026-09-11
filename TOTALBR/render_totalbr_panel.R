@@ -155,6 +155,26 @@ TOTALBR_FLAG_EU <- local({
 })
 
 # ---- the logos ---------------------------------------------------------------
+# FOUND BY CONVENTION, NOT BY ABSOLUTE PATH. This is rendered on more than one
+# machine, and "C:/Users/.../decea.png" is a path that exists on exactly one of
+# them -- committing it would make the panel build differently depending on who
+# ran it. Dropping the files into assets/logos/ instead means every clone has
+# them, and they are small enough to belong in the repository.
+#
+# Any of .svg/.png/.jpg/.jpeg/.gif, named for the organisation. An option still
+# wins where someone needs a file from elsewhere.
+TOTALBR_LOGO_DIR <- function() here::here("assets", "logos")
+
+totalbr_panel_logo <- function(name) {
+  opt <- getOption(paste0("totalbr.logo.", name))
+  if (!is.null(opt)) return(opt)
+  f <- list.files(TOTALBR_LOGO_DIR(),
+                  pattern = sprintf("^%s\\.(svg|png|jpe?g|gif)$", name),
+                  ignore.case = TRUE, full.names = TRUE)
+  if (length(f) == 0) NULL else f[1]
+}
+
+
 # Embedded as data URIs so the page stays one file. NOT hand-drawn: an official
 # emblem approximated in SVG is wrong in a way that misrepresents the
 # organisation, so when no file is given the header renders a marked slot and
@@ -367,14 +387,19 @@ TOTALBR_PANEL_CSS <- '<style>
         box-shadow:0 0 0 1px rgba(20,32,30,.16)}
 
   /* institutional header, three columns: owner / title / partner */
+  /* minmax(0,...) on every track, or the centre column sizes itself to its own
+     text and pushes the two organisations off their edges -- at A4 width the
+     title printed straight through "EUROCONTROL". The title wraps instead. */
   .masthead-bar{background:var(--surface); border:1px solid var(--rule);
     border-radius:9px; box-shadow:var(--shadow); padding:13px clamp(12px,2.4vw,22px);
-    display:grid; grid-template-columns:1fr auto 1fr; gap:14px; align-items:center}
+    display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr);
+    gap:clamp(8px,1.6vw,18px); align-items:center}
   .org{display:flex; align-items:center; gap:10px; min-width:0}
   .org.right{justify-self:end; flex-direction:row-reverse; text-align:right}
   .org .name{font-family:Archivo,sans-serif; font-size:13.5px; font-weight:700;
     letter-spacing:.02em; color:var(--ink); line-height:1.15}
-  .org .tag{font-size:11px; color:var(--ink-3); line-height:1.25}
+  .org .tag{font-size:10.5px; color:var(--ink-3); line-height:1.25;
+    overflow-wrap:break-word}
   .org .stack{display:flex; flex-direction:column; gap:1px; min-width:0}
   .logo{height:34px; width:auto; max-width:112px; object-fit:contain; display:block}
   .logoslot{display:flex; align-items:center; justify-content:center; height:34px;
@@ -383,15 +408,60 @@ TOTALBR_PANEL_CSS <- '<style>
     letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3);
     text-align:center; line-height:1.1}
   .centre{text-align:center; min-width:0}
-  .centre h1{font-size:clamp(15px,2.3vw,20px); font-weight:700; letter-spacing:.01em;
-    color:var(--eu); text-transform:uppercase; line-height:1.15}
+  .centre h1{font-size:clamp(13px,1.85vw,19px); font-weight:700; letter-spacing:.01em;
+    color:var(--eu); text-transform:uppercase; line-height:1.16; text-wrap:balance;
+    overflow-wrap:break-word}
   .centre p{margin:3px 0 0; font-size:11.5px; color:var(--ink-3)}
   @media (max-width:700px){
     .masthead-bar{grid-template-columns:1fr; text-align:center; gap:12px}
     .org, .org.right{justify-self:center; flex-direction:row; text-align:left}
   }
   .periodline{display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
-    padding:0 4px}
+    padding:0 4px; align-items:center}
+
+  /* the print control -- hidden from the printed page itself */
+  .printbtn{font-family:Archivo,sans-serif; font-size:10.5px; font-weight:600;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--ink-2);
+    background:var(--surface); border:1px solid var(--rule); border-radius:5px;
+    padding:5px 11px; cursor:pointer; display:inline-flex; align-items:center; gap:6px}
+  .printbtn:hover{border-color:var(--br); color:var(--br)}
+  .printbtn:focus-visible{outline:2px solid var(--br); outline-offset:2px}
+
+  /* ---- A4 ------------------------------------------------------------------
+     The page is laid out for a screen of any width; on paper it has exactly
+     210mm and the browser will otherwise scale the whole thing down to fit,
+     shrinking the type with it. So print gets its own width and its own
+     palette: the light tokens, always, because a dark-theme screen would
+     otherwise print a black page, and because paper has no dark mode.
+     Cards are kept off page breaks -- a donut split across two sheets is
+     worse than a shorter first page. */
+  @page{size:A4 portrait; margin:11mm 10mm}
+  @media print{
+    :root{
+      --ground:#FFFFFF; --surface:#FFFFFF; --surface-2:#F5F8F7; --inset:#F4F7F6;
+      --ink:#14201E; --ink-2:#41524F; --ink-3:#6D807B;
+      --rule:#C9D2D0; --rule-2:#E1E8E6;
+      --br:#0B5F63; --br-soft:#DCEAE9; --br-2:#3E8F86; --br-3:#7FB8AE;
+      --eu:#1B4E7A; --ref:#98A7A3; --ref-soft:#E0E6E4;
+      --signal:#A8306B; --signal-soft:#F3E0EA; --shadow:none;
+    }
+    body{padding:0; font-size:9.4pt; background:#FFFFFF}
+    .wrap{max-width:none; gap:7mm}
+    .printbtn{display:none}
+    .card, .band, .masthead-bar{
+      box-shadow:none; break-inside:avoid; page-break-inside:avoid}
+    .duo{gap:6mm}
+    table{font-size:8.6pt}
+    .mapbox{min-height:0}
+    .mapbox svg{max-height:62mm}
+    .donut, .donut svg{width:100px; height:100px}
+    .centre h1{font-size:13pt}
+    .masthead-bar{padding:8px 10px; gap:8px}
+    .logo{height:28px} .logoslot{height:28px}
+    /* the browser drops backgrounds by default, and every bar on this page IS
+       a background -- without this the chart prints blank */
+    *{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+  }
 
   .metric{background:var(--inset); border:1px solid var(--rule-2); border-radius:7px;
           padding:12px 14px; display:flex; flex-direction:column; gap:3px}
@@ -498,8 +568,8 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025,
                                  months = "available",
                                  feed = "cgna", d = NULL, ref_d = NULL,
                                  out_dir = TOTALBR_OUT_DIR, file = NULL,
-                                 logo_left = getOption("totalbr.logo.decea"),
-                                 logo_right = getOption("totalbr.logo.eurocontrol"),
+                                 logo_left = totalbr_panel_logo("decea"),
+                                 logo_right = totalbr_panel_logo("eurocontrol"),
                                  quiet = FALSE) {
   # "available" means every month this feed has downloaded, so a new month is
   # picked up by re-running the same call. THE REFERENCE YEAR IS THEN FORCED TO
@@ -719,7 +789,10 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
   </div>
   <div class="periodline">
     <span class="lbl">{{PERIOD}} &middot; compared with {{REFYEAR}}</span>
-    <span class="lbl">Source: CGNA</span>
+    <span style="display:flex; align-items:center; gap:12px">
+      <span class="lbl">Source: CGNA</span>
+      <button type="button" class="printbtn" onclick="window.print()">Save as PDF</button>
+    </span>
   </div>
 
   <div class="duo">
@@ -861,4 +934,48 @@ if (sys.nframe() == 0L) {
   mo <- if (length(a) >= 3) .tb_months(a[3]) else "available"
   f  <- totalbr_panel_render(yr, rf, months = mo)
   message("Open it with:  open ", f)
+}
+
+# =============================================================================
+# totalbr_panel_pdf(...) -- the panel as A4 PDF, without opening a browser
+#
+#   totalbr_panel_pdf(2026, 2025)            # -> outputs/totalbr/painel-*.pdf
+#   totalbr_panel_pdf(2026, 2025, months = 7)
+#
+# Renders the HTML first, then prints it through headless Chrome, which is the
+# same engine that would produce the PDF from the browser's own print dialog --
+# so what this writes and what Ctrl+P writes are the same document, not two
+# approximations of it.
+#
+# THE BROWSER IS NOT A DEPENDENCY OF THE PANEL, only of this function. Chrome is
+# on most machines but not all, and a panel that cannot be built because a PDF
+# tool is missing would be the wrong trade. So this checks, and when it cannot
+# print it says exactly what to do instead -- the HTML is already written by
+# then, and Ctrl+P on it gives the same A4 page.
+# =============================================================================
+totalbr_panel_pdf <- function(..., file = NULL, keep_html = TRUE, quiet = FALSE) {
+  html <- totalbr_panel_render(..., quiet = quiet)
+  if (is.null(file)) file <- sub("\\.html$", ".pdf", html)
+
+  if (!requireNamespace("pagedown", quietly = TRUE)) {
+    message("The HTML is written: ", html,
+            "\nFor a PDF, either install the 'pagedown' package and re-run this,",
+            "\nor open that file and print it (Ctrl+P / Cmd+P) -- it is already",
+            "\nlaid out for A4, and the browser's own Save as PDF is the same engine.")
+    return(invisible(html))
+  }
+  ok <- tryCatch({
+    pagedown::chrome_print(html, output = file,
+                           options = list(printBackground = TRUE,
+                                          preferCSSPageSize = TRUE))
+    TRUE
+  }, error = function(e) {
+    message("Chrome could not print it (", conditionMessage(e), ").",
+            "\nThe HTML is written and prints correctly by hand: ", html)
+    FALSE
+  })
+  if (!ok) return(invisible(html))
+  if (!keep_html) unlink(html)
+  if (!quiet) message("Wrote ", file)
+  invisible(file)
 }
