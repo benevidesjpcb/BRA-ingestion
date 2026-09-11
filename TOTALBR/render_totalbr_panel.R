@@ -61,7 +61,12 @@ source(here::here("TOTALBR", "panel_totalbr.R"))
   if (is.na(old) || is.na(new) || old == 0) return("")
   v   <- 100 * (new - old) / old
   cls <- if (abs(v) < small) "flat" else if (v > 0) "up" else "down"
-  sig <- if (v > 0) "+" else "−"                       # a real minus sign
+  # &minus; AS AN ENTITY, NOT THE CHARACTER. The page is written as a standalone
+  # file with no charset declared by a server, so a browser has to guess -- and
+  # on Windows it guesses Windows-1252, turning the real minus sign U+2212 into
+  # "a^'". Entities are ASCII and survive every guess. Same reason for &ndash;
+  # in the period label below.
+  sig <- if (v > 0) "+" else "&minus;"
   sprintf('<span class="delta %s">%s%s</span>', cls, sig,
           .tb_pct(abs(v)))
 }
@@ -688,7 +693,7 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025,
     cols, dpt, .tb_n(dn), .tb_pct(dp)), collapse = "\n")
 
   per <- if (length(months) == 1) sprintf("%s %d", toupper(month.abb[months]), year)
-         else sprintf("%s–%s %d", toupper(month.abb[min(months)]),
+         else sprintf("%s&ndash;%s %d", toupper(month.abb[min(months)]),
                       toupper(month.abb[max(months)]), year)
 
   # TOKENS, NOT sprintf. The template is full of literal per-cent signs -- every
@@ -763,7 +768,7 @@ TOTALBR_COUNTRY_EN <- c(
   PT="Portugal", ES="Spain", FR="France", IT="Italy", DE="Germany",
   GB="United Kingdom", NL="Netherlands", CH="Switzerland", PA="Panama",
   MX="Mexico", DO="Dominican Rep.", CV="Cape Verde", ZA="South Africa",
-  AO="Angola", TR="Türkiye", QA="Qatar", AE="United Arab Emirates",
+  AO="Angola", TR="T&uuml;rkiye", QA="Qatar", AE="United Arab Emirates",
   BE="Belgium", IE="Ireland", AT="Austria", GR="Greece", MA="Morocco",
   NG="Nigeria", ET="Ethiopia", SN="Senegal", CU="Cuba", BS="Bahamas")
 totalbr_country_name <- function(iso) {
@@ -791,7 +796,8 @@ totalbr_aerodrome_name <- function(icao) {
 # Markers, not code: every figure arrives from totalbr_panel(). Editing the
 # wording here is safe; the numbers cannot be edited here at all, which is the
 # point.
-TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
+TOTALBR_PANEL_TEMPLATE <- '<meta charset="utf-8">
+<title>{{TITLE}}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 {{CSS}}
 <div class="wrap">
