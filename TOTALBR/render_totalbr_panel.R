@@ -23,6 +23,23 @@
 
 source(here::here("TOTALBR", "panel_totalbr.R"))
 
+# ---- the period, applied once --------------------------------------------
+# EVERY BLOCK MUST SEE THE SAME ROWS. totalbr_panel() trims to the period
+# internally, but the country and route blocks were built straight from the
+# frame handed in, and since totalbr_panel_year() pads the archive slice by a
+# month on each side, that frame is WIDER than the period. The totals came from
+# the trimmed panel and the per-country figures from the padded one, so every
+# country compared one month of 2026 against three or four of 2025 and the page
+# reported a 66% collapse in traffic that never happened.
+#
+# Nothing downstream should have to remember this, so the trim happens once,
+# here, and the trimmed frames are what every block is given.
+.tb_trim <- function(d, year, months) {
+  if (is.null(d) || nrow(d) == 0) return(d)
+  keep <- format(d$DATE, "%Y-%m") %in% sprintf("%d-%02d", year, months)
+  d[keep, , drop = FALSE]
+}
+
 # ---- formatting, Brazilian ---------------------------------------------------
 # 1059722 -> "1,059,722" and 88.2 -> "88.2%". THE PAGE IS ENGLISH, so the marks
 # are the English ones -- comma for thousands, point for the decimal. They are
@@ -592,12 +609,17 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025,
       stop("Embedding a logo needs the 'base64enc' package, or pass no logo and ",
            "the header renders a marked slot instead.")
   if (is.null(d)) d <- totalbr_panel_load(year, months, feed, quiet = TRUE)
+  d <- .tb_trim(d, year, months)
   p <- totalbr_panel(year, months, feed, d = d, quiet = quiet)
 
   ref <- NULL
   if (!is.null(ref_year)) {
     if (is.null(ref_d))
       ref_d <- totalbr_panel_year(ref_year, months, feed, quiet = quiet)
+    ref_d <- .tb_trim(ref_d, ref_year, months)
+    if (nrow(ref_d) == 0)
+      stop("The reference year ", ref_year, " has no rows in month(s) ",
+           paste(month.abb[months], collapse = ", "), ".")
     ref <- totalbr_panel(ref_year, months, feed, d = ref_d, quiet = TRUE)
   }
 
@@ -747,16 +769,21 @@ totalbr_country_name <- function(iso) {
   out <- unname(TOTALBR_COUNTRY_EN[iso]); ifelse(is.na(out), iso, out)
 }
 
-TOTALBR_AERODROME_PT <- c(
-  SBGR="Guarulhos", SBSP="Congonhas", SBGL="Galeão", SBKP="Viracopos",
-  SBBR="Brasília", SBCF="Confins", SBSV="Salvador", SBRF="Recife",
-  SBFZ="Fortaleza", SBPA="Porto Alegre", SBCT="Curitiba", SBFL="Florianópolis",
-  LEMD="Madri", LPPT="Lisboa", LFPG="Paris CDG", LIRF="Roma Fiumicino",
-  EGLL="Londres Heathrow", EDDF="Frankfurt", EHAM="Amsterdã", LSZH="Zurique",
-  LIMC="Milão", SABE="Aeroparque", SAEZ="Ezeiza", SCEL="Santiago",
-  SKBO="Bogotá", SPJC="Lima", KMIA="Miami", MPTO="Tocumen", SUMU="Montevidéu")
+# The place beside each code, in the page's language. Brazilian aerodromes keep
+# their own names -- Guarulhos and Congonhas are what they are called in any
+# language -- while the foreign ones take their English forms, because "Madri"
+# and "Londres Heathrow" on an otherwise English page read as an oversight,
+# which is what they were.
+TOTALBR_AERODROME_EN <- c(
+  SBGR="Guarulhos", SBSP="Congonhas", SBGL="Galeao", SBKP="Viracopos",
+  SBBR="Brasilia", SBCF="Confins", SBSV="Salvador", SBRF="Recife",
+  SBFZ="Fortaleza", SBPA="Porto Alegre", SBCT="Curitiba", SBFL="Florianopolis",
+  LEMD="Madrid", LPPT="Lisbon", LFPG="Paris CDG", LIRF="Rome Fiumicino",
+  EGLL="London Heathrow", EDDF="Frankfurt", EHAM="Amsterdam", LSZH="Zurich",
+  LIMC="Milan", SABE="Aeroparque", SAEZ="Ezeiza", SCEL="Santiago",
+  SKBO="Bogota", SPJC="Lima", KMIA="Miami", MPTO="Tocumen", SUMU="Montevideo")
 totalbr_aerodrome_name <- function(icao) {
-  out <- unname(TOTALBR_AERODROME_PT[icao]); ifelse(is.na(out), "", out)
+  out <- unname(TOTALBR_AERODROME_EN[icao]); ifelse(is.na(out), "", out)
 }
 
 # ---- the page ----------------------------------------------------------------
@@ -851,7 +878,7 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
     </div>
     <div class="tscroll">
       <table>
-        <thead><tr><th>Brasil</th><th>Europa</th><th class="r-al">{{YEAR}}</th><th class="r-al">{{REFYEAR}}</th><th class="r-al">Change</th></tr></thead>
+        <thead><tr><th>Brazil</th><th>Europe</th><th class="r-al">{{YEAR}}</th><th class="r-al">{{REFYEAR}}</th><th class="r-al">Change</th></tr></thead>
         <tbody>
 {{ROUTES}}
         </tbody>
