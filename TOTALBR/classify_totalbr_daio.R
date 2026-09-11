@@ -635,7 +635,12 @@ totalbr_daio <- function(src   = totalbr_daio_source(),
 totalbr_daio_source <- function() {
   env <- Sys.getenv("BRA_TOTALBR_PARQUET", unset = "")
   if (nzchar(env)) return(env)
-  for (d in c(here::here("data-src"), here::here("data-raw", "totalbr"))) {
+  # data-raw/ ITSELF IS IN THE LIST, not only data-raw/totalbr/. The archive is
+  # kept in both places across machines, and a search that knows one of them
+  # reports "no archive" while the file is sitting one directory up -- which is
+  # indistinguishable, from the error message, from not having it at all.
+  for (d in c(here::here("data-src"), here::here("data-raw", "totalbr"),
+              here::here("data-raw"))) {
     f <- list.files(d, pattern = "\\.parquet$", full.names = TRUE)
     if (length(f) > 0) return(sort(f, decreasing = TRUE)[1])
   }
