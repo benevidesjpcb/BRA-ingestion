@@ -19,7 +19,9 @@
 #   totalbr_daio_unresolved(d)                # the codes still unclassified
 #   totalbr_daio_assumption_cost(d)           # what step 4 is worth, per class
 #   totalbr_lookup_coverage(d = d)            # which database covers YOUR data
-#   totalbr_daio_write(d)                     # -> outputs/totalbr/
+#   totalbr_daio_write(d)                     # -> outputs/totalbr/ (CSV)
+#   totalbr_daio_write(d, format = "parquet") # ... parquet for archive-sized runs
+#   totalbr_daio_read(path)                   # read one back, with its types
 #
 # HOW A COUNTRY IS DECIDED, in order. Each step is separately visible in the
 # result, because a classification nobody can audit is a number nobody should
@@ -771,9 +773,20 @@ totalbr_daio_unresolved <- function(d, n = 40) {
 #
 # Written to outputs/totalbr/, one folder per dataset rather than one flat pile.
 #
-# Parquet by default: 180,000 rows a month and 11.6 million for the archive is
-# not a CSV anyone wants to re-read, and the timestamps survive as timestamps.
-# Pass format = "csv" when something downstream needs text.
+# CSV by default, because the file is meant to be opened and checked while this
+# classification is still being worked on -- a month is ~180,000 rows, which any
+# tool on the machine will read, and being able to look at it matters more right
+# now than the size or the round-trip.
+#
+# Pass format = "parquet" for the archive-sized runs, where that trade flips:
+# 11.6 million rows is not a CSV anyone wants to re-read, and parquet keeps the
+# timestamps as timestamps instead of re-parsing text.
+#
+# WHAT THE CSV COSTS, said out loud rather than discovered later: DATE and the
+# stamps go out as text. Reading the file back gives character columns unless
+# the reader is told otherwise, so a DATE compared against a real date silently
+# fails to match. totalbr_daio_read() below does that conversion; anything else
+# reading these files has to do the same.
 # =============================================================================
 # Its own folder under outputs/, because DAIO is not the only thing this dataset
 # will produce and a flat outputs/ stops being readable at about the fifth
@@ -781,7 +794,7 @@ totalbr_daio_unresolved <- function(d, n = 40) {
 TOTALBR_OUT_DIR <- here::here("outputs", "totalbr")
 
 totalbr_daio_write <- function(d, out_dir = TOTALBR_OUT_DIR,
-                               format = c("parquet", "csv"), file = NULL) {
+                               format = c("csv", "parquet"), file = NULL) {
   format <- match.arg(format)
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
   # The feed is in the NAME, not only in the column: a CGNA classification and
@@ -795,6 +808,59 @@ totalbr_daio_write <- function(d, out_dir = TOTALBR_OUT_DIR,
   else data.table::fwrite(d, path, sep = ";", na = "", quote = TRUE)
   message(sprintf("Wrote %s row(s) -> %s", format(nrow(d), big.mark = ","), path))
   invisible(path)
+}
+
+# =============================================================================
+# totalbr_daio_read(path) -- read a written result back with its types
+#
+# The counterpart to writing CSV by default. fwrite puts DATE and the stamps out
+# as text, and a reader that does not convert them back gets character columns
+# that compare unequal to any real date -- the failure is silent, which is why
+# this exists instead of a note telling everyone to remember.
+#
+# A .parquet is handed to arrow, which carried its types all along.
+# =============================================================================
+totalbr_daio_read <- function(path) {
+  if (!file.exists(path)) stop("Not found: ", path)
+  if (grepl("\\.parquet$", path, ignore.case = TRUE))
+    return(tibble::as_tibble(arrow::read_parquet(path)))
+  d <- data.table::fread(file = path, sep = ";", na.strings = "",
+                         showProgress = FALSE)
+  # DATE IS A TIMESTAMP, NOT A DATE, AND THE ISO FORM MUST BE PARSED AS ONE.
+  # The classification carries DATE as POSIXct and 92% of a month's rows hold a
+  # real time of day, not midnight. Two ways to lose it, both silent, both hit
+  # while writing this:
+  #
+  #   as.Date()   rounds the time away, and the column no longer compares equal
+  #               to the one that was written.
+  #   as.POSIXct() with no format does NOT understand fwrite's ISO output
+  #               ("2026-01-15T13:45:00Z"). It parses the date, discards the
+  #               rest, and returns midnight -- no warning, no NA, just 164,629
+  #               timestamps quietly flattened.
+  #
+  # So the separator and the zone marker are handled explicitly, and anything
+  # that still fails to parse becomes NA rather than a wrong time.
+  #
+  # AND THE COLUMN MAY ALREADY BE A TIMESTAMP. fread recognises the ISO form on
+  # its own and hands back POSIXct, in which case there is nothing to parse --
+  # only a zone to assert. Forcing it through as.character() first is a third
+  # way to lose the time, and the nastiest: as.character() of a POSIXct at
+  # midnight drops the "00:00:00" entirely, so a strict format then rejects
+  # exactly the midnight rows and turns 13,652 of them into NA.
+  iso <- function(x) {
+    if (inherits(x, "POSIXct")) return(as.POSIXct(as.numeric(x),
+                                                  origin = "1970-01-01", tz = "UTC"))
+    if (inherits(x, c("Date", "IDate")))
+      return(as.POSIXct(as.character(x), format = "%Y-%m-%d", tz = "UTC"))
+    x <- sub("T", " ", as.character(x), fixed = TRUE)
+    x <- sub("Z$", "", x)
+    # midnight may be written with no time part at all
+    x <- ifelse(!is.na(x) & nchar(x) == 10, paste(x, "00:00:00"), x)
+    as.POSIXct(x, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  }
+  for (cl in intersect(c("DATE", "dh_inicio", "dh_fim", "dh_eobt"), names(d)))
+    data.table::set(d, j = cl, value = iso(d[[cl]]))
+  tibble::as_tibble(d)
 }
 
 # The feed as a file-name prefix: "cgna-", "odin-", or nothing when the rows
