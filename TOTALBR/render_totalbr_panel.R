@@ -245,8 +245,23 @@ totalbr_panel_year <- function(year, months = 1:6, feed = "cgna",
     stop("The archive has no year/month columns to slice on: ", archive)
   want <- intersect(c("co_indicativo", "co_addep", "co_addes", "co_modelo",
                       "dt_dia", "li_tipovoo", "co_tipo_voo"), nm)
+  # THE SLICE IS PADDED BY A MONTH ON EACH SIDE, AND THE TRIM DOES THE REST.
+  # The archive's own year/month columns do not agree with dt_dia at the
+  # boundaries, so a row whose dt_dia falls in June can be filed under month 5.
+  # Slicing exactly the wanted months fetches a set the later DATE trim can only
+  # ever shrink -- it cannot recover a row that was never read. Measured: June
+  # 2025 alone came to 173,839 sliced exactly, against 174,029 when it arrived
+  # inside a January-June slice. 190 flights, lost silently, and only visible
+  # because the two ways of asking disagreed.
+  #
+  # Padding costs one extra month of rows at each end and makes the answer
+  # independent of how the archive filed its boundaries.
+  span  <- seq(min(months) - 1L, max(months) + 1L)
+  yrs   <- year + ifelse(span < 1, -1L, ifelse(span > 12, 1L, 0L))
+  mons  <- ((span - 1L) %% 12L) + 1L
+  keyed <- paste(yrs, mons)
   raw <- dplyr::collect(dplyr::select(
-           dplyr::filter(ds, year == !!year, month %in% !!months),
+           dplyr::filter(ds, paste(year, month) %in% !!keyed),
            dplyr::all_of(want)))
   if (nrow(raw) == 0)
     stop("The archive holds no rows for ", year, " month(s) ",
@@ -542,8 +557,9 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
     '<div class="dk"><i class="sw" style="background:%s"></i><span>%s</span><span class="n">%s</span><span class="v">%s</span></div>',
     cols, dpt, .tb_n(dn), .tb_pct(dp)), collapse = "\n")
 
-  per <- sprintf("%s–%s %d", toupper(month.abb[min(months)]),
-                 toupper(month.abb[max(months)]), year)
+  per <- if (length(months) == 1) sprintf("%s %d", toupper(month.abb[months]), year)
+         else sprintf("%s–%s %d", toupper(month.abb[min(months)]),
+                      toupper(month.abb[max(months)]), year)
 
   # TOKENS, NOT sprintf. The template is full of literal per-cent signs -- every
   # CSS width, every figure in the prose -- and sprintf would read each one as a
@@ -584,9 +600,14 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
   if (length(left) > 0)
     warning("Template token(s) never filled: ", paste(unique(left), collapse = ", "))
 
-  if (is.null(file))
-    file <- file.path(out_dir, sprintf("painel-%s-%d-%02d-%02d.html",
-                                       feed, year, min(months), max(months)))
+  # A SINGLE MONTH IS NAMED BY THAT MONTH. "painel-cgna-2026-07-07" reads as a
+  # range whose ends happen to coincide, and a folder of monthly panels named
+  # that way is harder to scan than one named for the months themselves.
+  if (is.null(file)) {
+    span <- if (length(months) == 1) sprintf("%d-%02d", year, months)
+            else sprintf("%d-%02d-%02d", year, min(months), max(months))
+    file <- file.path(out_dir, sprintf("painel-%s-%s.html", feed, span))
+  }
   if (!dir.exists(dirname(file))) dir.create(dirname(file), recursive = TRUE)
   writeLines(html, file, useBytes = TRUE)
   if (!quiet) message("Wrote ", file)
@@ -764,19 +785,39 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
 '
 
 # ---- run as a script ---------------------------------------------------------
-# Rscript TOTALBR/render_totalbr_panel.R              # 2026 vs 2025, jan-jun
-# Rscript TOTALBR/render_totalbr_panel.R 2026 2025    # the same, said out loud
-# Rscript TOTALBR/render_totalbr_panel.R 2026 2025 3  # jan-mar
-# Rscript TOTALBR/render_totalbr_panel.R 2026 none    # one year, no comparison
+# Rscript TOTALBR/render_totalbr_panel.R                # 2026 vs 2025, jan-jun
+# Rscript TOTALBR/render_totalbr_panel.R 2026 2025      # the same, said out loud
+# Rscript TOTALBR/render_totalbr_panel.R 2026 2025 7    # JULY ALONE, vs July 2025
+# Rscript TOTALBR/render_totalbr_panel.R 2026 2025 1-6  # a range
+# Rscript TOTALBR/render_totalbr_panel.R 2026 none 7    # one month, no comparison
+#
+# A bare number is THAT MONTH, not "the first N months". The earlier reading
+# made a monthly panel impossible to ask for from here, and "7" meaning
+# January-to-July is not what anyone types it for.
 #
 # sys.nframe() is 0 only when this file is the script being run, so sourcing it
 # from an R session does nothing here.
+# "7" -> 7; "1-6" -> 1:6. Anything else stops rather than guessing, because a
+# misread month argument produces a panel that is wrong about its own period and
+# says so nowhere.
+.tb_months <- function(x) {
+  if (grepl("^[0-9]{1,2}$", x)) {
+    m <- as.integer(x)
+  } else if (grepl("^[0-9]{1,2}-[0-9]{1,2}$", x)) {
+    p <- as.integer(strsplit(x, "-", fixed = TRUE)[[1]]); m <- p[1]:p[2]
+  } else {
+    stop("Month argument must be a month (7) or a range (1-6), not '", x, "'.")
+  }
+  if (any(m < 1 | m > 12)) stop("Month out of range in '", x, "'.")
+  m
+}
+
 if (sys.nframe() == 0L) {
   a  <- commandArgs(trailingOnly = TRUE)
   yr <- if (length(a) >= 1) as.integer(a[1]) else 2026
   rf <- if (length(a) >= 2) (if (tolower(a[2]) %in% c("none", "na", "-")) NULL
                              else as.integer(a[2])) else yr - 1L
-  mo <- if (length(a) >= 3) seq_len(as.integer(a[3])) else 1:6
+  mo <- if (length(a) >= 3) .tb_months(a[3]) else 1:6
   f  <- totalbr_panel_render(yr, rf, months = mo)
   message("Open it with:  open ", f)
 }

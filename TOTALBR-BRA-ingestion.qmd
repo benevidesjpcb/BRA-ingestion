@@ -1579,6 +1579,14 @@ true of the rows whatever the caller passed in. Two periods compared on differen
 of their own boundaries are not comparable, and the difference is small enough to pass for
 signal.
 
+**Trimming alone is not enough, though, and that took a monthly panel to notice.** A trim can
+only shrink what was fetched — it cannot recover a row the coarse slice never read — so
+`totalbr_panel_year()` slices the archive **one month wider on each side** and lets the trim
+do the rest. Asked for June 2025 alone, the exact slice returned 173,839 flights against the
+174,029 the same month has inside a January–June slice: 190 flights, lost silently, visible
+only because two ways of asking the same question disagreed. The semester itself was short by
+52 for the same reason.
+
 ### The map is a measurement, not a drawing
 
 The country on the panel is drawn from the **aerodromes themselves** — their own coordinates,
@@ -1592,11 +1600,11 @@ those rows arrive. A silhouette would carry none of that.
 
 | | 2026 | 2025 | |
 | --- | ---: | ---: | ---: |
-| Flights | 1,059,722 | 1,021,430 | **+3.7%** |
-| Internal (`I`) | 934,577 | 904,571 | +3.3% |
-| Departures (`D`) | 46,146 | 43,111 | +7.0% |
-| Arrivals (`A`) | 46,516 | 43,600 | +6.7% |
-| Overflights (`O`) | 32,372 | 30,019 | +7.8% |
+| Flights | 1,059,722 | 1,021,482 | **+3.7%** |
+| Internal (`I`) | 934,577 | 904,606 | +3.3% |
+| Departures (`D`) | 46,146 | 43,120 | +7.0% |
+| Arrivals (`A`) | 46,516 | 43,602 | +6.7% |
+| Overflights (`O`) | 32,372 | 30,025 | +7.8% |
 
 **The international classes grow at about twice the domestic rate**, and the composition
 still barely moves — internal falls only from 88.6% to 88.2% — because it is too large for
