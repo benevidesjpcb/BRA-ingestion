@@ -24,17 +24,18 @@
 source(here::here("TOTALBR", "panel_totalbr.R"))
 
 # ---- formatting, Brazilian ---------------------------------------------------
-# 1059722 -> "1.059.722" and 88.2 -> "88,2%". Done here rather than with
-# format(big.mark=".") at each call site so every figure on the page is spelled
-# the same way; a panel that mixes 1,059,722 and 1.059.722 looks like two
-# documents stapled together.
+# 1059722 -> "1,059,722" and 88.2 -> "88.2%". THE PAGE IS ENGLISH, so the marks
+# are the English ones -- comma for thousands, point for the decimal. They are
+# set here rather than at each call site so every figure on the page is spelled
+# the same way; a panel that mixes 1,059,722 and 1.059.722 reads as two
+# documents stapled together. Switching the page to Portuguese is these two
+# functions and nothing else.
 # decimal.mark is declared even though format="d" never emits a decimal: without
 # it formatC warns that the thousands and decimal marks are both "." on every
 # single call, and forty of those per page buries a warning that would matter.
-.tb_n <- function(x) formatC(as.numeric(x), format = "d", big.mark = ".",
-                             decimal.mark = ",")
-.tb_pct <- function(x, dp = 1) paste0(sub("\\.", ",", formatC(as.numeric(x),
-                                     format = "f", digits = dp)), "%")
+.tb_n <- function(x) formatC(as.numeric(x), format = "d", big.mark = ",")
+.tb_pct <- function(x, dp = 1) paste0(formatC(as.numeric(x), format = "f",
+                                              digits = dp), "%")
 
 # A signed change as its own chip. The CLASS carries the sign, not just the
 # colour: "flat" for anything under 2% either way, so a rounding wobble does not
@@ -121,6 +122,60 @@ totalbr_panel_dots <- function(d, bounds = c(lon0 = -74.5, lon1 = -33.5,
     character(1)), collapse = "\n")
 }
 
+# ---- the flags ---------------------------------------------------------------
+# THE FIRST VERSION OF THIS PANEL DREW NEITHER FLAG. It used a three-stripe bar
+# -- green/yellow/blue for Brazil, blue/yellow/blue for Europe -- which is not
+# what either flag looks like: Brazil is a yellow rhombus on green with a blue
+# globe, and the European flag is a ring of twelve gold stars on blue. A flag is
+# an identity, not a colour scheme, and getting it wrong is the kind of error a
+# reader notices before they read a single number.
+#
+# Both are drawn to their official proportions (Brazil 20:14, Europe 3:2) and
+# simplified only where the detail would be invisible at 20 pixels wide: the
+# globe carries no constellation and no banner. That is a legible reduction of
+# the real flag, not an invention.
+TOTALBR_FLAG_BR <- paste0(
+  '<svg class="flag" viewBox="0 0 20 14" role="img" aria-label="Brazil">',
+  '<rect width="20" height="14" fill="#009B3A"/>',
+  '<path d="M10 1.6 18.4 7 10 12.4 1.6 7Z" fill="#FEDF00"/>',
+  '<circle cx="10" cy="7" r="3.1" fill="#002776"/>',
+  '</svg>')
+
+# Twelve stars, evenly spaced on a circle -- the number is fixed and has nothing
+# to do with the number of member states, so it does not change.
+TOTALBR_FLAG_EU <- local({
+  pts <- vapply(0:11, function(i) {
+    a <- pi / 2 + i * pi / 6              # first star at twelve o'clock
+    sprintf('<circle cx="%.2f" cy="%.2f" r="0.62" fill="#FFCC00"/>',
+            10.5 + 4.1 * cos(a), 7 - 4.1 * sin(a))
+  }, character(1))
+  paste0('<svg class="flag" viewBox="0 0 21 14" role="img" aria-label="Europe">',
+         '<rect width="21" height="14" fill="#003399"/>',
+         paste(pts, collapse = ""), '</svg>')
+})
+
+# ---- the logos ---------------------------------------------------------------
+# Embedded as data URIs so the page stays one file. NOT hand-drawn: an official
+# emblem approximated in SVG is wrong in a way that misrepresents the
+# organisation, so when no file is given the header renders a marked slot and
+# the page says plainly that the logo is missing rather than showing something
+# almost right.
+.tb_logo <- function(path, alt) {
+  if (is.null(path) || !nzchar(path) || !file.exists(path))
+    return(sprintf('<span class="logoslot" title="%s">%s</span>',
+                   .tb_esc(alt), .tb_esc(alt)))
+  ext  <- tolower(tools::file_ext(path))
+  mime <- switch(ext, svg = "image/svg+xml", png = "image/png",
+                 jpg = , jpeg = "image/jpeg", gif = "image/gif", NULL)
+  if (is.null(mime)) {
+    warning("Unsupported logo format '", ext, "' for ", path, "; slot left empty.")
+    return(sprintf('<span class="logoslot">%s</span>', .tb_esc(alt)))
+  }
+  b64 <- base64enc::base64encode(path)
+  sprintf('<img class="logo" src="data:%s;base64,%s" alt="%s">', mime, b64,
+          .tb_esc(alt))
+}
+
 .tb_placeholder <- function(title, sub, tall = FALSE) sprintf(
   '<div class="empty"%s><span class="mark">EU</span><b>%s</b><span>%s</span></div>',
   if (tall) "" else ' style="min-height:126px"', .tb_esc(title), .tb_esc(sub))
@@ -138,7 +193,7 @@ totalbr_panel_dots <- function(d, bounds = c(lon0 = -74.5, lon1 = -33.5,
       colors[i], len, circ - len, -off))
     off <- off + len
   }
-  sprintf('<svg viewBox="0 0 126 126" role="img" aria-label="Distribuicao DAIO"><g transform="rotate(-90 63 63)" fill="none" stroke-width="17">%s</g></svg>',
+  sprintf('<svg viewBox="0 0 126 126" role="img" aria-label="DAIO distribution"><g transform="rotate(-90 63 63)" fill="none" stroke-width="17">%s</g></svg>',
           paste(seg, collapse = ""))
 }
 
@@ -165,14 +220,19 @@ totalbr_panel_year <- function(year, months = 1:6, feed = "cgna",
     return(totalbr_panel_load(year, months, feed, quiet = TRUE))
   }
 
-  if (is.null(archive)) {
-    cand <- list.files(here::here("data-raw", "totalbr"), pattern = "\\.parquet$",
-                       full.names = TRUE)
-    if (length(cand) == 0)
-      stop("No month part for ", year, " and no .parquet archive in data-raw/totalbr/.",
-           "\nMissing: ", paste(basename(parts[!file.exists(parts)]), collapse = ", "))
-    archive <- cand[1]
-  }
+  # totalbr_daio_source() is the project's own answer to "where is the archive":
+  # the BRA_TOTALBR_PARQUET env var, then data-src/, then data-raw/totalbr/, then
+  # data-raw/. Searching for it here separately is how this reported "no archive"
+  # on a machine that had one, in a directory the narrower search did not know.
+  if (is.null(archive)) archive <- totalbr_daio_source()
+  if (!file.exists(archive))
+    stop("No month part for ", year, ", and no .parquet archive found.",
+         "\n  missing part(s): ",
+         paste(basename(parts[!file.exists(parts)]), collapse = ", "),
+         "\n  looked in: ", paste(c(here::here("data-src"),
+                                    here::here("data-raw", "totalbr"),
+                                    here::here("data-raw")), collapse = ", "),
+         "\nPoint BRA_TOTALBR_PARQUET at the file, or pass archive = \"<path>\".")
   if (!quiet) message("  ", year, ": ", basename(archive))
 
   for (pkg in c("arrow", "dplyr"))
@@ -269,8 +329,35 @@ TOTALBR_PANEL_CSS <- '<style>
          background:var(--inset); border:1px solid var(--rule-2); border-radius:6px;
          padding:5px 10px; font-family:Archivo,sans-serif; font-size:11.5px;
          font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink)}
-  .flagbar{width:20px; height:13px; border-radius:2px; overflow:hidden; display:flex; flex-shrink:0}
-  .flagbar i{flex:1}
+  .flag{width:19px; height:13px; border-radius:2px; flex-shrink:0; display:block;
+        box-shadow:0 0 0 1px rgba(20,32,30,.16)}
+
+  /* institutional header, three columns: owner / title / partner */
+  .masthead-bar{background:var(--surface); border:1px solid var(--rule);
+    border-radius:9px; box-shadow:var(--shadow); padding:13px clamp(12px,2.4vw,22px);
+    display:grid; grid-template-columns:1fr auto 1fr; gap:14px; align-items:center}
+  .org{display:flex; align-items:center; gap:10px; min-width:0}
+  .org.right{justify-self:end; flex-direction:row-reverse; text-align:right}
+  .org .name{font-family:Archivo,sans-serif; font-size:13.5px; font-weight:700;
+    letter-spacing:.02em; color:var(--ink); line-height:1.15}
+  .org .tag{font-size:11px; color:var(--ink-3); line-height:1.25}
+  .org .stack{display:flex; flex-direction:column; gap:1px; min-width:0}
+  .logo{height:34px; width:auto; max-width:112px; object-fit:contain; display:block}
+  .logoslot{display:flex; align-items:center; justify-content:center; height:34px;
+    min-width:52px; padding:0 8px; border:1.5px dashed var(--rule); border-radius:5px;
+    font-family:Archivo,sans-serif; font-size:8.5px; font-weight:700;
+    letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3);
+    text-align:center; line-height:1.1}
+  .centre{text-align:center; min-width:0}
+  .centre h1{font-size:clamp(15px,2.3vw,20px); font-weight:700; letter-spacing:.01em;
+    color:var(--eu); text-transform:uppercase; line-height:1.15}
+  .centre p{margin:3px 0 0; font-size:11.5px; color:var(--ink-3)}
+  @media (max-width:700px){
+    .masthead-bar{grid-template-columns:1fr; text-align:center; gap:12px}
+    .org, .org.right{justify-self:center; flex-direction:row; text-align:left}
+  }
+  .periodline{display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
+    padding:0 4px}
 
   .metric{background:var(--inset); border:1px solid var(--rule-2); border-radius:7px;
           padding:12px 14px; display:flex; flex-direction:column; gap:3px}
@@ -375,7 +462,13 @@ TOTALBR_PANEL_CSS <- '<style>
 totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
                                  feed = "cgna", d = NULL, ref_d = NULL,
                                  out_dir = TOTALBR_OUT_DIR, file = NULL,
+                                 logo_left = getOption("totalbr.logo.decea"),
+                                 logo_right = getOption("totalbr.logo.eurocontrol"),
                                  quiet = FALSE) {
+  if (!is.null(logo_left) || !is.null(logo_right))
+    if (!requireNamespace("base64enc", quietly = TRUE))
+      stop("Embedding a logo needs the 'base64enc' package, or pass no logo and ",
+           "the header renders a marked slot instead.")
   if (is.null(d)) d <- totalbr_panel_load(year, months, feed, quiet = TRUE)
   p <- totalbr_panel(year, months, feed, d = d, quiet = quiet)
 
@@ -441,7 +534,7 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
 
   # the four DAIO classes, in the panel's order
   dl  <- c("Regional", "Departures", "Arrivals", "Overflights")
-  dpt <- c("Doméstico", "Partidas", "Chegadas", "Sobrevoos")
+  dpt <- c("Regional", "Departures", "Arrivals", "Overflights")
   cols <- c("var(--br)", "var(--br-2)", "var(--br-3)", "var(--signal)")
   dn  <- vapply(dl, function(k) pick(p$daio, , "CLASS", k), numeric(1))
   dp  <- vapply(dl, function(k) pick(p$daio, , "CLASS", k, out = "PCT"), numeric(1))
@@ -457,11 +550,12 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
   # format specifier and fail, or worse, silently consume the wrong argument.
   # Fixed-string replacement has no such reading of the text.
   fill <- c(
-    "{{TITLE}}"     = sprintf("Painel CGNA %d%s", year, ref_year_label(ref_year)),
+    "{{TITLE}}"     = sprintf("Brazil and Europe Network %d%s", year,
+                              ref_year_label(ref_year)),
     "{{PERIOD}}"    = per,
     "{{TOTAL}}"     = .tb_n(tot),
-    "{{TOTAL_SUB}}" = if (is.null(ref)) "no periodo" else
-                        sprintf("%s sobre %s em %d", .tb_delta(tot, rtot),
+    "{{TOTAL_SUB}}" = if (is.null(ref)) "in the period" else
+                        sprintf("%s on %s in %d", .tb_delta(tot, rtot),
                                 .tb_n(rtot), ref_year),
     "{{DOTS}}"      = totalbr_panel_dots(d),
     "{{REGIONS}}"   = .tb_rows(reg, "REGION"),
@@ -476,7 +570,11 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
     "{{GRAND}}"     = .tb_n(tot + (if (is.null(ref)) 0 else rtot)),
     "{{YEAR}}"      = as.character(year),
     "{{REFYEAR}}"   = if (is.null(ref_year)) "&mdash;" else as.character(ref_year),
-    "{{STAMP}}"     = format(Sys.Date(), "%d/%m/%Y"),
+    "{{STAMP}}"     = format(Sys.Date(), "%d %b %Y"),
+    "{{FLAG_BR}}"   = TOTALBR_FLAG_BR,
+    "{{FLAG_EU}}"   = TOTALBR_FLAG_EU,
+    "{{LOGO_L}}"    = .tb_logo(logo_left,  "DECEA logo"),
+    "{{LOGO_R}}"    = .tb_logo(logo_right, "EUROCONTROL logo"),
     "{{CSS}}"       = TOTALBR_PANEL_CSS)
 
   html <- TOTALBR_PANEL_TEMPLATE
@@ -500,29 +598,25 @@ ref_year_label <- function(y) if (is.null(y)) "" else sprintf(" vs %d", y)
 # ---- names -------------------------------------------------------------------
 # Only what the panel shows. A full ISO table is not the job of this file, and a
 # code with no name here falls back to the code itself rather than to "NA".
-# The region keys are English because that is what TOTALBR_REGIONS is keyed on,
-# and renaming them there would break every caller that filters by region. They
-# are translated at the point of display instead.
-TOTALBR_REGION_PT <- c(
-  "South America" = "América do Sul", "Europe" = "Europa",
-  "North America" = "América do Norte", "Lat. Am. & Carib." = "Am. Central e Caribe",
-  "Africa" = "África", "Middle East" = "Oriente Médio",
-  "Asia/Pacific" = "Ásia/Pacífico", "Antarctica" = "Antártida",
-  "unmapped" = "não mapeado")
-totalbr_region_name <- function(rg) {
-  out <- unname(TOTALBR_REGION_PT[rg]); ifelse(is.na(out), rg, out)
-}
+# TOTALBR_REGIONS is already keyed in English, so the region names need no
+# translation layer at all -- they are displayed as they are stored.
+totalbr_region_name <- function(rg) rg
 
-TOTALBR_COUNTRY_PT <- c(
-  AR="Argentina", CL="Chile", CO="Colômbia", UY="Uruguai", PE="Peru",
-  PY="Paraguai", BO="Bolívia", EC="Equador", VE="Venezuela", SR="Suriname",
-  GY="Guiana", GF="Guiana Francesa", US="Estados Unidos", CA="Canadá",
-  PT="Portugal", ES="Espanha", FR="França", IT="Itália", DE="Alemanha",
-  GB="Reino Unido", NL="Países Baixos", CH="Suíça", PA="Panamá", MX="México",
-  DO="Rep. Dominicana", CV="Cabo Verde", ZA="África do Sul", AO="Angola",
-  TR="Turquia", QA="Catar", AE="Emirados Árabes")
+# Only the countries the panel actually shows. A full ISO table is not this
+# file's job, and a code with no name here falls back to the CODE rather than to
+# "NA" -- an unnamed country should still be identifiable.
+TOTALBR_COUNTRY_EN <- c(
+  AR="Argentina", CL="Chile", CO="Colombia", UY="Uruguay", PE="Peru",
+  PY="Paraguay", BO="Bolivia", EC="Ecuador", VE="Venezuela", SR="Suriname",
+  GY="Guyana", GF="French Guiana", US="United States", CA="Canada",
+  PT="Portugal", ES="Spain", FR="France", IT="Italy", DE="Germany",
+  GB="United Kingdom", NL="Netherlands", CH="Switzerland", PA="Panama",
+  MX="Mexico", DO="Dominican Rep.", CV="Cape Verde", ZA="South Africa",
+  AO="Angola", TR="Türkiye", QA="Qatar", AE="United Arab Emirates",
+  BE="Belgium", IE="Ireland", AT="Austria", GR="Greece", MA="Morocco",
+  NG="Nigeria", ET="Ethiopia", SN="Senegal", CU="Cuba", BS="Bahamas")
 totalbr_country_name <- function(iso) {
-  out <- unname(TOTALBR_COUNTRY_PT[iso]); ifelse(is.na(out), iso, out)
+  out <- unname(TOTALBR_COUNTRY_EN[iso]); ifelse(is.na(out), iso, out)
 }
 
 TOTALBR_AERODROME_PT <- c(
@@ -545,26 +639,46 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 {{CSS}}
 <div class="wrap">
-  <div class="masthead">
-    <h1>{{TITLE}}</h1>
-    <span class="lbl">{{PERIOD}} &middot; comparado a {{REFYEAR}}</span>
+  <div class="masthead-bar">
+    <div class="org">
+      {{LOGO_L}}
+      <span class="stack">
+        <span class="name">DECEA</span>
+        <span class="tag">Department of Airspace Control &ndash; Brazil</span>
+      </span>
+    </div>
+    <div class="centre">
+      <h1>Brazil and Europe Network</h1>
+      <p>How Brazil and Europe connect with global air traffic</p>
+    </div>
+    <div class="org right">
+      {{LOGO_R}}
+      <span class="stack">
+        <span class="name">EUROCONTROL</span>
+        <span class="tag">Supporting European Aviation</span>
+      </span>
+    </div>
+  </div>
+  <div class="periodline">
+    <span class="lbl">{{PERIOD}} &middot; compared with {{REFYEAR}}</span>
+    <span class="lbl">Source: CGNA</span>
   </div>
 
   <div class="duo">
     <div class="card">
-      <span class="badge"><span class="flagbar" aria-hidden="true"><i style="background:#0B5F63"></i><i style="background:#F0C808"></i><i style="background:#1B4E7A"></i></span>Brasil</span>
+      <span class="badge">{{FLAG_BR}}Brazil</span>
       <div class="metric">
-        <span class="lbl">Total de voos &middot; {{PERIOD}}</span>
+        <span class="lbl">Total flights &middot; {{PERIOD}}</span>
         <span class="big">{{TOTAL}}</span>
         <span class="foot">{{TOTAL_SUB}}</span>
       </div>
       <div class="mapbox">
-        <svg viewBox="0 0 300 330" role="img" aria-label="Aerodromos brasileiros, tamanho proporcional ao movimento">
+        <svg viewBox="0 0 300 330" role="img" aria-label="Brazilian aerodromes, sized by movements">
 {{DOTS}}
         </svg>
       </div>
       <div>
-        <span class="lbl">Partidas externas por regiao</span>
+        <span class="lbl">Share of mapped external departures</span>
         <div class="rows" style="margin-top:9px">
 {{REGIONS}}
         </div>
@@ -572,41 +686,41 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
     </div>
 
     <div class="card pending">
-      <span class="badge" style="opacity:.5"><span class="flagbar" aria-hidden="true"><i style="background:#1B4E7A"></i><i style="background:#F0C808"></i><i style="background:#1B4E7A"></i></span>Europa</span>
-      <div class="empty"><span class="mark">EU</span><b>Reservado para o EUROCONTROL</b><span>O mesmo recorte &mdash; total de voos, aerodromos no mapa e partidas externas por regiao &mdash; quando os dados do PRU entrarem.</span></div>
+      <span class="badge" style="opacity:.5">{{FLAG_EU}}Europe</span>
+      <div class="empty"><span class="mark">EU</span><b>Reserved for EUROCONTROL</b><span>The same cut &mdash; total flights, aerodromes on the map and external departures by region &mdash; once the PRU figures arrive.</span></div>
     </div>
   </div>
 
   <div class="band">
     <div class="bhead">
-      <h2>Distribuicao do trafego na regiao</h2>
-      <span class="lbl">Classificacao DAIO &middot; {{YEAR}}</span>
+      <h2>Traffic distribution within region</h2>
+      <span class="lbl">DAIO classification &middot; {{YEAR}}</span>
     </div>
     <div class="duo">
       <div class="donutwrap">
-        <div class="donut">{{DONUT}}<span class="mid"><b>{{DOM_PCT}}</b><span>Domestico</span></span></div>
+        <div class="donut">{{DONUT}}<span class="mid"><b>{{DOM_PCT}}</b><span>Regional</span></span></div>
         <div class="dkey">
 {{DKEY}}
           <div class="dk" style="border-top:1px solid var(--rule-2); padding-top:5px; margin-top:2px">
-            <i class="sw" style="background:transparent"></i><span style="color:var(--ink-3)">Internacional</span>
+            <i class="sw" style="background:transparent"></i><span style="color:var(--ink-3)">International</span>
             <span class="n">{{INTL}}</span><span class="v">{{INTL_DELTA}}</span>
           </div>
         </div>
       </div>
       <div class="card pending" style="box-shadow:none; border-radius:7px; padding:12px">
-        <div class="empty" style="min-height:126px"><span class="mark">EU</span><b>Mesmo grafico, dados do PRU</b><span>Regional &middot; partidas &middot; chegadas &middot; sobrevoos</span></div>
+        <div class="empty" style="min-height:126px"><span class="mark">EU</span><b>Same chart, PRU figures</b><span>Regional &middot; departures &middot; arrivals &middot; overflights</span></div>
       </div>
     </div>
   </div>
 
   <div class="band">
     <div class="bhead">
-      <h2>Principais ligacoes Brasil &harr; Europa</h2>
-      <span class="lbl">Par de aerodromos &middot; voos no periodo</span>
+      <h2>Top city-pair connections Brazil &harr; Europe</h2>
+      <span class="lbl">Aerodrome pair &middot; flights in the period</span>
     </div>
     <div class="tscroll">
       <table>
-        <thead><tr><th>Brasil</th><th>Europa</th><th class="r-al">{{YEAR}}</th><th class="r-al">{{REFYEAR}}</th><th class="r-al">Variacao</th></tr></thead>
+        <thead><tr><th>Brasil</th><th>Europa</th><th class="r-al">{{YEAR}}</th><th class="r-al">{{REFYEAR}}</th><th class="r-al">Change</th></tr></thead>
         <tbody>
 {{ROUTES}}
         </tbody>
@@ -616,18 +730,18 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
 
   <div class="band">
     <div class="bhead">
-      <h2>Principais ligacoes por pais</h2>
-      <span class="lbl">Chegadas + partidas &middot; {{YEAR}}</span>
+      <h2>Main country-level connections</h2>
+      <span class="lbl">Arrivals + departures &middot; {{YEAR}}</span>
     </div>
     <div class="duo">
       <div>
-        <span class="lbl">Brasil &rarr; America do Sul</span>
+        <span class="lbl">Brazil to South America</span>
         <div class="rows" style="margin-top:10px">
 {{SA}}
         </div>
       </div>
       <div>
-        <span class="lbl">Brasil &rarr; Europa</span>
+        <span class="lbl">Brazil to Europe</span>
         <div class="rows" style="margin-top:10px">
 {{EU}}
         </div>
@@ -636,15 +750,15 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
   </div>
 
   <div class="band">
-    <div class="bhead"><h2>Metodo</h2></div>
-    <p class="note"><b>A classificacao (DAIO)</b> le cada voo pelas duas pontas: <b>domestico</b> com as duas no Brasil, <b>chegada</b> ou <b>partida</b> com uma so, <b>sobrevoo</b> com nenhuma. Os paises vem do OurAirports mais uma lista propria do projeto. Os blocos por regiao e pais descrevem a <b>ponta estrangeira</b>; sobrevoos entram no total internacional, mas nao nas contagens por pais, por terem duas pontas estrangeiras e nenhuma razao para eleger uma.</p>
-    <p class="note">As barras claras atras de cada valor sao o mesmo periodo do ano de referencia. Variacoes abaixo de 2% aparecem em cinza: nessa faixa a diferenca nao se distingue de arredondamento.</p>
+    <div class="bhead"><h2>Method</h2></div>
+    <p class="note"><b>The DAIO classification</b> reads each flight by its two ends: <b>regional</b> with both in Brazil, <b>arrival</b> or <b>departure</b> with one, <b>overflight</b> with neither. Countries come from the OurAirports database plus a list this project keeps for what it lacks. The region and country blocks describe the <b>foreign end</b>, so an arrival and a departure to the same country count together; overflights have two foreign ends and no basis for picking one, so they are in the international total but not in the per-country counts.</p>
+    <p class="note">The faint bar behind each value is the same period of the reference year. Changes under 2% are rendered grey: at that size the difference does not separate from rounding. A &ldquo;city pair&rdquo; here is an <b>aerodrome pair</b> &mdash; SBGR and SBSP are both S&atilde;o Paulo &mdash; because merging them is the reader&rsquo;s decision, not this page&rsquo;s.</p>
   </div>
 
   <footer>
-    <div><b>Fonte</b></div>
-    <div>CGNA &mdash; a mesma fonte nos dois periodos. O periodo e definido pelo <span class="mono">dt_dia</span> de cada voo, nao pelo recorte do arquivo de origem.</div>
-    <div>{{GRAND}} voos classificados &middot; gerado em {{STAMP}} por <span class="mono">TOTALBR/render_totalbr_panel.R</span> &middot; o bloco europeu entra com dados do EUROCONTROL PRU.</div>
+    <div><b>Source</b></div>
+    <div>CGNA &mdash; the same source for both periods. The period is defined by each flight&rsquo;s <span class="mono">dt_dia</span>, not by how the source file was sliced.</div>
+    <div>{{GRAND}} flights classified &middot; generated {{STAMP}} by <span class="mono">TOTALBR/render_totalbr_panel.R</span> &middot; the European column awaits EUROCONTROL PRU figures.</div>
   </footer>
 </div>
 '
