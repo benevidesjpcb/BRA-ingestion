@@ -175,12 +175,13 @@ TOTALBR_FLAG_EU <- local({
 # FOUND BY CONVENTION, NOT BY ABSOLUTE PATH. This is rendered on more than one
 # machine, and "C:/Users/.../decea.png" is a path that exists on exactly one of
 # them -- committing it would make the panel build differently depending on who
-# ran it. Dropping the files into assets/logos/ instead means every clone has
-# them, and they are small enough to belong in the repository.
+# ran it. Dropping the files into data/logos/ instead means every clone has them
+# -- data/ is tracked, unlike data-raw/ -- and they are small enough to belong
+# in the repository.
 #
 # Any of .svg/.png/.jpg/.jpeg/.gif, named for the organisation. An option still
 # wins where someone needs a file from elsewhere.
-TOTALBR_LOGO_DIR <- function() here::here("assets", "logos")
+TOTALBR_LOGO_DIR <- function() here::here("data", "logos")
 
 totalbr_panel_logo <- function(name) {
   opt <- getOption(paste0("totalbr.logo.", name))
