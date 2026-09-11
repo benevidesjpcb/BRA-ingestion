@@ -142,6 +142,58 @@ totalbr_panel_dots <- function(d, bounds = c(lon0 = -74.5, lon1 = -33.5,
           paste(seg, collapse = ""))
 }
 
+# =============================================================================
+# totalbr_panel_year(year, months) -- a year's rows, from wherever they live
+#
+# The month parts only exist for the years this project has downloaded; earlier
+# years are in the parquet archive. Which one holds a given year is not
+# something the caller should have to know, so this tries the parts and falls
+# back to the archive, and SAYS which it used -- a panel whose reference year
+# came from a different file than you assumed is the kind of thing that has to
+# be visible, not inferred.
+#
+# The archive is sliced on its own year/month columns only to avoid reading 5.9
+# million rows; the period is then trimmed on dt_dia by totalbr_panel(), which
+# is what makes it comparable. See the note there.
+# =============================================================================
+totalbr_panel_year <- function(year, months = 1:6, feed = "cgna",
+                               archive = NULL, quiet = FALSE) {
+  parts <- vapply(months, function(m) totalbr_daio_part(year, m, feed = feed),
+                  character(1))
+  if (all(file.exists(parts))) {
+    if (!quiet) message("  ", year, ": month parts (", toupper(feed), ")")
+    return(totalbr_panel_load(year, months, feed, quiet = TRUE))
+  }
+
+  if (is.null(archive)) {
+    cand <- list.files(here::here("data-raw", "totalbr"), pattern = "\\.parquet$",
+                       full.names = TRUE)
+    if (length(cand) == 0)
+      stop("No month part for ", year, " and no .parquet archive in data-raw/totalbr/.",
+           "\nMissing: ", paste(basename(parts[!file.exists(parts)]), collapse = ", "))
+    archive <- cand[1]
+  }
+  if (!quiet) message("  ", year, ": ", basename(archive))
+
+  for (pkg in c("arrow", "dplyr"))
+    if (!requireNamespace(pkg, quietly = TRUE))
+      stop("Reading the archive needs the '", pkg, "' package.")
+
+  ds  <- arrow::open_dataset(archive)
+  nm  <- names(ds)
+  if (!all(c("year", "month") %in% nm))
+    stop("The archive has no year/month columns to slice on: ", archive)
+  want <- intersect(c("co_indicativo", "co_addep", "co_addes", "co_modelo",
+                      "dt_dia", "li_tipovoo", "co_tipo_voo"), nm)
+  raw <- dplyr::collect(dplyr::select(
+           dplyr::filter(ds, year == !!year, month %in% !!months),
+           dplyr::all_of(want)))
+  if (nrow(raw) == 0)
+    stop("The archive holds no rows for ", year, " month(s) ",
+         paste(range(months), collapse = "-"), ": ", archive)
+  totalbr_daio(src = as.data.frame(raw), feed = feed, quiet = TRUE)
+}
+
 # ---- the stylesheet ---------------------------------------------------------
 # Kept as one string so the whole page is one file with no external CSS. THE
 # PALETTE IS ALL AT THE TOP AND ALL IN TOKENS: change --br / --eu / --ref /
@@ -330,11 +382,7 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025, months = 1:6,
   ref <- NULL
   if (!is.null(ref_year)) {
     if (is.null(ref_d))
-      stop("ref_d is needed for ", ref_year, ". The month parts only exist from ",
-           "2026; for an earlier year read the parquet archive and classify it:",
-           "\n  raw <- arrow::open_dataset(<archive>) |> dplyr::filter(year == ",
-           ref_year, ") |> dplyr::collect()",
-           "\n  ref_d <- totalbr_daio(src = as.data.frame(raw), feed = \"", feed, "\")")
+      ref_d <- totalbr_panel_year(ref_year, months, feed, quiet = quiet)
     ref <- totalbr_panel(ref_year, months, feed, d = ref_d, quiet = TRUE)
   }
 
@@ -600,3 +648,21 @@ TOTALBR_PANEL_TEMPLATE <- '<title>{{TITLE}}</title>
   </footer>
 </div>
 '
+
+# ---- run as a script ---------------------------------------------------------
+# Rscript TOTALBR/render_totalbr_panel.R              # 2026 vs 2025, jan-jun
+# Rscript TOTALBR/render_totalbr_panel.R 2026 2025    # the same, said out loud
+# Rscript TOTALBR/render_totalbr_panel.R 2026 2025 3  # jan-mar
+# Rscript TOTALBR/render_totalbr_panel.R 2026 none    # one year, no comparison
+#
+# sys.nframe() is 0 only when this file is the script being run, so sourcing it
+# from an R session does nothing here.
+if (sys.nframe() == 0L) {
+  a  <- commandArgs(trailingOnly = TRUE)
+  yr <- if (length(a) >= 1) as.integer(a[1]) else 2026
+  rf <- if (length(a) >= 2) (if (tolower(a[2]) %in% c("none", "na", "-")) NULL
+                             else as.integer(a[2])) else yr - 1L
+  mo <- if (length(a) >= 3) seq_len(as.integer(a[3])) else 1:6
+  f  <- totalbr_panel_render(yr, rf, months = mo)
+  message("Open it with:  open ", f)
+}
