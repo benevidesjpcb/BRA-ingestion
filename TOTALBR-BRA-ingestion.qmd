@@ -76,7 +76,6 @@ and fill in, e.g. `BRA_PROXY=http://proxy.example.int:9512`, `BRA_PROXY_AUTH=ntl
 `BRA_PROXY_USERPWD=:`. On Windows, `netsh winhttp show proxy` shows the address; the bare
 `:` authenticates as the logged-in account, so no password is stored anywhere. Restart R
 afterwards — `.Renviron` is read at startup only.
-:::
 
 ## Getting the Source Data
 
@@ -172,6 +171,7 @@ message("Years to fetch: ", if (length(need)) paste(need, collapse = ", ") else 
 if (length(need) > 0)
   download_totalbr(need, out_dir = bra_totalbr_raw_dir)
 ```
+:::
 
 The coverage table printed first is what makes that decision auditable. `COVERED` is why a
 year is not fetched: 2024 and 2025 are in the **parquet archive**, so `need` comes back as
@@ -1384,7 +1384,10 @@ source(here::here("TOTALBR", "classify_totalbr_daio.R"))
 # it; the feed is named in the result (FEED) and in the file written.
 d <- totalbr_daio_month(2026, 1)
 totalbr_daio_summary(d)
-totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-cgna-2026-01.parquet
+totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-cgna-2026-01.csv
+# parquet for the archive-sized runs, where 11.6M rows is not a CSV to re-read
+# totalbr_daio_write(d, format = "parquet")
+totalbr_daio_read(f)                 # reads either back WITH ITS TYPES
 
 # the ODIN part for the same month, when the two are being compared
 # d <- totalbr_daio_month(2026, 1, feed = "odin")
@@ -1486,6 +1489,144 @@ d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]
 > letters in the middle, and `^Z` is the ICAO prefix for **China**. The patterns here are
 > anchored, and what nothing resolves is listed rather than absorbed.
 
+## Building the Panel
+
+`DAIO` splits the table by how a flight touches Brazil. The panel is what that split looks
+like once it is read as a document: the national figures for a period, against the same
+period a year earlier, in the shape of the **BRAZIL / EUROPE** comparison this work feeds
+into. Two files, and the division between them is the point — one produces **numbers**, the
+other produces a **page**, and the page can only render what the numbers hold.
+
+```{r}
+#| label: build-bra-totalbr-panel
+#| eval: false
+
+source(here::here("TOTALBR", "render_totalbr_panel.R"))
+
+# the whole panel, from a cold start: 2026 from the month parts, 2025 from the
+# parquet archive, both classified and rendered
+totalbr_panel_render(2026, 2025)      # -> outputs/totalbr/painel-cgna-2026-01-06.html
+
+# just the numbers, when the page is not what is wanted
+p <- totalbr_panel(2026, 1:6)
+p$daio; p$regions; p$countries; p$routes
+totalbr_panel_write(p)                # -> one CSV per block
+```
+
+or, without opening R at all:
+
+```bash
+Rscript TOTALBR/render_totalbr_panel.R 2026 2025      # jan–jun, both years
+Rscript TOTALBR/render_totalbr_panel.R 2026 2025 3    # jan–mar
+Rscript TOTALBR/render_totalbr_panel.R 2026 none      # one year, no comparison
+```
+
+`totalbr_panel_year()` finds each year wherever it lives — the month parts when they are all
+on disk, the parquet archive otherwise — and **says which it used**. A reference year that
+quietly came from a different file than you assumed is exactly the kind of thing that has to
+be visible rather than inferred.
+
+### Five blocks, and the definitions they rest on
+
+| Block | What it counts |
+| --- | --- |
+| `$total` | flights in the period, and per month |
+| `$daio` | the traffic distribution — the panel's *Regional / Departures / Arrivals / Overflights* **are** `I / D / A / O` |
+| `$regions` | external departures by world region |
+| `$countries` | the country-level connections, ranked, split by direction |
+| `$routes` | the busiest aerodrome pairs against a chosen region |
+
+Three things the panel's own wording leaves open, settled here because each gives a
+different number:
+
+**"External" is "not `I`"** — one end abroad (`A`, `D`) or neither end in Brazil (`O`).
+
+**The region and country blocks describe the *foreign* end**, so an arrival and a departure
+to the same country count together as traffic with that country.
+
+**Overflights are counted apart, not folded in.** Both of their ends are foreign and there
+is no basis for calling one of them "the other end", so they carry their own column in
+`$regions` and stay out of the per-country counts.
+
+And a fourth, about the word the panel uses: its "city pair" is an **aerodrome pair** here.
+`SBGR` and `SBSP` are both São Paulo, `SABE` and `SAEZ` are both Buenos Aires, and merging
+them is the reader's decision, not the file's.
+
+### The regions are not continents
+
+The panel splits the Americas three ways and lifts the Middle East out of Asia. Those are
+political categories, not geographic ones, so they cannot come from the aerodrome database's
+`continent` column and are written out as data in `TOTALBR_REGIONS`. The continent is the
+*fallback* for what the lists do not name — Africa is deliberately left to it, being the
+region this feed touches most thinly and most variously, where a hand-kept list of ISO codes
+is precisely what silently drops a country the month after it is written.
+
+A country **neither** knows becomes an `unmapped` row, never a silence. A dropped country
+shrinks every percentage below it while looking like nothing happened.
+
+> `AQ` reached that row on the first run and is not a defect: it is **Antarctica**, the
+> Brazilian station Comandante Ferraz, flown from Chile, one flight in the 2025 semester.
+> It has its own region name now.
+
+### The period is defined on `DATE`, not on how the source was sliced
+
+The parquet archive carries its own `year` / `month` columns and they do **not** agree with
+`dt_dia` at the boundaries — slicing 2025 months 1–6 on them yields 298 flights whose
+`dt_dia` falls in July, the timezone artefact
+[`compare_totalbr_sources.R`](#sec-compare-sources)
+records. `totalbr_panel()` trims on `DATE` afterwards, so the label "2025-01..2025-06" is
+true of the rows whatever the caller passed in. Two periods compared on different definitions
+of their own boundaries are not comparable, and the difference is small enough to pass for
+signal.
+
+### The map is a measurement, not a drawing
+
+The country on the panel is drawn from the **aerodromes themselves** — their own coordinates,
+sized by their movements — rather than from a traced outline. The coast, the empty
+centre-west and the crowded south-east are then real, and the same function plots Europe when
+those rows arrive. A silhouette would carry none of that.
+
+### What the first semester showed
+
+2026 against 2025, both from the CGNA, both trimmed to 1 January – 30 June:
+
+| | 2026 | 2025 | |
+| --- | ---: | ---: | ---: |
+| Flights | 1,059,722 | 1,021,430 | **+3.7%** |
+| Internal (`I`) | 934,577 | 904,571 | +3.3% |
+| Departures (`D`) | 46,146 | 43,111 | +7.0% |
+| Arrivals (`A`) | 46,516 | 43,600 | +6.7% |
+| Overflights (`O`) | 32,372 | 30,019 | +7.8% |
+
+**The international classes grow at about twice the domestic rate**, and the composition
+still barely moves — internal falls only from 88.6% to 88.2% — because it is too large for
+eight thousand more international flights to shift the proportion. Reading the shares alone
+would have missed the whole finding.
+
+The growth is also not spread across the semester: March and April are +8.0% and +7.0%, May
+is flat, and **June is the only month below 2025**. And South America carries 4,787 of the
+5,951 additional international flights — four fifths of it — while North America is the one
+region that shrinks.
+
+::: {.callout-warning}
+## Two figures not to quote yet
+**Ecuador** appears with 600 flights split 24 arrivals against 576 departures. Every other
+country sits near 50/50; a 24-to-1 asymmetry is not what traffic looks like, and it is either
+a classification problem or a coverage one. It is [open point 7](#open-points).
+
+**111 flights of 2026 (0.01%) are unclassified**, on aerodrome codes corrupted at the source
+— `HEUE`/`HUEU` and `MBPC`/`MPBP` are anagrams of one another, `PBPS` is `SBPS` with two
+characters swapped. Too few to move any figure above, and not a gap in the database.
+:::
+
+### The European column is a hole on purpose
+
+Every block that will hold EUROCONTROL figures renders a marked placeholder instead of being
+left out. The layout is already the two-column one, so those rows drop in without anything
+being redesigned around them — and an empty slot that announces itself is honest in a way
+that a Brazil-only page quietly labelled as a comparison would not be.
+
+
 ## Open Points
 
 1. **What a "movement" is in this table.** Each row is a flight, with `co_addep` and
@@ -1513,6 +1654,17 @@ d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]
 6. **Whether `dataf` is inclusive on the CGNA endpoint** is unmeasured; the downloader is
    correct under either reading, and `cgna_totalbr_check(day, span = 0)` against
    `span = 1` on a day that answers would settle it.
+7. **Ecuador's arrivals and departures do not balance.** In the 2026 semester it carries 600
+   flights split **24 arrivals against 576 departures**, where every other country sits near
+   50/50 — Argentina 10,435/10,465, Chile 4,924/5,389. A 24-to-1 asymmetry is not traffic;
+   it is either a classification problem at one end or a coverage gap in the feed. Small
+   enough to change nothing above, and a reason not to quote the Ecuador figure until it is
+   understood.
+8. **`SVC` is a list, not a code.** It now reads `li_tp_voo_validado`, the *validated* flight
+   type, but both `li_` columns carry one value per leg — `S,S,S`, `G,G`. `TP_VOO_VALIDADO`
+   is the same validated type as a single code per flight (`S` 89,089, `G` 78,665, `M` 5,366,
+   `N` 5,161). Which of the two the analysis wants is undecided; the swap is one entry in
+   `TOTALBR_DAIO_COLS`.
 
 
 ## Function Reference
@@ -1580,7 +1732,7 @@ undefined, or at whatever version the session happened to hold.
 | `totalbr_gap_profile(pairs)` | The distribution of the gap between paired records, per kind. |
 | `totalbr_merge_example(d, pairs, merged, callsign)` | One aircraft's source rows and merged result side by side. The check worth running before trusting a month. |
 
-### Comparing the two sources: `TOTALBR/compare_totalbr_sources.R`
+### Comparing the two sources: `TOTALBR/compare_totalbr_sources.R` {#sec-compare-sources}
 
 | Function | What it does |
 | --- | --- |
@@ -1604,6 +1756,28 @@ undefined, or at whatever version the session happened to hold.
 | `totalbr_daio_assumption_cost(d)` | Every class counted twice, with and without that assumption. |
 | `totalbr_daio_unresolved(d)` | The codes still costing flights, worst first — the to-do list for the patch file. |
 | `totalbr_daio_write(d)` | → `outputs/totalbr/totalbr-daio-<months>.parquet`. |
+
+### The panel data: `TOTALBR/panel_totalbr.R`
+
+| Function | What it does |
+| --- | --- |
+| `totalbr_panel(year, months, feed, d)` | Every block at once, as a list: `$total`, `$daio`, `$regions`, `$countries`, `$routes`. Trims the rows to the period **on `DATE`**, whatever the caller sliced. |
+| `totalbr_panel_load(year, months, feed)` | The month parts for a period, classified and stacked. A month missing from disk *stops* the run: a panel labelled Jan–Jun while holding five months is a wrong number, not a smaller one. |
+| `totalbr_panel_countries(d, region, n)` | One row per foreign country, split into `ARRIVALS` / `DEPARTURES`, optionally filtered to a region. |
+| `totalbr_panel_citypairs(d, region, n)` | The busiest **aerodrome** pairs against a region. |
+| `totalbr_panel_regions(d)` | External departures by world region, with overflight ends in their own column and anything unplaceable as an `unmapped` row. |
+| `totalbr_region_of(iso)` | ISO2 → world region, from `TOTALBR_REGIONS`, with the database's continent as the fallback. |
+| `totalbr_panel_write(p, out_dir)` | One CSV per block, named for the feed and period. |
+
+### The panel page: `TOTALBR/render_totalbr_panel.R`
+
+| Function | What it does |
+| --- | --- |
+| `totalbr_panel_render(year, ref_year, months)` | The whole page, written from `totalbr_panel()`. Every figure is rendered from the data, so the page and the numbers cannot disagree. Also runs as a script: `Rscript TOTALBR/render_totalbr_panel.R 2026 2025`. |
+| `totalbr_panel_year(year, months, feed)` | A year's classified rows from wherever they live — month parts when all present, the parquet archive otherwise — and says which it used. |
+| `totalbr_panel_dots(d, bounds)` | The map: one circle per aerodrome at its own coordinates, sized by movements. Pass other `bounds` for another region. |
+
+: The page is one self-contained `.html` — no server, no build step, and nothing external but the Google Fonts link, which falls back offline. The palette lives entirely in CSS tokens at the top of `TOTALBR_PANEL_CSS`; `--signal` and `--ref` carry meaning rather than taste, and are worth keeping distinguishable.
 
 ### Constants worth knowing
 
