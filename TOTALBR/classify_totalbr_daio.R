@@ -399,25 +399,78 @@ totalbr_lookup_coverage <- function(files = NULL, d = NULL) {
 # around a gigabyte and holds five list columns, and reading it whole to keep a
 # quarter of it is the difference between a minute and a session that swaps.
 # =============================================================================
+
+# =============================================================================
+# THE SIX FIELDS, AND WHAT EACH FEED CALLS THEM
+#
+# TOTALBR arrives from two APIs and they do not agree on every spelling: the
+# ODIN download writes li_tipovoo, the CGNA writes co_tipo_voo for the same
+# thing. So the canonical name is on the LEFT and every spelling seen in the
+# wild is on the right, matched case- and punctuation-insensitively. Naming one
+# feed's spellings in the reader is what made a column that is present look
+# missing -- and, worse, what quietly made the ODIN part the only readable file.
+# =============================================================================
+TOTALBR_DAIO_COLS <- list(
+  FLTID = c("co_indicativo"),
+  ADEP  = c("co_addep"),
+  ADES  = c("co_addes"),
+  TYPE  = c("co_modelo"),
+  DATE  = c("dt_dia"),
+  SVC   = c("li_tipovoo", "co_tipo_voo")   # ODIN, then CGNA
+)
+
+# SVC is not required: a feed that omits it narrows the result instead of
+# stopping the run. The other five decide the classification and are not
+# optional.
+TOTALBR_DAIO_REQUIRED <- c("FLTID", "ADEP", "ADES", "TYPE", "DATE")
+
+# canonical name -> the column actually present, or NA
+.tb_daio_match <- function(have, want = TOTALBR_DAIO_COLS) {
+  flat <- function(x) gsub("[^a-z0-9]", "", tolower(x))
+  fh   <- flat(have)
+  lapply(want, function(cands) {
+    hit <- which(fh %in% flat(cands))
+    if (length(hit) == 0) NA_character_ else have[hit[1]]
+  })
+}
+
 totalbr_daio <- function(src   = totalbr_daio_source(),
                          years = NULL,
                          lookup = totalbr_country_lookup(),
                          assume_unknown_is_br = TRUE,
+                         feed  = NULL,
                          quiet = FALSE) {
 
+  # Which feed produced these rows. Named by the caller (totalbr_daio_month
+  # knows), otherwise read off the file name, otherwise unknown -- never
+  # guessed as the CGNA just because that is the default elsewhere.
+  if (is.null(feed))
+    feed <- if (is.character(src) && length(src) == 1 &&
+                grepl("cgna", basename(src), ignore.case = TRUE)) "cgna"
+            else if (is.character(src) && length(src) == 1 &&
+                     grepl("\\.csv$", src, ignore.case = TRUE)) "odin"
+            else NA_character_
+
   ndf <- if (is.data.frame(src)) {
-    dplyr::transmute(src,
-                     FLTID = .data$co_indicativo, ADEP = .data$co_addep,
-                     ADES  = .data$co_addes,      TYPE = .data$co_modelo,
-                     DATE  = .data$dt_dia,        SVC  = .data$li_tipovoo)
+    # Matched, not named: a frame handed in from the CGNA side spells the
+    # service column co_tipo_voo, the ODIN side li_tipovoo.
+    pick <- .tb_daio_match(names(src), TOTALBR_DAIO_COLS)
+    missing <- names(TOTALBR_DAIO_COLS)[vapply(pick, is.na, logical(1)) &
+                 names(TOTALBR_DAIO_COLS) %in% TOTALBR_DAIO_REQUIRED]
+    if (length(missing) > 0)
+      stop("The frame lacks: ", paste(missing, collapse = ", "))
+    # NA of the FRAME'S length, not a scalar: as.data.frame() recycles nothing
+    # and a length-1 column against n rows is an error, not a missing field.
+    out <- lapply(pick, function(col)
+      if (is.na(col)) rep(NA_character_, nrow(src)) else src[[col]])
+    as.data.frame(out, stringsAsFactors = FALSE)
   } else {
     if (!file.exists(src))
       stop("TOTALBR source not found: ", src,
            "\nPass src = (a .csv month part or a .parquet), or set ",
            "BRA_TOTALBR_PARQUET.")
     if (!quiet) message("Reading ", src)
-    want <- c("co_indicativo", "co_addep", "co_addes", "co_modelo",
-              "dt_dia", "li_tipovoo")
+    want <- TOTALBR_DAIO_COLS
 
     if (grepl("\\.csv$", src, ignore.case = TRUE)) {
       # A raw download, semicolon-separated and quoted, read as text. Only the
@@ -425,26 +478,43 @@ totalbr_daio <- function(src   = totalbr_daio_source(),
       # columns and not its forty.
       head1 <- data.table::fread(file = src, sep = ";", nrows = 0,
                                  showProgress = FALSE)
-      missing <- setdiff(want, names(head1))
+      # The two feeds spell the same field differently -- the ODIN download
+      # writes li_tipovoo where the CGNA writes co_tipo_voo -- so the columns
+      # are MATCHED, not named. Reading the CGNA with the ODIN's spellings
+      # hard-coded is what makes a present column look missing.
+      pick <- .tb_daio_match(names(head1), want)
+      missing <- names(want)[vapply(pick, is.na, logical(1)) &
+                             names(want) %in% TOTALBR_DAIO_REQUIRED]
       if (length(missing) > 0)
-        stop(basename(src), " lacks: ", paste(missing, collapse = ", "))
-      d <- data.table::fread(file = src, sep = ";", select = want,
+        stop(basename(src), " lacks: ", paste(missing, collapse = ", "),
+             "\nColumns found: ", paste(names(head1), collapse = ", "))
+      got <- pick[!vapply(pick, is.na, logical(1))]
+      d <- data.table::fread(file = src, sep = ";", select = unname(unlist(got)),
                              colClasses = "character", na.strings = "",
                              showProgress = FALSE, fill = Inf, header = TRUE)
+      data.table::setnames(d, unname(unlist(got)), names(got))
+      # An optional field the feed does not carry is still a column here, as
+      # NA: the result keeps one shape whichever feed produced it.
+      for (nm in setdiff(names(want), names(got))) d[, (nm) := NA_character_]
       # fwrite wrote the stamps as text; they are UTC, whatever a parquet
       # column's label may claim elsewhere (see totalbr_sources.R on that trap).
-      d[, dt_dia := as.POSIXct(dt_dia, tz = "UTC")]
+      d[, DATE := as.POSIXct(DATE, tz = "UTC")]
       d <- as.data.frame(d)
     } else {
       ds <- arrow::open_dataset(src)
-      missing <- setdiff(want, names(ds))
+      pick <- .tb_daio_match(names(ds), want)
+      missing <- names(want)[vapply(pick, is.na, logical(1)) &
+                             names(want) %in% TOTALBR_DAIO_REQUIRED]
       if (length(missing) > 0)
         stop("The parquet lacks: ", paste(missing, collapse = ", "))
-      d <- ds |> dplyr::select(dplyr::all_of(want)) |> dplyr::collect()
+      got <- pick[!vapply(pick, is.na, logical(1))]
+      d <- ds |> dplyr::select(dplyr::all_of(unname(unlist(got)))) |>
+        dplyr::collect()
+      names(d) <- names(got)[match(names(d), unname(unlist(got)))]
+      for (nm in setdiff(names(want), names(got))) d[[nm]] <- NA_character_
+      d <- as.data.frame(d)
     }
-    dplyr::rename(d, FLTID = "co_indicativo", ADEP = "co_addep",
-                  ADES  = "co_addes",      TYPE = "co_modelo",
-                  DATE  = "dt_dia",        SVC  = "li_tipovoo")
+    d[, names(want), drop = FALSE]
   }
 
   if (!is.null(years)) {
@@ -510,7 +580,11 @@ totalbr_daio <- function(src   = totalbr_daio_source(),
       message(sprintf("  %s flight(s) (%.2f%%) unclassified -- totalbr_daio_unresolved()",
                       format(n_na, big.mark = ","), 100 * n_na / nrow(ndf)))
   }
-  tibble::as_tibble(ndf)
+  out <- tibble::as_tibble(ndf)
+  out$FEED <- feed
+  if (!quiet)
+    message("  feed: ", if (is.na(feed)) "unknown (archive)" else toupper(feed))
+  out
 }
 
 # where the parquet is: the env var, then the project's own raw folder
@@ -525,15 +599,49 @@ totalbr_daio_source <- function() {
 }
 
 # =============================================================================
+# WHICH FEED A MONTH COMES FROM -- CGNA FIRST
+#
+# Both APIs write their month parts into data-raw/totalbr/parts/, under names
+# that differ only by a tag:
+#
+#   CGNA   totalbr_<year>cgna_<YYYY-MM>.csv     <- THE PRIMARY SOURCE
+#   ODIN   totalbr_<YYYY-MM>.csv
+#
+# The CGNA is the primary source for DAIO: it is the feed the national table is
+# reconciled against (compare_totalbr_cgna.R), and for 2026 it is the one that
+# was actually downloaded for this purpose. The ODIN part is a FALLBACK, and
+# never a silent one -- reading it without saying so is how a classification
+# ends up quoting a source nobody chose.
+# =============================================================================
+TOTALBR_DAIO_FEEDS <- c("cgna", "odin")
+
+totalbr_daio_part <- function(year, month, raw_dir = here::here("data-raw", "totalbr"),
+                              feed = TOTALBR_DAIO_FEEDS) {
+  mm   <- sprintf("%02d", as.integer(month))
+  year <- as.integer(year)
+  file.path(raw_dir, "parts",
+            switch(match.arg(feed, TOTALBR_DAIO_FEEDS),
+                   cgna = sprintf("totalbr_%dcgna_%d-%s.csv", year, year, mm),
+                   odin = sprintf("totalbr_%d-%s.csv", year, mm)))
+}
+
+# =============================================================================
 # totalbr_daio_month(year, month) -- ONE MONTH, from the raw download
 #
-#   totalbr_daio_month(2026, 1)
+#   totalbr_daio_month(2026, 1)                 # the CGNA part -- the default
+#   totalbr_daio_month(2026, 1, feed = "odin")  # the ODIN part, deliberately
 #
-# The month parts under data-raw/totalbr/parts/ are the cheapest way to work:
-# one month is a few hundred megabytes of CSV against a gigabyte of parquet, it
-# is already on disk, and it is the same rows the parquet holds for that month.
-# Start here, and only reach for the whole archive once the rules and the patch
-# file are settled on a month you have actually looked at.
+# The month parts are the cheapest way to work: one month is a few hundred
+# megabytes of CSV against a gigabyte of parquet, it is already on disk, and it
+# is the same rows the year file holds for that month. Start here, and only
+# reach for the whole archive once the rules and the patch file are settled on a
+# month you have actually looked at.
+#
+# `feed` defaults to the CGNA. When that part is not on disk the ODIN part is
+# NOT read in its place: the function stops and says which months each feed has,
+# because the two do not carry the same rows (compare_totalbr_cgna.R exists
+# precisely because they differ) and a DAIO table cannot be half of each.
+# Passing feed = "odin" reads the ODIN part, and the result says so.
 #
 # The part is the RAW download, before the duplicate handling in
 # prepare_totalbr.R. That is deliberate for a traffic profile -- every record
@@ -542,25 +650,34 @@ totalbr_daio_source <- function() {
 # result as `src` when the count itself has to be right.
 # =============================================================================
 totalbr_daio_month <- function(year, month, raw_dir = here::here("data-raw", "totalbr"),
-                               ...) {
-  mm   <- sprintf("%02d", as.integer(month))
-  part <- file.path(raw_dir, "parts", sprintf("totalbr_%d-%s.csv", year, mm))
+                               feed = TOTALBR_DAIO_FEEDS, ...) {
+  feed <- match.arg(feed, TOTALBR_DAIO_FEEDS)
+  part <- totalbr_daio_part(year, month, raw_dir, feed)
   if (!file.exists(part)) {
-    have <- list.files(file.path(raw_dir, "parts"),
-                       pattern = "^totalbr_[0-9]{4}-[0-9]{2}\\.csv$")
+    have <- function(f) {
+      pat <- if (f == "cgna") "^totalbr_[0-9]{4}cgna_([0-9]{4}-[0-9]{2})\\.csv$"
+             else             "^totalbr_([0-9]{4}-[0-9]{2})\\.csv$"
+      m <- list.files(file.path(raw_dir, "parts"), pattern = pat)
+      if (length(m) == 0) "none" else paste(sub(pat, "\\1", m), collapse = ", ")
+    }
     stop("Not found: ", part,
-         if (length(have)) paste0("\nMonths on disk: ",
-                                  paste(sub("^totalbr_|\\.csv$", "", have),
-                                        collapse = ", "))
-         else "\nNo month parts in that folder at all.")
+         "\n  CGNA months on disk: ", have("cgna"),
+         "\n  ODIN months on disk: ", have("odin"),
+         "\nThe CGNA is the primary source; pass feed = \"odin\" to read the ",
+         "ODIN part instead.")
   }
-  totalbr_daio(src = part, ...)
+  totalbr_daio(src = part, feed = feed, ...)
 }
 
 # =============================================================================
 # totalbr_daio_summary(d) -- flights per class per year, and what decided them
 # =============================================================================
 totalbr_daio_summary <- function(d) {
+  # Say which feed the counts are of. The same month classified from the CGNA
+  # and from the ODIN does not give the same totals, so a table of DAIO counts
+  # without its source is not comparable to anything.
+  f <- unique(d$FEED[!is.na(d$FEED)])
+  if (length(f) > 0) message("Source: ", paste(toupper(f), collapse = " + "))
   yr   <- format(d$DATE, "%Y")   # the written clock; see totalbr_daio()
   daio <- ifelse(is.na(d$DAIO), "unclassified", d$DAIO)
   # table() -> matrix -> data.frame, rather than reshape(): the column names are
@@ -667,13 +784,24 @@ totalbr_daio_write <- function(d, out_dir = TOTALBR_OUT_DIR,
                                format = c("parquet", "csv"), file = NULL) {
   format <- match.arg(format)
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  # The feed is in the NAME, not only in the column: a CGNA classification and
+  # an ODIN one for the same month are different numbers, and the one that is
+  # written second must not overwrite the first.
   path <- if (!is.null(file)) file
-          else file.path(out_dir, sprintf("totalbr-daio-%s.%s",
+          else file.path(out_dir, sprintf("totalbr-daio-%s%s.%s",
+                                          totalbr_daio_feed_tag(d),
                                           totalbr_daio_span(d), format))
   if (format == "parquet") arrow::write_parquet(d, path)
   else data.table::fwrite(d, path, sep = ";", na = "", quote = TRUE)
   message(sprintf("Wrote %s row(s) -> %s", format(nrow(d), big.mark = ","), path))
   invisible(path)
+}
+
+# The feed as a file-name prefix: "cgna-", "odin-", or nothing when the rows
+# came from the archive and no feed was recorded.
+totalbr_daio_feed_tag <- function(d) {
+  f <- unique(d$FEED[!is.na(d$FEED)])
+  if (length(f) == 0) "" else paste0(paste(sort(f), collapse = "-"), "-")
 }
 
 # =============================================================================

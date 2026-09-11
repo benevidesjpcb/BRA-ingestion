@@ -319,11 +319,25 @@ at all.
 ```r
 source(here::here("TOTALBR", "classify_totalbr_daio.R"))
 
-d <- totalbr_daio_month(2026, 1)     # ONE MONTH, from data-raw/totalbr/parts/
-totalbr_daio_summary(d)              # flights per class per year
+d <- totalbr_daio_month(2026, 1)     # ONE MONTH, from the CGNA part on disk
+totalbr_daio_summary(d)              # flights per class per year, and the feed
 totalbr_daio_unresolved(d)           # the codes still costing flights
-totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-2026-01.parquet
+totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-cgna-2026-01.parquet
+
+d <- totalbr_daio_month(2026, 1, feed = "odin")   # the ODIN part, deliberately
 ```
+
+**The CGNA is the primary source.** `totalbr_daio_month()` reads
+`data-raw/totalbr/parts/totalbr_<year>cgna_<YYYY-MM>.csv`, not the ODIN part
+`totalbr_<YYYY-MM>.csv` beside it, and if the CGNA has not been downloaded for that month it
+**stops** rather than falling back — the two feeds do not carry the same rows (that is what
+`compare_totalbr_cgna.R` measures), so a DAIO table built from half of each is not a table of
+anything. Which feed produced a result is kept in its `FEED` column, printed by
+`totalbr_daio_summary()`, and written into the file name, so a CGNA classification and an
+ODIN one for the same month cannot overwrite or be mistaken for each other.
+
+The two feeds also spell one field differently — the CGNA writes `co_tipo_voo` where the ODIN
+writes `li_tipovoo` — so the six columns are matched, not named (`TOTALBR_DAIO_COLS`).
 
 Start with a month. `totalbr_daio_month()` reads the raw part already on disk — a few
 hundred megabytes against a gigabyte of parquet, and the same rows the archive holds for

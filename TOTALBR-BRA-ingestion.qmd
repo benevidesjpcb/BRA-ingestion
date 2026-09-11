@@ -1379,10 +1379,24 @@ Brazil**, which is the first thing any use of the national table needs:
 
 source(here::here("TOTALBR", "classify_totalbr_daio.R"))
 
-d <- totalbr_daio_month(2026, 1)     # one month, from data-raw/totalbr/parts/
+# THE CGNA IS THE PRIMARY SOURCE. This reads
+# data-raw/totalbr/parts/totalbr_2026cgna_2026-01.csv, not the ODIN part beside
+# it; the feed is named in the result (FEED) and in the file written.
+d <- totalbr_daio_month(2026, 1)
 totalbr_daio_summary(d)
-totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-2026-01.parquet
+totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-cgna-2026-01.parquet
+
+# the ODIN part for the same month, when the two are being compared
+# d <- totalbr_daio_month(2026, 1, feed = "odin")
 ```
+
+The source is named, never inferred. `totalbr_daio_month()` reads the **CGNA** part by
+default, and if that month has not been downloaded from the CGNA it *stops* rather than
+reading the ODIN part in its place — the two feeds do not carry the same rows, which is the
+whole point of [the comparison above](#the-odin-download-against-the-cgna-download), and a
+DAIO table that is half of each is not a table of anything. `feed = "odin"` reads the ODIN
+part deliberately, and the result says which feed it came from in `FEED`, in the message the
+summary prints, and in the name of the file written.
 
 It keeps six fields per flight — `FLTID`, `ADEP`, `ADES`, `TYPE`, `DATE`, `SVC` — plus the
 two countries, the `DAIO` class, and **how each end was decided**. That last part is the
