@@ -2,8 +2,8 @@
 
 Drop the two logo files here and the panel header picks them up on any machine:
 
-    assets/logos/decea.png          (or .svg / .jpg)
-    assets/logos/eurocontrol.svg
+    data/logos/decea.png          (or .svg / .jpg)
+    data/logos/eurocontrol.svg
 
 Matched case-insensitively by name, so `DECEA.PNG` works too. With a file
 missing the header renders a marked slot saying which logo it is, rather than a
