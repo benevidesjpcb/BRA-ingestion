@@ -75,9 +75,14 @@ TOTALBR_REGIONS <- list(
 # hand-kept list of African ISO codes would be the thing that silently drops a
 # country the month after it is written. Everything not named above and known to
 # the database as continent "AF" lands here; everything else is reported.
+# AN is Antarctica, and it is a real destination rather than a stray code: the
+# Brazilian station Comandante Ferraz is flown from Chile, and the period below
+# carries one such flight. It gets its own name instead of falling to "unmapped",
+# which would have read as a defect in the mapping.
 TOTALBR_REGION_FALLBACK <- c(AF = "Africa", AS = "Asia/Pacific",
                              OC = "Asia/Pacific", EU = "Europe",
-                             SA = "South America", NA_ = "Lat. Am. & Carib.")
+                             SA = "South America", NA_ = "Lat. Am. & Carib.",
+                             AN = "Antarctica")
 
 # ISO2 -> region, with the continent as the fallback and NA where neither knows
 totalbr_region_of <- function(iso, cont_lookup = totalbr_continent_lookup()) {
@@ -148,6 +153,18 @@ totalbr_panel <- function(year = 2026, months = 1:6, feed = "cgna",
     d <- totalbr_panel_load(year, months, feed, quiet)
   }
   d <- data.table::as.data.table(d)
+
+  # THE PERIOD IS DEFINED ON DATE, NOT ON HOW THE SOURCE WAS SLICED. The parquet
+  # archive carries its own `year`/`month` columns, and they do not agree with
+  # dt_dia at the boundaries: slicing 2025 months 1-6 on them yields 298 flights
+  # whose dt_dia falls in July, the timezone artefact compare_totalbr_sources.R
+  # records. Trimming here means the label "2025-01..2025-06" is true of the rows
+  # whatever the caller passed in, and the two years stay comparable.
+  keep <- format(d$DATE, "%Y-%m") %in% sprintf("%d-%02d", year, months)
+  if (!all(keep) && !quiet)
+    message(sprintf("  %s row(s) outside %d-%02d..%02d dropped (source sliced on its own columns)",
+                    format(sum(!keep), big.mark = ","), year, min(months), max(months)))
+  d <- d[keep]
   period <- sprintf("%d-%02d..%d-%02d", year, min(months), year, max(months))
   if (!quiet)
     message(sprintf("%s flight(s), %s, feed %s",
