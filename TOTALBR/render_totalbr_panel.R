@@ -749,6 +749,114 @@ totalbr_panel_render <- function(year = 2026, ref_year = 2025,
   invisible(file)
 }
 
+# =============================================================================
+# totalbr_panel_render_each(year) -- ONE PAGE PER MONTH
+#
+#   totalbr_panel_render_each(2026)                 # every month on disk
+#   totalbr_panel_render_each(2026, months = 1:6)   # those six, one page each
+#   totalbr_panel_render_each(2026, ref_year = 2025)  # each month vs its own
+#
+# totalbr_panel_render() renders ONE page for the whole period it is given: ask
+# it for 1:6 and you get January-to-June ADDED UP, one set of figures, compared
+# to a reference year. That is the right shape for a period report and the wrong
+# shape for watching a year develop -- the months are summed, and a month that
+# fell off a cliff is invisible inside a half-year total.
+#
+# This renders the months SEPARATELY: one self-contained page each, each headed
+# by its own month, each written to its own file:
+#
+#   outputs/totalbr/painel-cgna-2026-01.html
+#   outputs/totalbr/painel-cgna-2026-02.html   ...
+#
+# NOTHING IS ADDED UP AND NOTHING IS COMPARED. ref_year is NULL here -- unlike
+# totalbr_panel_render(), whose default is the year before -- so each page
+# stands on its own month with no delta chips at all. Pass ref_year = 2025 to
+# compare each month against THE SAME MONTH of that year (January against
+# January, never against a six-month total).
+#
+# A month that fails does not take the rest with it: it is reported at the end
+# and the other pages are still written. A month with no rows is skipped with a
+# warning rather than producing a page of zeroes that looks like a real one.
+# =============================================================================
+totalbr_panel_render_each <- function(year = 2026,
+                                      months = "available",
+                                      ref_year = NULL,
+                                      feed = "cgna",
+                                      out_dir = TOTALBR_OUT_DIR,
+                                      quiet = FALSE,
+                                      ...) {
+  if (identical(months, "available")) {
+    months <- totalbr_panel_months(year, feed)
+    if (length(months) == 0)
+      stop("No month part on disk for ", year, " (", toupper(feed), "). ",
+           "Download one, or pass months = explicitly.")
+  }
+  months <- sort(unique(as.integer(months)))
+
+  # The reference year is read ONCE, not once per month: it is the same file
+  # every time, and totalbr_panel_render() trims it to whichever month it is
+  # rendering. The target year needs no such care -- each month is its own part,
+  # so the loop reads each file exactly once anyway.
+  ref_d <- NULL
+  if (!is.null(ref_year)) {
+    ref_d <- totalbr_panel_year(ref_year, months, feed, quiet = quiet)
+    if (nrow(ref_d) == 0)
+      stop("The reference year ", ref_year, " has no rows in month(s) ",
+           paste(month.abb[months], collapse = ", "), ".")
+  }
+
+  files <- stats::setNames(rep(NA_character_, length(months)),
+                           sprintf("%d-%02d", year, months))
+  failed <- character(0)
+  for (i in seq_along(months)) {
+    m <- months[i]
+    if (!quiet) message(sprintf("[%d/%d] %s %d", i, length(months),
+                                month.abb[m], year))
+    # The month is read HERE rather than inside the render, so an empty month can
+    # be told from a missing one: a part that is on disk but holds no row for
+    # that month would otherwise render a page of zeroes that looks exactly like
+    # a real one.
+    d <- try(totalbr_panel_load(year, m, feed, quiet = TRUE), silent = TRUE)
+    if (inherits(d, "try-error")) {
+      msg <- conditionMessage(attr(d, "condition"))
+      warning(sprintf("%s %d was not rendered: %s", month.abb[m], year, msg),
+              call. = FALSE)
+      failed <- c(failed, sprintf("%s (%s)", month.abb[m], msg))
+      next
+    }
+    if (nrow(.tb_trim(d, year, m)) == 0) {
+      warning(sprintf("%s %d has a part on disk but no row dated in that month.",
+                      month.abb[m], year), call. = FALSE)
+      failed <- c(failed, sprintf("%s (no rows)", month.abb[m]))
+      next
+    }
+
+    # try(), so one bad month is a line in the report rather than the end of the
+    # run: seven pages minus one is a useful afternoon, and nothing is a lost one.
+    f <- try(totalbr_panel_render(year = year, ref_year = ref_year, months = m,
+                                  feed = feed, d = d, ref_d = ref_d,
+                                  out_dir = out_dir, quiet = TRUE, ...),
+             silent = TRUE)
+    if (inherits(f, "try-error")) {
+      msg <- conditionMessage(attr(f, "condition"))
+      warning(sprintf("%s %d was not rendered: %s", month.abb[m], year, msg),
+              call. = FALSE)
+      failed <- c(failed, sprintf("%s (%s)", month.abb[m], msg))
+      next
+    }
+    files[i] <- f
+    if (!quiet) message("      -> ", basename(f))
+  }
+
+  ok <- files[!is.na(files)]
+  if (!quiet) {
+    message(sprintf("\n%d page(s) written to %s", length(ok), out_dir))
+    if (length(failed) > 0)
+      message("Not rendered: ", paste(failed, collapse = "; "))
+  }
+  invisible(ok)
+}
+
 ref_year_label <- function(y) if (is.null(y)) "" else sprintf(" vs %d", y)
 
 # ---- names -------------------------------------------------------------------
