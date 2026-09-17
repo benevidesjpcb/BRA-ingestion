@@ -1503,9 +1503,20 @@ other produces a **page**, and the page can only render what the numbers hold.
 
 source(here::here("TOTALBR", "render_totalbr_panel.R"))
 
-# the whole panel, from a cold start: 2026 from the month parts, 2025 from the
-# parquet archive, both classified and rendered
-totalbr_panel_render(2026, 2025)      # -> outputs/totalbr/painel-cgna-2026-01-06.html
+# ---- ONE PAGE FOR THE WHOLE PERIOD: the months ADDED UP ----------------------
+# from a cold start: 2026 from the month parts, 2025 from the parquet archive,
+# both classified and rendered
+totalbr_panel_render(2026, 2025)               # -> painel-cgna-2026-01-06.html
+totalbr_panel_render(2026, 2025, months = 1:3) # jan+feb+mar as ONE set of figures
+
+# ---- ONE PAGE PER MONTH: nothing added up -----------------------------------
+totalbr_panel_render_each(2026)                # -> painel-cgna-2026-01.html, -02, ...
+totalbr_panel_render_each(2026, months = 1:6)  # those six, SIX pages
+totalbr_panel_render_each(2026, ref_year = 2025)   # each month vs the same month
+
+# ---- A SINGLE MONTH, on its own ---------------------------------------------
+totalbr_panel_render(2026, ref_year = NULL, months = 7)  # -> painel-cgna-2026-07.html
+totalbr_panel_render(2026, 2025, months = 7)             # ... against July 2025
 
 # just the numbers, when the page is not what is wanted
 p <- totalbr_panel(2026, 1:6)
@@ -1516,10 +1527,44 @@ totalbr_panel_write(p)                # -> one CSV per block
 or, without opening R at all:
 
 ```bash
-Rscript TOTALBR/render_totalbr_panel.R 2026 2025      # jan–jun, both years
-Rscript TOTALBR/render_totalbr_panel.R 2026 2025 3    # jan–mar
-Rscript TOTALBR/render_totalbr_panel.R 2026 none      # one year, no comparison
+Rscript TOTALBR/render_totalbr_panel.R 2026 2025      # jan–jun summed, both years
+Rscript TOTALBR/render_totalbr_panel.R 2026 2025 1-3  # jan–mar summed
+Rscript TOTALBR/render_totalbr_panel.R 2026 2025 3    # MARCH ALONE, not jan–mar
+Rscript TOTALBR/render_totalbr_panel.R 2026 none      # one period, no comparison
 ```
+
+### Summed, or month by month
+
+The two shapes answer different questions, and `months` alone does not choose between them
+— it says which months are in play, not whether they are added together:
+
+| Call | Pages | The months are |
+| --- | --- | --- |
+| `totalbr_panel_render(2026, months = 1:6)` | one | **added up** into one set of figures |
+| `totalbr_panel_render_each(2026, months = 1:6)` | six | kept **separate**, one page each |
+| `totalbr_panel_render(2026, months = 7)` | one | a single month, nothing to add |
+
+A half-year panel is the right shape for a period report and the wrong one for watching a
+year develop: a month that fell off a cliff is invisible inside a six-month total. That is
+what `totalbr_panel_render_each()` is for — it renders the same panel once per month, each
+page self-contained and named for its own month (`painel-cgna-2026-01.html`), a month that
+fails reported at the end rather than taking the rest of the run with it.
+
+**Whether anything is compared is a separate switch, `ref_year`**, and the two functions do
+not default the same way. `totalbr_panel_render()` compares against the year before unless
+told otherwise; `totalbr_panel_render_each()` compares against nothing unless asked:
+
+| | comparison |
+| --- | --- |
+| `totalbr_panel_render(2026)` | vs 2025 — the default |
+| `totalbr_panel_render(2026, ref_year = NULL)` | none |
+| `totalbr_panel_render_each(2026)` | none — the default |
+| `totalbr_panel_render_each(2026, ref_year = 2025)` | each month vs **the same month** of 2025 |
+
+A reference year is always trimmed to the months being rendered, never to its own
+availability: January 2026 is compared to January 2025, and a seven-month 2026 against a
+twelve-month 2025 would read as a collapse in traffic rather than the mismatch of periods it
+is.
 
 `totalbr_panel_year()` finds each year wherever it lives — the month parts when they are all
 on disk, the parquet archive otherwise — and **says which it used**. A reference year that
