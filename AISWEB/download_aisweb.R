@@ -8,8 +8,8 @@
 #
 #   source(here::here("AISWEB", "download_aisweb.R"))
 #   aisweb_check("geiloc", name = "cong", type = "ad", feature = "airport")      # START HERE -- one request, shown
-#   download_aisweb_geiloc()                   # every location indicator
 #   download_aisweb_rotaer()                   # every aerodrome in the ROTAER
+#   download_aisweb_geiloc(type = "ad")        # location indicators; needs a filter
 #   download_aisweb_waypoints()                # every waypoint
 #   download_aisweb_aerodromes(c("SBGR", "SBSP"))   # the detail, with runways
 #
@@ -37,14 +37,22 @@
 # counts only if it parses as XML with an <aisweb> root, and anything else is
 # reported with the text the server sent.
 #
-# THE ROTAER LIST IS PAGED BY rowstart/rowend, AND THE DOCUMENTATION DOES NOT
-# SAY WHAT THEY MEAN. Its one example asks rowstart=3000&rowend=50 and receives
-# 50 aerodromes under total="50" -- so rowend behaves as a page SIZE, and
-# `total` as the rows in this answer rather than in the ROTAER. That is an
-# inference from a single example. The paging below does not depend on it being
-# right: it advances by the rows actually received, stops on a short or empty
-# page, and stops if a page brings back nothing it has not already seen -- which
-# is what an API that ignored rowstart would produce, for ever.
+# PAGED BY rowstart/rowend, WHICH THE DOCUMENTATION DOES NOT EXPLAIN. Measured
+# against the service: rowend is the page SIZE (not the last row), and the
+# wrapper's `total` is the size of the WHOLE result, repeated on every page --
+# the ROTAER answered total=6123 thirteen times and delivered 12 x 500 + 123.
+# So a download can be checked against what the API itself says it holds, and
+# it is: a total that does not match what was stored is said out loud.
+#
+# AN AREA CAN BE PAGED WITHOUT SAYING SO. waypoints is documented as a call
+# with no parameters, and asked that way it returns exactly 100 rows -- a round
+# number, which is what a default page size looks like and not what a table of
+# waypoints looks like. The first page alone is therefore never taken for the
+# table. Every list is walked the same way: advance by the rows received, and
+# stop only on an empty page, on a page that brings nothing new (which is what
+# an area that ignores rowstart produces, for ever), or when `total` is reached.
+# A SHORT page does not end the walk -- a server that caps the page below what
+# was asked returns short pages all the way through.
 #
 # The credentials are read from the environment, never hardcoded: AISWEB_API_KEY
 # and AISWEB_API_PASS in .Renviron (git-ignored). See setup_renviron.R.
@@ -261,65 +269,64 @@ aisweb_check <- function(area, ..., base_url = AISWEB_URL) {
 }
 
 # =============================================================================
-# download_aisweb(area, ..., name) -- an area that answers in ONE call
+# download_aisweb(area, ..., name) -- a list area, every page
 #
-# geiloc and waypoints are not paged: asked with no filter, the whole table
-# comes back. Nothing is written when the call fails -- a file left from an
-# earlier run is worth more than an empty one in its place.
-# =============================================================================
-download_aisweb <- function(area, ..., name = area, out_dir = AISWEB_OUT_DIR) {
-  message(sprintf("AISWEB %s ...", area))
-  r <- aisweb_fetch(area, ...)
-  if (!r$ok) { message("  FAILED: ", r$error); return(invisible(NULL)) }
-  rows <- aisweb_rows(r$doc)
-  message(sprintf("  %d record(s) in %.1fs", nrow(rows), r$secs))
-  if (nrow(rows) == 0) { message("  nothing to write."); return(invisible(NULL)) }
-  .aisweb_write(rows, name, out_dir)
-}
-
-download_aisweb_geiloc    <- function(...) download_aisweb("geiloc", ...)
-download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
-
-# =============================================================================
-# download_aisweb_rotaer(...) -- the ROTAER list, every page
+#   download_aisweb_rotaer()                      # the whole ROTAER
+#   download_aisweb_rotaer(uf = "SP", type = "AD")   # filters, as documented
+#   download_aisweb_waypoints()
+#   download_aisweb_geiloc(type = "ad")           # geiloc answers only to a filter
 #
-# Filters go through as documented (uf = "SP", type = "AD", fir = ...). See the
-# header for why the loop trusts the rows it receives and not `total`.
+# See the header for the stopping rule. Nothing is written when a page fails: a
+# table short of its last pages would read as a complete one, and a file left
+# from an earlier run is worth more than that.
 # =============================================================================
-download_aisweb_rotaer <- function(..., page_size = AISWEB_PAGE_SIZE,
-                                   max_pages = 200L, out_dir = AISWEB_OUT_DIR) {
-  message(sprintf("AISWEB rotaer, %d aerodrome(s) per page ...", page_size))
-  pages <- list(); seen <- character(0); start <- 0L
+download_aisweb <- function(area, ..., name = area, page_size = AISWEB_PAGE_SIZE,
+                            max_pages = 2000L, out_dir = AISWEB_OUT_DIR) {
+  message(sprintf("AISWEB %s, asking %d row(s) per page ...", area, page_size))
+  pages <- list(); seen <- character(0); start <- 0L; total <- NA_integer_
   for (p in seq_len(max_pages)) {
-    r <- aisweb_fetch("rotaer", rowstart = start, rowend = page_size, ...)
+    r <- aisweb_fetch(area, rowstart = start, rowend = page_size, ...)
     if (!r$ok) {
       message(sprintf("  page %d (rowstart %d) FAILED: %s", p, start, r$error))
-      message("  Nothing written: a ROTAER short of its last pages would read as ",
+      message("  Nothing written: a table short of its last pages would read as ",
               "a complete one.")
       return(invisible(NULL))
     }
     rows <- aisweb_rows(r$doc)
     meta <- aisweb_meta(r$doc)
+    if ("total" %in% names(meta))
+      total <- suppressWarnings(as.integer(meta[["total"]]))
     message(sprintf("  page %d  rowstart %-6d %4d row(s)  total=%s  %.1fs", p, start,
-                    nrow(rows), if ("total" %in% names(meta)) meta[["total"]] else "?",
-                    r$secs))
+                    nrow(rows), if (is.na(total)) "?" else total, r$secs))
     if (nrow(rows) == 0) break
     id  <- if ("id" %in% names(rows)) rows$id else do.call(paste, c(rows, sep = "|"))
     new <- !(id %in% seen)
     if (!any(new)) {
       message("  this page repeats rows already held: rowstart is not advancing ",
-              "the answer. Stopping.")
+              "the answer, so this area cannot be walked past its first page.")
       break
     }
     pages[[length(pages) + 1L]] <- rows[new, , drop = FALSE]
     seen  <- c(seen, id[new])
     start <- start + nrow(rows)
-    if (nrow(rows) < page_size) break
+    if (!is.na(total) && length(seen) >= total) break
   }
   all <- cgna_rbind_fill(pages)
   if (is.null(all)) { message("  nothing to write."); return(invisible(NULL)) }
-  .aisweb_write(all, "rotaer", out_dir)
+
+  # the API's own count against what is about to be stored
+  if (!is.na(total) && nrow(all) != total)
+    message(sprintf("  NOTE: the API reports total=%d and %d row(s) were received.",
+                    total, nrow(all)))
+  else if (is.na(total))
+    message("  The answer carries no total, so this count cannot be checked ",
+            "against the API's own.")
+  .aisweb_write(all, name, out_dir)
 }
+
+download_aisweb_rotaer    <- function(...) download_aisweb("rotaer", ...)
+download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
+download_aisweb_geiloc    <- function(...) download_aisweb("geiloc", ...)
 
 # =============================================================================
 # download_aisweb_aerodromes(icao) -- the detail of each aerodrome, and its runways
@@ -400,9 +407,8 @@ download_aisweb_aerodromes <- function(icao, out_dir = AISWEB_OUT_DIR) {
 }
 
 # ---- run only when executed as a script (not when sourced) --------------------
-#   Rscript AISWEB/download_aisweb.R            # geiloc, rotaer, waypoints
+#   Rscript AISWEB/download_aisweb.R            # rotaer, waypoints
 if (sys.nframe() == 0L) {
-  download_aisweb_geiloc()
   download_aisweb_rotaer()
   download_aisweb_waypoints()
 }

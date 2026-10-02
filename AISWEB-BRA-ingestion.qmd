@@ -132,22 +132,30 @@ is written.
 #| label: download-bra-aisweb-data
 #| eval: false
 
-download_aisweb_geiloc()        # -> data-raw/aisweb/aisweb_geiloc.csv
-download_aisweb_rotaer()        # -> data-raw/aisweb/aisweb_rotaer.csv     (every page)
-download_aisweb_waypoints()     # -> data-raw/aisweb/aisweb_waypoints.csv
+download_aisweb_rotaer()        # -> data-raw/aisweb/aisweb_rotaer.csv      (every page)
+download_aisweb_waypoints()     # -> data-raw/aisweb/aisweb_waypoints.csv   (every page)
+download_aisweb_geiloc(type = "ad")   # -> data-raw/aisweb/aisweb_geiloc.csv; needs a filter
 
 # filters go through as the API documents them
 download_aisweb_rotaer(uf = "SP", type = "AD")
 ```
 
-The ROTAER list is **paged** by `rowstart` and `rowend`, and the documentation does not say
-what they mean. Its one example asks `rowstart=3000&rowend=50` and receives 50 aerodromes
-under `total="50"` — so `rowend` behaves as a page *size*, and `total` as the rows in that
-answer rather than in the ROTAER. That is an inference from a single example, and the
-download does not depend on it being right: it advances by the rows it actually received,
-stops on a short or empty page, and stops if a page brings back nothing it has not already
-seen. A page that fails writes **nothing** — a ROTAER short of its last pages would read as
-a complete one.
+The lists are **paged** by `rowstart` and `rowend`, which the documentation does not
+explain. Measured against the service: `rowend` is the page *size*, and the wrapper's
+`total` is the size of the **whole** result, repeated on every page — the ROTAER answered
+`total=6123` thirteen times and delivered 12 × 500 + 123. A download is therefore checked
+against the count the API itself reports, and a mismatch is said out loud.
+
+An area can also be paged **without saying so**. `waypoints` is documented as a call with no
+parameters, and asked that way it returns exactly 100 rows — a round number, which is what
+a default page size looks like and not what a table of waypoints looks like. So the first
+page is never taken for the table: every list is walked the same way, advancing by the rows
+received, and stopping only on an empty page, on a page that brings nothing new, or when
+`total` is reached. A page that fails writes **nothing** — a table short of its last pages
+would read as a complete one.
+
+`geiloc` is the exception to "fetch the area whole": asked with no filter it returns nothing,
+so it is downloaded per filter (`download_aisweb_geiloc(type = "ad")`).
 
 ### The aerodrome in full, and its runways
 
