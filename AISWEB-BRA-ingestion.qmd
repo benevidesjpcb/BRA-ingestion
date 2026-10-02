@@ -161,8 +161,26 @@ Measured on the first full download: the ROTAER holds **6,123** aerodromes and `
 everything, 6,607 aerodromes in one answer, and carries no `total`. And asked with no filter it returns nothing,
 so it is asked once per `type` — `ad` aerodrome, `hp` heliport, `hd` helideck, the three the
 ROTAER carries — and the answers are written into one file: 8,620 indicators (6,607 `AD`,
-1,998 `HP`, 15 `HD`). That is more than the ROTAER's 6,123, and the difference has not been
-explained yet.
+1,998 `HP`, 15 `HD`).
+
+### `geiloc` is one row per *version*, not per indicator
+
+Those 8,620 rows are not 8,620 places. Set against the ROTAER's 6,123: every ROTAER code is
+in `geiloc`, only 52 `geiloc` codes are missing from the ROTAER — so `geiloc` holds some
+6,175 distinct codes, and about 2,400 of its rows repeat a code already there. They are
+**versions of the same indicator**: `SBAE` appears eight times, `SBAC` five, each with an
+`id` of its own, and across `SBAC`'s five the name changes from *Regional de Aracati* to
+*Aeroporto Regional de Canoa Quebrada Dragão do Mar*.
+
+Two things were checked and neither picks the current one out. Every row is `Ativo`, so
+`status` does not separate them. And although the ROTAER's `id` is documented as a version
+identifier, it is not the same identifier: none of `SBAC`'s five `geiloc` ids exists in the
+ROTAER. `geiloc` carries no date either.
+
+So the file is kept as the API returns it, one row per version, and it is **not**
+deduplicated by code — that would keep one version at random and present it as the current
+one. For "which aerodromes exist, and what are they called today", read the **ROTAER**;
+`geiloc` is the record of the names an indicator has had.
 
 ### The aerodrome in full, and its runways
 
@@ -220,9 +238,14 @@ The names are the API's own, kept as they arrive.
 | `AeroCode` | the ICAO location indicator |
 | `ciad` | the aerodrome's business identifier (`SP0831`) |
 | `name`, `city`, `uf` | name, municipality, state |
+| `lat`, `lng` | coordinates, decimal degrees — returned by the service, though not documented |
 | `dt` | date the record was published or updated |
 
-**`aisweb_geiloc.csv`** — `id`, `type`, `IcaoCode`, `name`, `status` (`Ativo` or not).
+**`aisweb_geiloc.csv`** — `id`, `type`, `IcaoCode`, `name`, `status`, `city`, `uf`. One row
+per *version* of an indicator, so `IcaoCode` repeats; see above.
+
+**`aisweb_waypoints.csv`** — `id`, `ident`, `latitude`, `longitude` (decimal), `dt` (date the
+waypoint came into effect).
 
 **`aisweb_aerodromes.csv`** — the list's fields plus `status`, `lat`, `lng` (decimal),
 `latRotaer`, `lngRotaer` (as printed in the ROTAER), `altM`, `altFt`, `fir`, `jur`, `utc`,

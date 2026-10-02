@@ -350,6 +350,13 @@ download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
 # Each type is a question of its own, and they all go into ONE file: written
 # type by type under the same name, the last would replace the others. If any
 # type fails nothing is written, for the same reason a short table is not.
+#
+# WHAT COMES BACK IS ONE ROW PER VERSION OF AN INDICATOR, NOT PER INDICATOR:
+# 8620 rows over some 6175 codes, SBAE eight times. Nothing in the answer says
+# which version is current -- every row is "Ativo", there is no date, and the id
+# is not the ROTAER's version id. So rows are dropped only when the ID repeats,
+# never when the code does: keeping one version per code would be choosing at
+# random and calling it the current one. The ROTAER is the list of what exists.
 download_aisweb_geiloc <- function(type = c("ad", "hp", "hd"), ...,
                                    out_dir = AISWEB_OUT_DIR) {
   parts <- list()
