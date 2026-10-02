@@ -113,7 +113,8 @@ before a download, and again whenever one comes back empty.
 #| label: check-bra-aisweb-endpoint
 #| eval: false
 
-aisweb_check("geiloc", name = "SBGR")              # one location indicator
+aisweb_check("geiloc", name = "cong", type = "ad", feature = "airport")              # one location indicator
+# `name` searches the NAME of the place, not its code: "SBGR" there matches nothing
 aisweb_check("rotaer", rowstart = 0, rowend = 5)   # the first five aerodromes of the list
 aisweb_check("rotaer", icaoCode = "SBGR")          # one aerodrome, in full
 aisweb_check("waypoints")

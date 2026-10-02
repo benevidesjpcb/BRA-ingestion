@@ -7,7 +7,7 @@
 # charts. Documented at https://documenter.getpostman.com/view/7201070/SzKQyg3H
 #
 #   source(here::here("AISWEB", "download_aisweb.R"))
-#   aisweb_check("geiloc", name = "SBGR")      # START HERE -- one request, shown
+#   aisweb_check("geiloc", name = "cong", type = "ad", feature = "airport")      # START HERE -- one request, shown
 #   download_aisweb_geiloc()                   # every location indicator
 #   download_aisweb_rotaer()                   # every aerodrome in the ROTAER
 #   download_aisweb_waypoints()                # every waypoint
@@ -191,7 +191,7 @@ aisweb_meta <- function(doc) {
 # =============================================================================
 # aisweb_check(area, ...) -- ONE request, everything it answered
 #
-#   aisweb_check("geiloc", name = "SBGR")
+#   aisweb_check("geiloc", name = "cong", type = "ad", feature = "airport")
 #   aisweb_check("rotaer", rowstart = 0, rowend = 5)
 #   aisweb_check("rotaer", icaoCode = "SBGR")        # the aerodrome detail
 #   aisweb_check("waypoints")
@@ -228,7 +228,11 @@ aisweb_check <- function(area, ..., base_url = AISWEB_URL) {
     message("\nFirst row:")
     print(utils::head(rows, 1), row.names = FALSE)
   } else {
-    message("No record under a wrapper. Top-level elements: ",
+    # an empty wrapper is an ANSWER: the credential was accepted and the
+    # question matched nothing. In geiloc and rotaer `name` searches the NAME
+    # of the place ("cong" finds Congonhas); an ICAO code there matches nothing.
+    message("The credential was accepted; the question matched no record. ",
+            "Top-level elements: ",
             paste(unique(xml2::xml_name(xml2::xml_children(r$doc))), collapse = ", "))
   }
   invisible(r)
