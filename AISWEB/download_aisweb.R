@@ -355,12 +355,83 @@ download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
 download_aisweb_routes <- function(...) download_aisweb("routesp", ..., name = "routes")
 
 # The AIP package (area=pub). `type` is REQUIRED and is "AIXM" or "AIP". What
-# comes back is not the data but a LISTING of it: id, type, name, and `file`, a
-# link to download each element. dt = "yyyy-mm-dd" restricts it to what was
-# updated since that date; without it, what is in force.
-download_aisweb_pub <- function(type = c("AIXM", "AIP"), ...) {
+# comes back is not the data but a LISTING of it: id, type, name, the amendment
+# (amdt, amdt_number) and `file`, a link to download each element. dt =
+# "yyyy-mm-dd" restricts it to what was updated since that date; without it,
+# what is in force.
+#
+# Two fields arrive dirty and are cleaned here, because both are unusable as
+# they come: `file` carries the tail of an HTML anchor after the URL
+# (...zip&p=Completo">Completo), and `amdt` is wrapped as {ts '2026-09-03
+# 00:00:00'}.
+aisweb_pub <- function(type = c("AIXM", "AIP"), ...) {
   type <- match.arg(type)
-  download_aisweb("pub", type = type, ..., name = paste0("pub_", tolower(type)))
+  d <- aisweb_walk("pub", type = type, ...)
+  if (is.null(d)) return(NULL)
+  if ("file" %in% names(d)) d$file <- sub("\">.*$", "", d$file)
+  if ("amdt" %in% names(d)) d$amdt <- gsub("^\\{ts '|'\\}$", "", d$amdt)
+  d
+}
+
+download_aisweb_pub <- function(type = c("AIXM", "AIP"), ..., out_dir = AISWEB_OUT_DIR) {
+  type <- match.arg(type)
+  d <- aisweb_pub(type, ...)
+  if (is.null(d)) return(invisible(NULL))
+  .aisweb_write(d, paste0("pub_", tolower(type)), out_dir)
+}
+
+# =============================================================================
+# download_aisweb_aixm(name) -- the AIXM package itself
+#
+#   download_aisweb_aixm()              # "Completo": the whole baseline
+#
+# The listing names the packages; this fetches one of them, a zip, into
+# data-raw/aisweb/aixm/ under the amendment it belongs to:
+#
+#   data-raw/aisweb/aixm/AMDT_36-26_Completo.zip
+#
+# The link is PUBLIC -- it carries no credential -- but it is only known through
+# the listing, which does need one. The amendment is in the file name so that a
+# new AIRAC cycle lands beside the old one rather than over it; a package
+# already on disk is not fetched again (force = TRUE to do so). The zip is kept
+# as it is: it holds ~670 MB of XML, and read_aixm.R reads it without unpacking.
+# =============================================================================
+download_aisweb_aixm <- function(name = "Completo", force = FALSE,
+                                 out_dir = file.path(AISWEB_OUT_DIR, "aixm"),
+                                 timeout = 1800) {
+  lst <- aisweb_pub("AIXM")
+  if (is.null(lst)) return(invisible(NULL))
+  hit <- lst[tolower(lst$name) == tolower(name), , drop = FALSE]
+  if (nrow(hit) == 0) {
+    message("No AIXM package named '", name, "'. The listing holds: ",
+            paste(lst$name, collapse = ", "))
+    return(invisible(NULL))
+  }
+  hit  <- hit[1, ]
+  amdt <- if ("amdt_number" %in% names(hit) && !is.na(hit$amdt_number))
+            gsub("[^A-Za-z0-9-]+", "_", trimws(hit$amdt_number)) else "AMDT_unknown"
+  if (!dir.exists(out_dir)) { dir.create(out_dir, recursive = TRUE); message("Created ", out_dir) }
+  path <- file.path(out_dir, sprintf("%s_%s.zip", amdt, gsub("[^A-Za-z0-9-]+", "_", hit$name)))
+  if (file.exists(path) && !force) {
+    message("Already on disk: ", path, "  (force = TRUE to fetch it again)")
+    return(invisible(path))
+  }
+  message(sprintf("AIXM '%s', %s -> %s", hit$name, hit$amdt_number, path))
+  tmp <- paste0(path, ".part")
+  req <- httr2::request(hit$file) |>
+    httr2::req_user_agent("BRA-ingestion/aisweb") |>
+    httr2::req_timeout(timeout) |>
+    bra_proxy()
+  ok <- tryCatch({ httr2::req_perform(req, path = tmp); TRUE },
+                 error = function(e) { message("  FAILED: ", conditionMessage(e)); FALSE })
+  # a zip starts with "PK": anything else is an error page saved under a .zip name
+  if (ok && !identical(readBin(tmp, "raw", 2L), charToRaw("PK"))) {
+    message("  FAILED: what came back is not a zip."); ok <- FALSE
+  }
+  if (!ok) { unlink(tmp); return(invisible(NULL)) }
+  file.rename(tmp, path)
+  message(sprintf("  %.1f MB", file.size(path) / 1024^2))
+  invisible(path)
 }
 
 # geiloc answers only to a filter, and `type` is the one that covers the table:

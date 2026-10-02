@@ -140,6 +140,7 @@ download_aisweb_waypoints()     # -> data-raw/aisweb/aisweb_waypoints.csv   (eve
 download_aisweb_geiloc()        # -> data-raw/aisweb/aisweb_geiloc.csv      (AD, HP and HD)
 download_aisweb_routes()        # -> data-raw/aisweb/aisweb_routes.csv
 download_aisweb_pub("AIXM")     # -> data-raw/aisweb/aisweb_pub_aixm.csv    (a listing of links)
+download_aisweb_aixm()          # -> data-raw/aisweb/aixm/AMDT_<n>_Completo.zip  (the data)
 
 # filters go through as the API documents them
 download_aisweb_rotaer(uf = "SP", type = "AD")
@@ -207,6 +208,49 @@ download_aisweb_aerodromes(c("SBGR", "SBSP", "SBGL", "SBRJ", "SBBR", "SBCF",
 For the twelve study airports that is 12 aerodromes and **19 runways**: two each at SBGR,
 SBSP, SBGL, SBRJ, SBBR, SBCT and SBSV, one each at SBCF, SBKP, SBPA, SBRF and SBFZ.
 
+### AIXM — the listing, and the package behind it
+
+`area=pub&type=AIXM` does not return the airspace data. It returns a **listing** of
+packages — `id`, `type`, `name`, the amendment (`amdt`, `amdt_number`) and `file`, a link —
+and the data is the zip behind the link. Two fields of the listing arrive unusable and are
+cleaned on the way in: `file` carries the tail of an HTML anchor after the URL
+(`…zip&p=Completo">Completo`), and `amdt` is wrapped as `{ts '2026-09-03 00:00:00'}`.
+
+The link itself is **public** — it carries no credential — but it is only known through the
+listing, which needs one. `download_aisweb_aixm()` fetches the package named `Completo` and
+stores it under the amendment it belongs to, so the next AIRAC cycle lands beside this one
+rather than over it. A package already on disk is not fetched again.
+
+```{r}
+#| label: read-bra-aisweb-aixm
+#| eval: false
+
+source(here::here("AISWEB", "read_aixm.R"))
+
+aixm_files()        # the packages on disk and the XML each one holds
+aixm_inventory()    # features by type
+```
+
+`Completo` for AMDT 36-26 is a 55 MB zip holding two files of about 335 MB each, `BL_.xml`
+and `BL__decoded.xml`, both AIXM 5.1 `BasicMessage`: a flat sequence of features, one per
+`hasMember`. It is read **without unpacking and without parsing** — at that size the file
+does not fit an XML tree in an ordinary session, and the inventory needs only the name of
+the element that follows each `hasMember`. `BL_.xml` holds **52,346 features of 69 types**:
+
+| Feature | Count | | Feature | Count |
+| --- | --- | --- | --- | --- |
+| `DesignatedPoint` | 7,999 | | `Airspace` | 1,849 |
+| `Runway` | 6,059 | | `AircraftStand` | 1,820 |
+| `AirportHeliport` | 6,019 | | `Taxiway` | 1,146 |
+| `RunwayDirection` | 4,169 | | `Navaid` | 458 |
+| `RouteSegment` | 4,073 | | `Route` | 300 |
+
+plus the procedures (`DepartureLeg`, `ArrivalLeg`, SIDs and STARs), services, lighting and
+the rest. What separates the two files in the package has not been established.
+
+Nothing is extracted into tables yet: the inventory says what is there, and which features
+are worth turning into rows is a decision about what they will be used for.
+
 ## Checking What Arrived
 
 ```{r}
@@ -262,6 +306,24 @@ waypoint came into effect).
 
 **`aisweb_runways.csv`** — `AeroCode`, `ident` (`17R/35L`), `type`, `surface`, `length` and
 `width` in metres, `surface_c` (the PCN string) and `thr`, the two thresholds.
+
+**`aisweb_routes.csv`** — one row per preferential route.
+
+| Column | Meaning |
+| --- | --- |
+| `id`, `ident`, `seq` | identifier, route designator (`CPREBSWZ01`), sequence |
+| `level` | `L` lower or `H` upper airspace |
+| `type` | route type. The documentation lists `PREF`, `ALT`, `SWAP`, `OPC`; the service also returns others (`RCP`) |
+| `adep`, `ades` | origin and destination, ICAO; `adepiata`, `adesiata` the IATA codes |
+| `route` | the route itself, as a string of points and airways (`NECTO UZ18`) |
+| `flmin`, `flmax` | flight-level band |
+| `eobtstart`, `eobtend` | the off-block time window in which it applies |
+| `waypoint`, `hov`, `rmk` | reference waypoint, time over it, remarks |
+| `dt`, `revdt`, `revid`, `replace`, `lastIdent` | effective date and revision trail |
+| `elemimpactado`, `elemsubstituto`, `fir_contigenciada` | for contingency routes: the element affected, its substitute, the FIR under contingency |
+
+The meanings of the last two rows are read off the column names and one record; the
+documentation describes none of these fields.
 
 Every file also carries `AISWEB_FETCHED`, the date of the download.
 
