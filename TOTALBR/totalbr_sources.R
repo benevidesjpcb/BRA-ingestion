@@ -579,7 +579,8 @@ totalbr_year_edges <- function(year     = 2025,
 # =============================================================================
 totalbr_count_by <- function(cols,
                              raw_dir  = here::here("data-raw", "totalbr"),
-                             date_col = "dt_dia") {
+                             date_col = "dt_dia",
+                             source   = c("auto", "parquet", "csv", "both")) {
   src <- totalbr_sources(raw_dir)
 
   from_parquet <- function(path) {
@@ -614,13 +615,77 @@ totalbr_count_by <- function(cols,
                       name = "MOVEMENTS")
   }
 
-  parts <- c(lapply(src$parquet, from_parquet), lapply(src$csv, from_csv))
-  parts <- Filter(Negate(is.null), parts)
+  # ONE SOURCE PER YEAR. The archive and the API download are both legitimate and
+  # BOTH MAY HOLD THE SAME YEAR -- this document itself suggests downloading a
+  # year beside the archive so the two can be compared. Binding them and summing
+  # then counts that year twice, and the result looks like traffic doubling
+  # rather than like a bug: 2024 and 2025 came out at ~3.9M and ~4.2M movements
+  # against ~1.6M for the years only the archive holds.
+  #
+  # So each part is tagged with where it came from, and a year present in both is
+  # taken from ONE of them:
+  #
+  #   "auto"     per year, whichever source HOLDS MORE OF IT.
+  #
+  #              Not "the archive wins", which was the first attempt and was
+  #              wrong in both directions. Each source carries a token sample of
+  #              the other's period: the API returns a few dozen rows for 2019,
+  #              and the archive turned out to hold 285 rows of 2026 -- so
+  #              preferring the archive silently replaced 1.2 million downloaded
+  #              2026 flights with those 285. Choosing by size gets both ends
+  #              right without knowing where either source's coverage stops,
+  #              and the choice is printed.
+  #   "parquet"  archive only
+  #   "csv"      download only
+  #   "both"     the old behaviour, summed. Only meaningful when you know the
+  #              two do not overlap.
+  #
+  # An overlap is always named, whichever option is chosen. A count nobody can
+  # tell the provenance of is a count nobody should quote.
+  source <- match.arg(source)
+  tag <- function(lst, what) {
+    lst <- Filter(Negate(is.null), lst)
+    lapply(lst, function(d) { d$SOURCE <- what; d })
+  }
+  parts <- c(tag(lapply(src$parquet, from_parquet), "parquet"),
+             tag(lapply(src$csv,     from_csv),     "csv"))
   if (length(parts) == 0)
     return(tibble::tibble(YEAR = character(0), MOVEMENTS = integer(0)))
 
-  dplyr::bind_rows(parts) |>
-    dplyr::mutate(dplyr::across(dplyr::all_of(cols), as.character)) |>
+  all <- dplyr::bind_rows(parts) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(cols), as.character))
+
+  yrs <- lapply(split(all$SOURCE, all$YEAR), unique)
+  overlap <- names(yrs)[vapply(yrs, length, integer(1)) > 1]
+  if (length(overlap) > 0)
+    message("  Year(s) held by BOTH sources: ", paste(sort(overlap), collapse = ", "),
+            if (source == "both") " -- SUMMED: these years are double counted."
+            else if (source == "auto") " -- taking whichever holds more:"
+            else paste0(" -- counted from the ", source, " source only."))
+
+  keep <- switch(source,
+    parquet = all[all$SOURCE == "parquet", ],
+    csv     = all[all$SOURCE == "csv", ],
+    both    = all,
+    auto    = {
+      by_yr <- stats::aggregate(MOVEMENTS ~ YEAR + SOURCE, data = all, FUN = sum)
+      by_yr <- by_yr[order(by_yr$YEAR, -by_yr$MOVEMENTS), ]
+      win   <- by_yr[!duplicated(by_yr$YEAR), c("YEAR", "SOURCE")]
+      if (length(overlap) > 0) {
+        shown <- by_yr[by_yr$YEAR %in% overlap, ]
+        for (y in sort(overlap)) {
+          r <- shown[shown$YEAR == y, ]
+          message(sprintf("    %s: %s", y,
+                          paste(sprintf("%s=%s", r$SOURCE,
+                                        format(r$MOVEMENTS, big.mark = ",")),
+                                collapse = "  ")),
+                  "  -> ", win$SOURCE[win$YEAR == y])
+        }
+      }
+      merge(all, win, by = c("YEAR", "SOURCE"))
+    })
+
+  keep |>
     dplyr::group_by(dplyr::across(dplyr::all_of(c("YEAR", cols)))) |>
     dplyr::summarise(MOVEMENTS = sum(MOVEMENTS), .groups = "drop")
 }

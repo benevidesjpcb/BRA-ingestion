@@ -24,9 +24,15 @@ There is **one folder per dataset**, plus one shared engine:
 | `ODIN/` | **Shared, not a dataset.** `download_odin.R` is the download engine for the whole ICEA/DECEA API: one month per request window, resumable, pagination over a total order, JSON array columns flattened. Three thin wrappers supply only what differs — `TAXI/download_taxi.R`, `TOTALBR/download_totalbr.R` and `KPI08/download_kpi08.R`. Nothing here belongs to one dataset. |
 | `TAXI/` | Taxi time (`dstaxi`) from **two APIs** — ODIN (`download_taxi.R`) and the CGNA (`download_taxi_cgna.R`) — plus source comparison, the metric's standalone validation, and the dashboard build |
 | `KPI08/` | ASMA (`kpi08` via ODIN): download, golden validation, the PBWG export, the dashboard build |
-| `TOTALBR/` | The national movement table (`total_brasil` via ODIN): download, duplicate measurement, the two-stage pipeline |
+| `TOTALBR/` | The national movement table: download from **both APIs that serve it** (`total_brasil` via ODIN, `voossisceab` via the CGNA), duplicate measurement, the two-stage pipeline, and the source comparisons |
+| `CGNA/` | **Shared, not a dataset.** `cgna_common.R` is the plumbing every CGNA downloader needs and none owns: the proxy, the CSV conventions, the JSON flattening. There is no shared *engine* here, because the CGNA endpoints do not share a contract — `/apiv1/tatic` wants `YYYYMMDD` and returns a bare array, `/apiv1/voossisceab` refuses `YYYYMMDD` and returns `{"count": N, "data": [...]}`. |
 | `API_TATIC/` | TATIC — a **different API** (CGNA, token-authenticated, one day per call): download, JSON ingest, harmonisation to APDF |
 | `VRA/` | VRA — a **different API again** (ANAC): probe, download, duplicate inspection |
+
+> **One token, several endpoints.** Every CGNA downloader reads `TATIC_TOKEN`. The token
+> authenticates a *person* against the portal, not against one endpoint — which is the only
+> reason the variable's name says TATIC, and not a reason for one dataset's downloader to
+> source another's.
 
 At the root, three scripts that belong to no dataset: `_chapter-setup.R` (libraries, paths and
 every analysis parameter), `proxy.R` (corporate-proxy settings for every outbound request) and
@@ -257,13 +263,17 @@ percentile; it is the volume/denominator dataset.
 | --- | --- | --- |
 | `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dstaxi/dsTaxiYYYY.csv` | yes |
 | `TAXI/download_taxi_cgna.R` | Downloads the same `dstaxi` table from the **CGNA** API (`apiv1/dstaxi`, token-authenticated, one day per call) into `data-raw/dstaxi/dsTaxiYYYYcgna.csv`, months under `parts/`. Not TATIC — a different endpoint of the same portal. Kept under its own name so the two sources can be compared instead of assumed equal | yes |
-| `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table, one file per year | yes |
+| `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table from **ODIN**, one file per year | yes |
+| `TOTALBR/download_totalbr_cgna.R` | Downloads the same table from the **CGNA** (`/apiv1/voossisceab`), day by day, into `totalbr_YYYYcgna.csv` | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |
 | `TOTALBR/check_totalbr_duplicates.R` | Measures duplication, and pulls the offending rows | yes |
 | `TOTALBR/merge_totalbr_duplicates.R` | Merges the records of one flight into one row | yes |
 | `TOTALBR/prepare_totalbr.R` | The whole cycle in one call: read, drop repeated `pk`, merge flights | yes |
 | `TOTALBR/run_totalbr.R` | Download, check, prepare per month and bind — the whole cycle up to a cut-off date | yes |
-| `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs API download: what matches, what is one-sided, where they disagree | yes |
+| `TOTALBR/compare_totalbr_sources.R` | Parquet archive vs ODIN download: what matches, what is one-sided, where they disagree | yes |
+| `TOTALBR/compare_totalbr_cgna.R` | **ODIN vs CGNA**: rows per day, the set arithmetic under three keys, field-by-field diffs, scope | yes |
+| `TOTALBR/classify_totalbr_daio.R` | Six fields per flight plus `DAIO` — internal, departing, arriving, overflight | yes |
+| `data/oa-patch-bra.csv` | Aerodromes the OurAirports extract lacks or gets wrong | yes |
 | `TOTALBR-BRA-ingestion.qmd` | Documented TOTALBR ingestion pipeline | yes |
 | `data-raw/totalbr/` | The parquet archive plus raw `totalbr_*.csv` (and `parts/` month files) | no (git-ignored) |
 
@@ -300,6 +310,239 @@ and re-binds** — nothing else changes.
 > 31 January → 1 February was split into two incomplete halves by the per-month
 > preparation, and only a pass over the joined data puts it back together.
 
+### Classifying flights against Brazil (`DAIO`)
+
+TOTALBR reduced to what a traffic profile needs, with each flight classified by how it
+touches Brazil: **I** both ends in Brazil, **D** departing to abroad, **A** arriving from
+abroad, **O** overflight — neither end in Brazil, which is why it is in the national table
+at all.
+
+```r
+source(here::here("TOTALBR", "classify_totalbr_daio.R"))
+
+d <- totalbr_daio_month(2026, 1)     # ONE MONTH, from the CGNA part on disk
+totalbr_daio_summary(d)              # flights per class per year, and the feed
+totalbr_daio_unresolved(d)           # the codes still costing flights
+totalbr_daio_write(d)                # -> outputs/totalbr/totalbr-daio-cgna-2026-01.parquet
+
+d <- totalbr_daio_month(2026, 1, feed = "odin")   # the ODIN part, deliberately
+```
+
+**The CGNA is the primary source.** `totalbr_daio_month()` reads
+`data-raw/totalbr/parts/totalbr_<year>cgna_<YYYY-MM>.csv`, not the ODIN part
+`totalbr_<YYYY-MM>.csv` beside it, and if the CGNA has not been downloaded for that month it
+**stops** rather than falling back — the two feeds do not carry the same rows (that is what
+`compare_totalbr_cgna.R` measures), so a DAIO table built from half of each is not a table of
+anything. Which feed produced a result is kept in its `FEED` column, printed by
+`totalbr_daio_summary()`, and written into the file name, so a CGNA classification and an
+ODIN one for the same month cannot overwrite or be mistaken for each other.
+
+The two feeds also spell one field differently — the CGNA writes `co_tipo_voo` where the ODIN
+writes `li_tipovoo` — so the six columns are matched, not named (`TOTALBR_DAIO_COLS`).
+
+Start with a month. `totalbr_daio_month()` reads the raw part already on disk — a few
+hundred megabytes against a gigabyte of parquet, and the same rows the archive holds for
+that month. The whole archive is `totalbr_daio()`, once the prefix rule and the patch file
+are settled on a month you have actually looked at.
+
+The result stays in memory until `totalbr_daio_write(d)` is called. It writes to
+`outputs/totalbr/` — its own folder, because DAIO will not be the only thing this dataset
+produces and a flat `outputs/` stops being readable at about the fifth product — and names
+the file by the
+months the data actually covers (`2026-01`, `2026-01-06`, `2024-01-2026-03`), following the
+naming the rest of the pipeline uses. Naming it by year alone would write January as `2026`,
+which reads as the whole year and is then silently overwritten by a run that really is.
+Parquet by default — 180,000 rows a month, and the timestamps survive as timestamps; pass
+`format = "csv"` when something downstream needs text.
+
+> The month part is the **raw** download, before the duplicate handling in
+> `prepare_totalbr.R`. For a traffic profile that is the point — every record the source
+> served — but a flight reported twice is counted twice. When the count itself has to be
+> right, run `totalbr_prepare(year, month)` first and pass its result as `src`.
+
+The country of each end is decided in four steps, and **which step decided it is kept in the
+table** (`ADEP_SRC`, `ADES_SRC`) — a classification nobody can audit is a number nobody
+should quote:
+
+| Step | How the country was found | `_SRC` |
+| --- | --- | --- |
+| 1 | the OurAirports dump, `data-raw/airports.csv` | `lookup` |
+| 2 | `data/oa-patch-bra.csv` — the hand-maintained list, for what the database lacks | `patch` |
+| 3 | **no database knows the code**, but its first two letters are a Brazilian ICAO prefix (`SB`, `SD`, `SI`, `SJ`, `SN`, `SS`, `SW`), so the aerodrome is in Brazil | `prefix` |
+| 4 | a **Brazilian offshore platform** (`9P..`) — not an aerodrome, not in any database, but its location is not in doubt | `platform` |
+| 5 | the code is **not an aerodrome** (`ZZZZ`, `XXXX`, `AFIL`, other numeric) and is *assumed* Brazilian | `assumed` |
+| — | nothing matched: country `NA`, `DAIO` `NA` | `unresolved` |
+
+Steps 1 and 2 are equally trusted and separately reported: the patch is a few dozen lines
+somebody maintains by hand, and how much traffic leans on it is the difference between a
+list worth curating and one that no longer matters.
+
+Step 4 is a modelling decision, not a lookup: `ZZZZ` and `XXXX` mean "aerodrome not stated"
+and `AFIL` means the plan was filed in the air. It is also the only step that *invents* an
+answer, so it is the only one that can be wrong without anything looking wrong —
+**measure it before quoting any figure**:
+
+```r
+totalbr_daio_assumption_cost(d)   # every class, as classed vs lookup-only
+totalbr_daio_assumed(d)           # which codes it fired on
+```
+
+**Why it is defensible, and where it lands.** An international flight plan requires a
+defined aerodrome; `ZZZZ` is what gets filed when the field is not in the ICAO list — a
+private strip, a farm runway — which in a Brazilian feed is overwhelmingly a Brazilian
+airstrip. `AFIL` says the same from another angle: a plan opened in the air departed outside
+controlled airspace, a domestic circumstance.
+
+January 2026 puts numbers on it. Of 18,477 assumed flight ends, `ZZZZ` was 11,328 (61%),
+`AFIL` 1,022 (6%) and offshore platforms 6,127 (33%) — the last of which are **not**
+assumptions and now report as `platform`. And the cost falls almost entirely on one class:
+
+| `DAIO` | as classed | lookup only | rests on the assumption |
+| --- | ---: | ---: | ---: |
+| I | 153,365 | 136,243 | 11.2% |
+| D | 10,045 | 10,039 | 0.1% |
+| A | 9,882 | 9,876 | 0.1% |
+| O | 6,527 | 6,527 | 0% |
+
+So **D, A and O are effectively assumption-free** — the international figures rest on
+lookups at both ends. The exposure is that `I` is an upper bound and `D + A` a lower one:
+if an unstated aerodrome were in fact abroad, that flight moves from internal to arriving or
+departing.
+
+> **Offshore platforms are helicopter shuttles, not airline movements.** They are correctly
+> internal, but for anything comparing airports or airline networks, filter them:
+> `d[d$ADEP_SRC != "platform" & d$ADES_SRC != "platform", ]`.
+
+> **Where the file comes from**, written down because a filename will not remind anyone:
+> `data-raw/airports.csv` is the full dump from <https://ourairports.com/data/>. It has 86k
+> rows because it counts every heliport and closed strip; the ~22k carrying a four-letter
+> code are what a flight can be matched against, and they resolve **99.99%** of a month's
+> flying. Set `BRA_AIRPORT_DB` to use a file elsewhere.
+>
+> In that dump `icao_code` is filled for a subset, while `ident` and `gps_code` carry the
+> ICAO code for many of the rest — so aerodromes are keyed on all three, taking `ident` and
+> `gps_code` only where they look like an ICAO code (four letters, nothing else). That
+> excludes the local identifiers the same columns hold for small fields (`00A`, `3B7`), and
+> it more than doubles the usable lookup: 10,457 aerodromes on `icao_code` alone against
+> 22,452 on all three.
+>
+> A second database (world-airport-database.com) was tried and dropped — it held a fraction
+> of the aerodromes, gave the country as a name rather than a code, and shipped an empty ISO
+> country column. It resolved nothing this one does not.
+
+> **Two `readr` defaults are turned off when a lookup file is read, and both cost aerodromes
+> silently.** `na = character(0)`, because readr treats the string `"NA"` as missing and
+> **`NA` is the ISO2 code for Namibia** — every Namibian aerodrome was read as having no
+> country and dropped, which is how `FYWH` (Windhoek) reached the unresolved list. And
+> `col_character()`, because type inference is what turned world-airports.csv's empty
+> `iso_country` into a logical column. Read as text, an empty column is a column of `""`,
+> rejected for having no values rather than by accident of type.
+
+> **The schema is detected, not assumed.** Two databases have been used here and they
+> disagree on both names and contents: OurAirports gives `icao_code` + `iso_country` (`"BR"`),
+> world-airport-database gives `icao` + `country` (`"Brazil"`) with **`iso_country` entirely
+> empty**. That last one is the trap: readr types a column of nothing as `lgl`, so a lookup
+> built on `iso_country` joins cleanly, returns `NA` for every aerodrome, and leaves every
+> flight unclassified without raising one error. So a column is used only if it holds
+> values, a country given as a *name* is translated through
+> `data/country-icao-iso-etc.csv`, and what was chosen is printed on every run.
+
+> `totalbr_lookup_coverage(d = d)` compares any candidate files, and reports coverage two
+> ways: `CODES_PCT` over the distinct aerodrome codes, and `ENDS_PCT` over flight ends —
+> the same thing weighted by traffic. **Read `ENDS_PCT`.** The two diverge sharply, because
+> the codes a database misses are overwhelmingly aerodromes seen once or twice: for January
+> 2026 the OurAirports dump knows 69.8% of the distinct codes and resolves 99.99% of the
+> flying.
+
+> The prefix rule is deliberately narrow. A draft version used
+> `grepl("^S[BDNSWISJ]|9|^Z|AFIL|NI", ADEP)`, whose alternation binds loosely — `9` and `NI`
+> match *anywhere*, so `SANI`, `LFNI` and `CYNI` all become Brazilian on the strength of two
+> letters in the middle, and `^Z` is the ICAO prefix for **China**. The patterns here are
+> anchored, and unresolved codes are listed rather than absorbed.
+
+`totalbr_daio_unresolved()` is the to-do list for the patch file, worst first: every row is
+flights that cannot be counted. A code on thousands of flights is worth ten minutes with a
+chart; one appearing twice is not.
+
+### The national table from both APIs (ODIN and CGNA)
+
+`total_brasil` is served by **two APIs**, and whether they agree flight by flight is worth
+asking rather than assuming — exactly as for `dstaxi`. The CGNA serves it at
+`/apiv1/voossisceab` ("Consulta Voos SISCEAB"), with the same `TATIC_TOKEN` as TATIC.
+
+```r
+source(here::here("TOTALBR", "download_totalbr_cgna.R"))
+
+cgna_totalbr_check("2026-01-15")           # one request, everything it answered
+cgna_totalbr_check("2026-01-15", per_page = 50)   # if that came back 502
+download_totalbr_cgna(2026, month = 1)     # ONE MONTH first
+```
+
+`cgna_totalbr_check()` is the first thing to run, and the thing to run again whenever a
+download comes back empty: it asks for a single page of one day and prints the URL, the HTTP
+status, the raw body and the columns it found. An empty year and a rejected request look
+identical from the outside — a missing proxy, an expired token and a date the endpoint
+refuses all produce "no rows" — and this is what separates them. For the same reason the
+downloader does **not** probe a list of candidate paths: five URLs failing for one reason,
+reported as five URLs with no rows, throws away the one thing the API actually said.
+
+```bash
+Rscript TOTALBR/download_totalbr_cgna.R 2026 20260101 20260131
+```
+
+It writes `data-raw/totalbr/totalbr_2026cgna.csv`, with `parts/totalbr_2026cgna_2026-01.csv`
+per month — **beside** the ODIN files and never over them. The inventory in
+`totalbr_sources.R` matches `^totalbr_\d{4}\.csv$`, so a CGNA year sits in the same folder
+without ever being read as if it were the ODIN download.
+
+Three things this endpoint does differently from ODIN, each handled in the downloader:
+
+- **Dates are `YYYY-MM-DD`, and only that.** `/apiv1/tatic` requires `YYYYMMDD` and refuses
+  anything else; this endpoint refuses `YYYYMMDD` in turn, and refuses a time of day as well
+  (`{"error":"Formato inválido. Utilize YYYY-MM-DD."}`). **The day is the finest window that
+  exists here** — which is what decides the 502 below.
+- **`per_page` defaults to 1 and caps at 1000**, so a day of the national table is always
+  several pages. The envelope is `{"count": N, "data": [...]}` — `count` is the rows *in
+  that page*, and there is no field describing the result as a whole, so **a short page is
+  the only end-of-result signal**: a full page means ask for the next one.
+- **A day the portal refuses is retried, then left for the next run.** The endpoint has
+  answered `HTTP 502 ... Error reading from remote server` at exactly 61s — the CGNA's own
+  gateway giving up on its backend. Three things were measured before concluding anything:
+  `per_page` is not a lever (502 at `per_page` 5 and 50 alike, so the result is assembled
+  before paging touches it), the date range is not one either, and **the same request fails
+  in a browser**. It is their service being degraded, and the only client-side answer is to
+  come back later: immediately, after 20s, after 60s, then the day is named and left. A 401
+  stops at once. A day that fails every attempt is never stored short — `CGNA_DAY` did not
+  record it, so a re-run asks again.
+- **`datai=d dataf=d+1`, trimmed locally.** Whether `dataf` is inclusive is not documented,
+  and the two readings fail in opposite ways: asked as `[d, d+1]`, an inclusive bound
+  returns a day too many, which the trim removes; asked as `[d, d]`, an *exclusive* bound
+  returns nothing — indistinguishable from a day with no flights, and stored as one. A
+  superset that is trimmed cannot lose a day; an empty answer that looks like an answer can
+  lose every day, silently. A zero-row day is therefore reported loudly: the national table
+  having no flights at all is not a thing that happens.
+- **The window is walked one day at a time** and the answer trimmed to that day on `dt_dia`,
+  with the day recorded in an added `CGNA_DAY` column. That is what makes a re-run resumable
+  at the day — an interrupt costs one day, never a month.
+
+Then compare, starting with the daily profile, because the first question about two sources
+of different size is not "which flights differ" but "is one of them truncated":
+
+```r
+source(here::here("TOTALBR", "compare_totalbr_cgna.R"))
+totalbr_cgna_daily(2026, month = 1)        # rows per day, both sides
+compare_totalbr_cgna(2026, month = 1)      # one row per key: pk, eobt, eobt_seq
+totalbr_cgna_field_diffs(2026, month = 1)  # same flight, different values
+totalbr_cgna_scope(2026, "addep", month = 1)
+```
+
+`compare_totalbr_cgna()` reports the match rate of **three keys**, because a low rate is a
+finding about the key before it is a finding about the data: `pk` (the row hash — it matches
+only if both sides compute it the same way), `eobt` (callsign + aerodrome pair + filed
+off-block time, which survives a shift in the observed stamps) and `eobt_seq` (the same plus
+the rotation number within the day, so a side holding three flights of a route and a side
+holding two no longer "match").
+
 TOTALBR has two sources and both count: a **parquet archive** holding the history (all
 airports, up to 2025), and the **ODIN API** for the rest. `totalbr_sources.R` reads them as
 one dataset, so `totalbr_missing_years()` asks the API only for what the archive lacks. Set
@@ -308,6 +551,13 @@ one dataset, so `totalbr_missing_years()` asks the API only for what the archive
 > The API holds only a token sample of the early years: a 2019 download returns a few dozen
 > rows in total. That is the source answering truthfully, not a broken filter. Judge
 > coverage by the day counts in the qmd, never by the fact that a download ran.
+
+> **Counting across two sources double counts the years both hold.** `totalbr_count_by()`
+> takes one source per year — the archive where it covers the year, the API download
+> elsewhere — and names any year held by both. Summing them showed 2024 and 2025 at roughly
+> twice the movements of the years only the archive covers, which reads as traffic doubling
+> rather than as a bug. `source = "both"` restores the sum where you know they do not
+> overlap.
 
 ICEA/DECEA have reported duplication in the ODIN data. `check_totalbr_duplicates()`
 measures it under a strict, operational definition: a repeated `pk` (the row hash — the

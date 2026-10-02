@@ -1,0 +1,1014 @@
+#!/usr/bin/env Rscript
+# =============================================================================
+# compare_totalbr_cgna.R
+#
+# The same national table from the TWO APIs that serve it: ODIN
+# (data-raw/totalbr/totalbr_YYYY.csv) and the CGNA
+# (data-raw/totalbr/totalbr_YYYYcgna.csv).
+#
+#   source(here::here("TOTALBR", "compare_totalbr_cgna.R"))
+#   totalbr_cgna_daily(2026)                  # START HERE -- rows per day, both sides
+#   totalbr_cgna_fill(2026, month = 1)        # THEN THIS -- is the key column there?
+#   totalbr_cgna_time_shift(2026, month = 1)  # how far apart the two stamp
+#   totalbr_cgna_stamp_check(2026, month = 1) # ... and whether that is a clock
+#   compare_totalbr_cgna(2026)                # the summary, over the common window
+#   compare_totalbr_cgna(2026, month = 1)     # the month PARTS, not the merged years
+#   totalbr_cgna_field_diffs(2026, month = 1) # same flight, different values
+#   totalbr_cgna_examples(2026, month = 1)    # rows only one side has
+#   totalbr_cgna_pair(2026, month = 1)        # pair on airframe, then callsign
+#   totalbr_cgna_unpaired(2026, month = 1)    # ... and what that could not pair
+#   totalbr_cgna_scope(2026, "addep", month = 1)     # WHERE the extra rows are
+#
+# This is the taxi comparison (TAXI/compare_taxi_cgna.R) asked of the national
+# table, and it is deliberately NOT compare_totalbr_sources.R. That one compares
+# the parquet archive against ODIN and carries a measured time shift between
+# them, because those two sources stamp dh_inicio ten minutes apart. Two APIs
+# serving the same table are a different question and start from a clean slate:
+# assume nothing about a shift, measure it, and only then decide what the key
+# has to survive.
+#
+# WHAT THE FIRST REAL MONTH SHOWED (2026-01, ODIN 179,836 rows vs CGNA 178,281)
+#
+#   * pk matches NOTHING. The hashes are computed differently; see the key notes.
+#   * THE CGNA REPORTS A WIDER WINDOW, NOT A DISPLACED CLOCK. Against the ODIN,
+#     its dh_inicio is -50 minutes and its dh_fim is +50, each constant to the
+#     minute on 92-97% of pairs, while dh_eobt agrees EXACTLY on 93.4%. A clock
+#     moves both ends the same way; this is symmetric, so one source is not
+#     reporting the movement times but an envelope around them -- and the ODIN
+#     is the one whose dh_inicio sits on the filed off-block time where a flight
+#     left on schedule.
+#
+#     Nothing here is correctable. Which definition the study wants is a
+#     question for ICEA/CGNA; what this file does is refuse to hide it.
+#
+#   * dt_dia follows the CGNA's padded start, so it is displaced by the same -50.
+#     That is why the keys are dated on dh_eobt instead: a displaced day cannot
+#     match a flight in the first 50 minutes of a day at all -- the ODIN files it
+#     on the 15th, the CGNA on the 14th -- and it is reported as one-sided on
+#     BOTH sides while nothing is missing.
+#
+#   * ODIN writes 1970-01-01 into dh_eobt as a null sentinel where the CGNA
+#     carries a real filed time (qmd open point 2). Do not average or compare
+#     that column without excluding epoch dates.
+#
+#   * THE KEYS ARE DATED ON THE OBSERVED dt_dia, NOT ON dh_eobt. The filed time
+#     was tried as the date and dropped: it reaches the same 91.5% (164,518
+#     against 164,469 flights, 49 apart in 180,000), so it never carried the
+#     match, while it is a PLANNED value that a re-file changes and it carries
+#     the 1970 sentinel on 10,466 ODIN rows. The day displacement it was brought
+#     in to dodge is handled where it is visible instead -- the cascade retries
+#     the CGNA's adjacent day as a named step worth 2,876 pairs.
+#
+#   * THE REGISTRATION IS THE BETTER IDENTIFIER, measured. Under keys
+#     dated on dh_eobt, reg_seq matched 96.1% against 92.2% for flight_seq
+#     (registration where present, callsign where not) and 92.3% for eobt_seq
+#     (callsign throughout). The two callsign-bearing keys landing within 0.1
+#     point of each other says the callsign is what caps them, not the date or
+#     the route.
+#
+#     But reg_seq covers only the 61% of flights carrying a registration, so its
+#     96.1% and flight_seq's 92.2% are not rates over the same population. Read
+#     MATCH_PCT beside KEYED_ODIN/KEYED_CGNA, always.
+#
+# THE WINDOW. Everything except totalbr_cgna_daily() compares only the days the
+# CGNA file holds, because a half-downloaded year is the normal state and its
+# missing months are not a difference between the sources. totalbr_cgna_daily()
+# is deliberately NOT windowed: seeing which days exist on one side only is the
+# whole point of it.
+#
+# THE COLUMN NAMES ARE NOT ASSUMED EQUAL. The CGNA taxi endpoint spells four
+# columns without the underscores the files on disk use (dhbimtra for
+# dh_bimtra, and so on), so every column here is looked up by its name with the
+# underscores removed and the case folded. A rename that silently does not fire
+# is how a comparison ends up reporting that two identical files share nothing.
+#
+# WHAT COUNTS AS "THE SAME FLIGHT". Three keys, and the summary reports the
+# match rate of each, because a low rate is a finding about the KEY before it is
+# a finding about the data:
+#
+#   "pk"        MEASURED AT ZERO. It is 100% populated on both sides, and not one
+#               of 179,836 ODIN rows shares a pk with any of 178,276 CGNA rows
+#               for 2026-01. The two APIs compute the row hash differently, so
+#               pk cannot pair anything across them. It is kept in the default
+#               set precisely so that stays visible: a future run finding a
+#               non-zero match here would mean one of them changed how it
+#               hashes, which is worth knowing.
+#
+#   "reg_seq"   Registration + aerodrome pair + calendar day, plus
+#               the rotation number within that day. The registration is the
+#               AIRFRAME, which is what physically flew; a callsign is an
+#               operational label that gets reused and re-filed. No time of day
+#               enters the key at all, so it cannot be broken by the two sources
+#               stamping the same event differently -- which is the failure the
+#               planned-time keys are exposed to.
+#
+#               Its own exposure is co_matricula, measured at 61.3% (ODIN) and
+#               60.5% (CGNA) for 2026-01 -- not the "largely null" the qmd's open
+#               point 4 recorded from an early sample, but 39% of flights that
+#               this key cannot pair. They are reported as KEYLESS rather than
+#               matched to each other. Run totalbr_cgna_fill() on any new period
+#               before relying on it.
+#
+#   "flight_seq" The registration where it is known, the callsign where it is
+#               not. Keeps the 39% at the cost of a weaker identifier on that
+#               part. Read beside reg_seq, not instead of it.
+#
+#   "eobt_seq"  Callsign + aerodrome pair + the day of the filed off-block time,
+#               plus the rotation number. dh_eobt is PLANNED, not observed --
+#               both sources copy it from the same flight plan, so it survives a
+#               shift in the observed stamps, but a re-filed EOBT changes it and
+#               two sources snapshotting the plan at different moments disagree.
+#               Kept as the counterweight: if it matches far better than
+#               reg_seq, the registration is the problem, and vice versa.
+#
+
+# WHY THE ROTATION NUMBER. Without it, aerodrome pair plus day is ONE key for
+# every rotation of a route in a day, so a side holding three legs of
+# SBRJ-SBSP and a side holding two still "match" and the missing leg is never
+# reported. Numbering them earliest-first pairs leg to leg and leaves the
+# surplus one unmatched, which is the thing being looked for.
+#
+# AND WHY NO TIME WINDOW IN THE KEY. A tolerance cannot be chosen before the
+# offset is measured -- picking "15 minutes" because it sounds reasonable is how
+# a systematic difference gets absorbed and reported as agreement.
+# totalbr_cgna_time_shift() measures it on pairs the airframe key found without
+# using time at all; only then is a window worth building.
+#
+# Nothing is merged or corrected here. Which source wins is a decision about the
+# study, not about the files.
+# =============================================================================
+
+suppressPackageStartupMessages({
+  library(data.table)
+})
+
+# columns compared field by field once the flights are paired
+TOTALBR_CGNA_CMP_COLS <- c("co_indicativo", "co_addep", "co_addes",
+                           "co_matricula", "co_modelo", "co_tipo_voo",
+                           "dh_inicio", "dh_fim", "dh_eobt", "dt_dia")
+
+# ---- where the two files are -------------------------------------------------
+# Left = ODIN, right = CGNA. `month` ("01", or 1) compares the MONTH PARTS
+# instead of the merged years: cheaper when only one month is on the CGNA side,
+# and it does not depend on the merge having been re-run. The two sides name
+# their parts differently -- the ODIN engine writes totalbr_2026-01.csv, this
+# project's CGNA download writes totalbr_2026cgna_2026-01.csv -- which is the
+# only reason this needs a function rather than a path.
+totalbr_cgna_paths <- function(year, month = NULL,
+                               dir = here::here("data-raw", "totalbr")) {
+  if (is.null(month))
+    return(list(odin = file.path(dir, sprintf("totalbr_%d.csv", year)),
+                cgna = file.path(dir, sprintf("totalbr_%dcgna.csv", year))))
+  mm <- sprintf("%02d", as.integer(month))
+  list(odin = file.path(dir, "parts", sprintf("totalbr_%d-%s.csv", year, mm)),
+       cgna = file.path(dir, "parts", sprintf("totalbr_%dcgna_%d-%s.csv",
+                                              year, year, mm)))
+}
+
+# ---- reading -----------------------------------------------------------------
+totalbr_cgna_read <- function(path) {
+  if (!file.exists(path)) stop("Not found: ", path)
+  d <- data.table::fread(file = path, sep = ";", colClasses = "character",
+                         na.strings = "", showProgress = FALSE,
+                         fill = Inf, header = TRUE)
+  data.table::setnames(d, names(d), tolower(names(d)))
+  d[]
+}
+
+# One column, found under either spelling. Returns NA of the right length when
+# the side does not carry it at all, so a missing column narrows the comparison
+# instead of stopping it.
+totalbr_cgna_col <- function(d, name) {
+  flat <- function(x) gsub("[^a-z0-9]", "", tolower(x))
+  hit  <- which(flat(names(d)) == flat(name))
+  if (length(hit) == 0) return(rep(NA_character_, nrow(d)))
+  as.character(d[[hit[1]]])
+}
+
+# Text that means the same thing must compare equal: trailing blanks, case and
+# the ISO "T" separator are formatting, not data.
+totalbr_cgna_norm <- function(x) {
+  x <- trimws(as.character(x))
+  x[!nzchar(x)] <- NA_character_
+  toupper(x)
+}
+totalbr_cgna_norm_time <- function(x) {
+  x <- totalbr_cgna_norm(x)
+  x <- sub("T", " ", x, fixed = TRUE)
+  substr(x, 1, 19)
+}
+
+# ---- the keys ----------------------------------------------------------------
+# blank the key wherever the column it rests on is missing
+.tb_na_if_missing <- function(k, on) ifelse(is.na(on) | !nzchar(on), NA_character_, k)
+
+totalbr_cgna_key <- function(d, key = "reg_seq") {
+  cs   <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_indicativo"))
+  dep  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_addep"))
+  des  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_addes"))
+  reg  <- totalbr_cgna_norm(totalbr_cgna_col(d, "co_matricula"))
+  eobt <- totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_eobt"))
+
+  # THE KEY IS DATED ON dt_dia, THE OBSERVED DAY -- NOT ON dh_eobt.
+  #
+  # Dating on dh_eobt was tried and dropped. It costs nothing to drop: pairing
+  # the same month with the observed day instead reaches 91.5% either way
+  # (164,469 flights against 164,518, 49 apart in 180,000), so the filed time
+  # was never carrying the match. And it costs two things to keep:
+  #
+  #   * dh_eobt is a PLANNED time. It changes when the plan is re-filed, and the
+  #     two sources snapshot the plan at different moments.
+  #   * the ODIN writes the epoch 1970-01-01 into it as a null sentinel on
+  #     10,466 rows of 2026-01. Dating on it collapses every sentinel-bearing
+  #     flight of a route onto the single day "1970-01-01" -- eight distinct
+  #     CMP745 MPTO-SANT flights, on the 1st, 4th, 6th, 8th, 10th, 13th, 15th
+  #     and 18th of January, become one route-day holding eight rows that then
+  #     look like repeats of one another.
+  #
+  # The known cost of the observed day is that the CGNA's dt_dia follows its
+  # padded start and is displaced -50 minutes, so a flight in the first 50
+  # minutes of a day is filed on the 15th by the ODIN and the 14th by the CGNA.
+  # That is absorbed where it belongs -- in the cascade, which retries the
+  # adjacent day and SAYS it did so (totalbr_cgna_pair) -- not by swapping in a
+  # different date column and hoping.
+  day <- totalbr_cgna_day(d)
+
+  # Numbers the rotations of one route within one day, earliest first, so a side
+  # holding three legs and a side holding two match leg-to-leg and leave the
+  # surplus one unmatched -- which is the thing being looked for. Without it,
+  # ADEP+ADES+day is ONE key for every rotation, and the shuttle routes
+  # (SBRJ-SBSP and the like) silently "match" at the wrong multiplicity.
+  seq_within <- function(base, ord_by) {
+    ord    <- order(base, ord_by, na.last = TRUE)
+    seq_no <- integer(length(base))
+    seq_no[ord] <- stats::ave(seq_along(ord), base[ord], FUN = seq_along)
+    paste(base, seq_no, sep = "|")
+  }
+
+  switch(key,
+    # the row hash, case-folded -- it matches only if both sides compute it the
+    # same way, which is itself worth knowing
+    pk       = totalbr_cgna_norm(totalbr_cgna_col(d, "pk")),
+
+    # ---- the airframe keys: what identifies a flight physically -------------
+    # The REGISTRATION, not the callsign. A callsign is an operational label --
+    # reused across the day, re-filed, and in general aviation often just the
+    # registration anyway; the registration is the aircraft. Paired with the
+    # aerodromes and the calendar day it says "this airframe flew this route
+    # that day", which is a fact both sources should agree on however they stamp
+    # their times.
+    #
+    # CHECK co_matricula IS POPULATED FIRST. This project has already recorded
+    # it as "largely null" in an early sample (TOTALBR qmd, open point 4), and a
+    # key built on a mostly-empty column reports two identical files as sharing
+    # nothing. totalbr_cgna_fill() measures it, per side, before any of this is
+    # believed.
+    # NA where the registration is missing, NOT the string "NA". paste() turns a
+    # missing value into the literal "NA", which would collapse every
+    # registration-less flight of a route-day into ONE key and then match them
+    # to each other by rotation order -- a false pairing, arrived at silently.
+    # A flight with no registration simply cannot be matched on the airframe,
+    # and is reported as unmatched, which is the truth.
+    reg_day  = .tb_na_if_missing(paste(reg, dep, des, day, sep = "|"), reg),
+    # ordered on the observed start: the rotations of a route within a day only
+    # need to be put in order, and dh_inicio is displaced by a constant, so it
+    # orders them identically on both sides
+    reg_seq  = .tb_na_if_missing(seq_within(paste(reg, dep, des, day, sep = "|"),
+                          totalbr_cgna_norm_time(
+                            totalbr_cgna_col(d, "dh_inicio"))), reg),
+
+    # The practical key when the registration is only partly there, as it is:
+    # the airframe where it is known, the callsign where it is not. The callsign
+    # is a weaker identifier -- reused, re-filed -- but it is present on every
+    # row, so this keeps the 39% of flights reg_seq has to drop. Which half a
+    # match came from is not distinguished, so read it beside reg_seq rather
+    # than instead of it.
+    flight_seq = seq_within(
+      paste(ifelse(is.na(reg), cs, reg), dep, des, day, sep = "|"),
+      totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio"))),
+
+    # The callsign key on the OBSERVED day -- the second pass of the cascade.
+    # eobt_seq below is the same shape dated on the filed time, and is kept only
+    # as a diagnostic to compare against; this is the one that pairs.
+    cs_seq   = seq_within(paste(cs, dep, des, day, sep = "|"),
+                          totalbr_cgna_norm_time(
+                            totalbr_cgna_col(d, "dh_inicio"))),
+
+    # ---- the planned-time keys: DIAGNOSTIC ONLY ----------------------------
+    # Not used by the cascade. They date on dh_eobt, which is why they are kept
+    # around -- to be compared against the observed-day keys, not to pair with.
+    # dh_eobt is a PLANNED value, not an observed one. Both sources copy it from
+    # the same flight plan, which is why it survives a shift in the observed
+    # stamps -- but a re-filed off-block time changes it, and two sources that
+    # snapshot the plan at different moments will disagree. Kept for comparison
+    # with the airframe keys rather than as the answer: if eobt matches far
+    # better than reg, the registration is the problem, and the other way round.
+    eobt     = paste(cs, dep, des, substr(eobt, 1, 16), sep = "|"),
+    eobt_day = paste(cs, dep, des, substr(eobt, 1, 10), sep = "|"),
+    eobt_seq = seq_within(paste(cs, dep, des, substr(eobt, 1, 10), sep = "|"), eobt),
+    stop("Unknown key '", key,
+         "'. Use pk, reg_day, reg_seq, flight_seq, cs_seq, eobt, eobt_day or eobt_seq.")
+  )
+}
+
+# The day a row belongs to, on the table's own date column. dt_dia is what the
+# ODIN download anchors its month windows on; dh_inicio is the fallback for a
+# side that does not carry it.
+totalbr_cgna_day <- function(d) {
+  day <- substr(totalbr_cgna_norm_time(totalbr_cgna_col(d, "dt_dia")), 1, 10)
+  if (all(is.na(day)))
+    day <- substr(totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio")), 1, 10)
+  day
+}
+
+.totalbr_cgna_prep <- function(path, key = "reg_seq") {
+  d <- totalbr_cgna_read(path)
+  d[, KEY := totalbr_cgna_key(d, key)]
+  d[, DAY := totalbr_cgna_day(d)]
+  d[]
+}
+
+# ---- the period the two files have in common --------------------------------
+# A partial download is the normal state while a year is being filled in, and
+# comparing January of one source against a whole year of the other reports the
+# months not downloaded yet as a difference between the sources. They are not.
+# So the comparison is confined to a window, and the DEFAULT window is the span
+# of days the CGNA file actually holds. Pass from/to ("YYYY-MM-DD") to narrow.
+totalbr_cgna_window <- function(year, from = NULL, to = NULL, month = NULL,
+                                key = "reg_seq",
+                                paths = totalbr_cgna_paths(year, month),
+                                quiet = FALSE) {
+  load1 <- function(path, what) {
+    if (!file.exists(path)) stop(what, " not found: ", path)
+    if (!quiet) message("Reading ", what, ": ", path)
+    .totalbr_cgna_prep(path, key)
+  }
+  a <- load1(paths$odin, "ODIN")
+  b <- load1(paths$cgna, "CGNA")
+
+  lo <- if (is.null(from)) min(b$DAY, na.rm = TRUE) else as.character(from)
+  hi <- if (is.null(to))   max(b$DAY, na.rm = TRUE) else as.character(to)
+  if (!quiet) message(sprintf("Window: %s -> %s (%s), key = %s", lo, hi,
+                              if (is.null(from) && is.null(to))
+                                "the days the CGNA file holds" else "given", key))
+  list(a = a[!is.na(DAY) & DAY >= lo & DAY <= hi],
+       b = b[!is.na(DAY) & DAY >= lo & DAY <= hi],
+       from = lo, to = hi, key = key)
+}
+
+# =============================================================================
+# totalbr_cgna_fill(year, month) -- RUN THIS BEFORE CHOOSING A KEY
+#
+# How populated each candidate key column is, on each side. A key built on a
+# column one source leaves empty reports two identical files as sharing nothing,
+# and that failure is indistinguishable from a real disagreement.
+#
+# co_matricula is the one to look at. It is what identifies the airframe, so it
+# is the right thing to key on IF IT IS THERE -- and this project has already
+# recorded it as "largely null" in an early sample (TOTALBR qmd, open point 4).
+# Whether that still holds for 2026, and whether it holds equally on both sides,
+# decides between reg_seq and eobt_seq. Measure, then choose.
+# =============================================================================
+totalbr_cgna_fill <- function(year, month = NULL,
+                              cols = c("pk", "co_matricula", "co_indicativo",
+                                       "co_addep", "co_addes", "co_modelo",
+                                       "dh_eobt", "dh_inicio", "dh_fim", "dt_dia"),
+                              paths = totalbr_cgna_paths(year, month)) {
+  read1 <- function(path, what) {
+    if (!file.exists(path)) { message("Not found: ", path); return(NULL) }
+    message("Reading ", what, ": ", path)
+    totalbr_cgna_read(path)
+  }
+  a <- read1(paths$odin, "ODIN"); b <- read1(paths$cgna, "CGNA")
+  if (is.null(a) || is.null(b)) stop("Both sides are needed.")
+
+  pct <- function(d, cl) {
+    v <- totalbr_cgna_col(d, cl)
+    if (all(is.na(v))) return(NA_real_)      # column absent entirely
+    round(100 * mean(!is.na(v) & nzchar(trimws(v))), 1)
+  }
+  out <- data.table::data.table(
+    COLUMN    = cols,
+    ODIN_PCT  = vapply(cols, function(cl) pct(a, cl), numeric(1)),
+    CGNA_PCT  = vapply(cols, function(cl) pct(b, cl), numeric(1)))
+  out[, NOTE := data.table::fifelse(
+    is.na(ODIN_PCT) & is.na(CGNA_PCT), "absent both sides",
+    data.table::fifelse(is.na(ODIN_PCT), "absent from ODIN",
+    data.table::fifelse(is.na(CGNA_PCT), "absent from CGNA",
+    data.table::fifelse(pmin(ODIN_PCT, CGNA_PCT) < 50,
+                        "TOO SPARSE TO KEY ON", ""))))]
+  out[]
+}
+
+# =============================================================================
+# totalbr_cgna_time_shift(year, month) -- how far apart the two sources stamp
+#
+# Pairs flights on the airframe key (which carries no time) and reports the
+# distribution of the difference in dh_inicio.
+#
+# reg_seq, not reg_day: on a route-day with several legs, reg_day takes whichever
+# leg happens to come first in each file, and the two files are not in the same
+# order -- so it can difference one leg against another and produce outliers that
+# look like data (a MIN of -364 and a MAX of 1430 minutes came from exactly
+# that). The rotation number pairs leg to leg. A constant offset preserves the
+# ordering it is built on, so this stays sound even while the offset is what is
+# being measured. It is the measurement that must
+# come before any tolerance is chosen: picking "15 minutes" because it sounds
+# reasonable is how a systematic offset gets absorbed into a tolerance and
+# reported as agreement.
+#
+# Read the quartiles, not the mean. A tight spread around zero means the sources
+# stamp alike and an exact key would have worked; a tight spread around a
+# non-zero value is a systematic offset, and THAT is the number a window has to
+# straddle; a wide spread means they are measuring different events, and no
+# window makes them the same.
+# =============================================================================
+totalbr_cgna_time_shift <- function(year, month = NULL, key = "reg_seq",
+                                    from = NULL, to = NULL) {
+  w <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
+  a <- w$a[!duplicated(KEY) & !is.na(KEY)]
+  b <- w$b[!duplicated(KEY) & !is.na(KEY)]
+  common <- intersect(a$KEY, b$KEY)
+  if (length(common) == 0)
+    stop("No flight pairs under key '", key, "' -- run totalbr_cgna_fill() first.")
+  a <- a[KEY %in% common][order(KEY)]
+  b <- b[KEY %in% common][order(KEY)]
+
+  ts <- function(d) as.POSIXct(totalbr_cgna_norm_time(
+    totalbr_cgna_col(d, "dh_inicio")), tz = "UTC")
+  diff_min <- as.numeric(difftime(ts(b), ts(a), units = "mins"))
+  diff_min <- diff_min[is.finite(diff_min)]
+  if (length(diff_min) == 0)
+    stop("Neither side carries a usable dh_inicio for the paired flights.")
+
+  q <- stats::quantile(diff_min, c(0, .05, .25, .5, .75, .95, 1), na.rm = TRUE)
+  message(sprintf("%d pair(s) on key '%s'. CGNA minus ODIN, in minutes:",
+                  length(diff_min), key))
+  message(sprintf("  exactly equal: %.1f%%   within 1 min: %.1f%%   within 15: %.1f%%",
+                  100 * mean(diff_min == 0), 100 * mean(abs(diff_min) <= 1),
+                  100 * mean(abs(diff_min) <= 15)))
+  tibble::tibble(PAIRS = length(diff_min),
+                 MIN = q[[1]], P05 = q[[2]], P25 = q[[3]], MEDIAN = q[[4]],
+                 P75 = q[[5]], P95 = q[[6]], MAX = q[[7]],
+                 EQUAL_PCT   = round(100 * mean(diff_min == 0), 1),
+                 WITHIN_1    = round(100 * mean(abs(diff_min) <= 1), 1),
+                 WITHIN_15   = round(100 * mean(abs(diff_min) <= 15), 1))
+}
+
+# =============================================================================
+# totalbr_cgna_stamp_check(year, month) -- IS THE SHIFT A CLOCK OR AN EVENT?
+#
+# The decisive test, and a cheap one. dh_eobt is a PLANNED value: both sources
+# copy it from the same flight plan, so it is the same number on both sides
+# unless something mechanical is moving every timestamp -- a timezone label
+# taken at face value, a parse in the session's zone instead of UTC, a source
+# writing local time.
+#
+#   dh_eobt shifts by the same amount as dh_inicio  -> A CLOCK. Every stamp in
+#       one of the files is displaced. Fix the reading, not the data. This
+#       project has been here before: the archive-vs-ODIN offset was measured at
+#       +50 minutes while the parquet's Europe/Paris label was read as real, and
+#       the true figure was 50 - 60 = -10 once the spurious hour came out
+#       (TOTALBR_SHIFT_MIN in compare_totalbr_sources.R).
+#
+#   dh_eobt agrees and only dh_inicio moves      -> AN EVENT. The two sources
+#       define the start of a flight differently, and no correction is
+#       legitimate: it is a finding about the sources, to take to ICEA/CGNA.
+#
+# Also prints raw strings for a few paired flights, because a displaced clock is
+# usually obvious the moment the two are seen side by side.
+# =============================================================================
+totalbr_cgna_stamp_check <- function(year, month = NULL, key = "reg_seq",
+                                     n = 8, from = NULL, to = NULL) {
+  w <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
+  a <- w$a[!duplicated(KEY) & !is.na(KEY)]
+  b <- w$b[!duplicated(KEY) & !is.na(KEY)]
+  common <- intersect(a$KEY, b$KEY)
+  if (length(common) == 0) stop("No pairs under key '", key, "'.")
+  a <- a[KEY %in% common][order(KEY)]
+  b <- b[KEY %in% common][order(KEY)]
+
+  ts <- function(d, cl) as.POSIXct(
+    totalbr_cgna_norm_time(totalbr_cgna_col(d, cl)), tz = "UTC")
+
+  cols <- c("dh_eobt", "dh_inicio", "dh_fim", "dt_dia")
+  out <- data.table::rbindlist(lapply(cols, function(cl) {
+    dm <- as.numeric(difftime(ts(b, cl), ts(a, cl), units = "mins"))
+    dm <- dm[is.finite(dm)]
+    if (length(dm) == 0)
+      return(data.table::data.table(COLUMN = cl, PAIRS = 0L, MEDIAN_MIN = NA_real_,
+                                    EQUAL_PCT = NA_real_, SAME_AS_MEDIAN_PCT = NA_real_))
+    md <- stats::median(dm)
+    data.table::data.table(
+      COLUMN = cl, PAIRS = length(dm), MEDIAN_MIN = md,
+      EQUAL_PCT = round(100 * mean(dm == 0), 1),
+      # how CONSTANT the shift is: a clock displaces everything by one number,
+      # an event difference spreads
+      SAME_AS_MEDIAN_PCT = round(100 * mean(dm == md), 1))
+  }))
+
+  message("Raw stamps for ", min(n, nrow(a)), " paired flight(s):")
+  show <- utils::head(seq_len(nrow(a)), n)
+  print(data.table::data.table(
+    KEY        = a$KEY[show],
+    EOBT_ODIN  = totalbr_cgna_col(a, "dh_eobt")[show],
+    EOBT_CGNA  = totalbr_cgna_col(b, "dh_eobt")[show],
+    START_ODIN = totalbr_cgna_col(a, "dh_inicio")[show],
+    START_CGNA = totalbr_cgna_col(b, "dh_inicio")[show]))
+
+  pick <- function(cl) {
+    r <- out[COLUMN == cl]
+    if (nrow(r) == 0 || is.na(r$MEDIAN_MIN)) NA_real_ else r$MEDIAN_MIN
+  }
+  e <- pick("dh_eobt"); i <- pick("dh_inicio"); f <- pick("dh_fim")
+
+  # The three cases differ by the SIGNS, and reading only eobt-against-inicio
+  # gets the third of them wrong -- which it did on the first real month.
+  if (!is.na(e) && !is.na(i) && abs(e - i) < 1 && abs(e) >= 1)
+    message("\nVERDICT: dh_eobt moves with dh_inicio (both ~", round(i),
+            " min). A PLANNED field\n  cannot drift between two sources copying it, so this is a CLOCK: every\n",
+            "  stamp in one file is displaced. Fix the reading, not the data.")
+  else if (!is.na(e) && abs(e) < 1 && !is.na(i) && !is.na(f) &&
+           sign(i) != sign(f) && abs(abs(i) - abs(f)) < 1 && abs(i) >= 1)
+    message("\nVERDICT: dh_eobt agrees, and the flight WINDOW is padded: dh_inicio ",
+            round(i), " min\n  and dh_fim ", sprintf("%+d", round(f)),
+            " min. A displaced clock moves both the same way; this is\n",
+            "  symmetric, so one source is not reporting the movement times but an\n",
+            "  ENVELOPE around them. Nothing here is correctable -- decide which\n",
+            "  definition the study needs, and confirm it with ICEA/CGNA.")
+  else if (!is.na(e) && abs(e) < 1 && !is.na(i) && abs(i) >= 1)
+    message("\nVERDICT: dh_eobt agrees exactly and only dh_inicio moves (~", round(i),
+            " min).\n  The clocks are fine; the two sources define the START of a flight\n",
+            "  differently. A finding for ICEA/CGNA, not something to correct.")
+  else
+    message("\nVERDICT: no clean pattern -- eobt ", round(e), ", inicio ", round(i),
+            ", fim ", round(f), " min. Read the raw stamps above.")
+
+  out[]
+}
+
+# =============================================================================
+# compare_totalbr_cgna(year) -- the summary, one row per key
+#
+#   ROWS/KEYS/DUP per side, then the set arithmetic:
+#     BOTH        flights both sources report
+#     ONLY_ODIN   reported by ODIN, absent from the CGNA file
+#     ONLY_CGNA   the reverse
+#     MATCH_PCT   BOTH as a share of the smaller side -- read this FIRST. A low
+#                 figure on pk with a high one on eobt_seq says the two sources
+#                 hash their rows differently, not that they hold different
+#                 flights.
+# =============================================================================
+compare_totalbr_cgna <- function(year, from = NULL, to = NULL, month = NULL,
+                                 keys = c("pk", "reg_seq", "flight_seq", "eobt_seq"),
+                                 quiet = FALSE) {
+  out <- lapply(keys, function(k) {
+    w  <- totalbr_cgna_window(year, from, to, month, key = k, quiet = quiet)
+    # A key built on a column one side does not carry is all-NA there, and would
+    # be reported as "nothing in common" -- a difference between the sources
+    # where there is only a missing column. Say which it is and skip the row.
+    if (all(is.na(w$a$KEY)) || all(is.na(w$b$KEY))) {
+      side <- if (all(is.na(w$a$KEY))) "ODIN" else "CGNA"
+      message("Key '", k, "' skipped: the ", side,
+              " file does not carry the column it is built from.")
+      return(NULL)
+    }
+    ka <- w$a$KEY; kb <- w$b$KEY
+    # A row the key cannot be built for is KEYLESS, not a duplicate. Subtracting
+    # distinct keys from row count conflates the two, and on reg_seq -- which
+    # numbers rotations and so cannot produce a true duplicate -- it reported
+    # 69,601 "duplicates" that were simply flights with no registration.
+    na_a <- sum(is.na(ka)); na_b <- sum(is.na(kb))
+    ka <- ka[!is.na(ka)];   kb <- kb[!is.na(kb)]
+    ua <- unique(ka);       ub <- unique(kb)
+    both <- length(intersect(ua, ub))
+    data.table::data.table(
+      YEAR      = year,
+      KEY       = k,
+      FROM      = w$from,
+      TO        = w$to,
+      ROWS_ODIN = length(w$a$KEY),
+      ROWS_CGNA = length(w$b$KEY),
+      # rows this key could be built for -- the population the rate is over
+      KEYED_ODIN   = length(ka),
+      KEYED_CGNA   = length(kb),
+      KEYLESS_ODIN = na_a,
+      KEYLESS_CGNA = na_b,
+      DUP_ODIN  = length(ka) - length(ua),
+      DUP_CGNA  = length(kb) - length(ub),
+      BOTH      = both,
+      ONLY_ODIN = length(setdiff(ua, ub)),
+      ONLY_CGNA = length(setdiff(ub, ua)),
+      MATCH_PCT = round(100 * both / max(1L, min(length(ua), length(ub))), 1)
+    )
+  })
+  out <- Filter(Negate(is.null), out)
+  if (length(out) == 0)
+    stop("None of the keys (", paste(keys, collapse = ", "),
+         ") can be built from both files.")
+  data.table::rbindlist(out)[]
+}
+
+# =============================================================================
+# totalbr_cgna_pair(year, month) -- MATCH IN CASCADE, AND SAY HOW
+#
+# The registration is the better identifier and the callsign is the one that is
+# always there, and the month says both at once: reg_seq matched 96.1% but only
+# of the 61% of flights carrying a registration (103,674 flights), while the
+# callsign keys matched 92.3% of everything (164,522). Choosing between them
+# throws away either reliability or 60,848 pairings.
+#
+# So neither is chosen. Flights are paired on the AIRFRAME first, and whatever
+# is left over is then paired on the CALLSIGN -- among the leftovers only, with
+# the rotation numbers recomputed there, or the sequence would refer to a
+# population that has already been reduced.
+#
+# Every pairing carries how it was made, for the same reason DAIO carries how
+# each country was decided: "these two rows are the same flight" is a claim, and
+# a claim made on a reused operational label is weaker than one made on an
+# airframe. A count that mixes them without saying so cannot be audited.
+#
+#   totalbr_cgna_pair(2026, month = 1)               # the summary
+#   totalbr_cgna_pair(2026, month = 1, detail = TRUE) # ODIN rows + PAIRED_BY
+# =============================================================================
+# ---- the cascade itself, shared with totalbr_cgna_unpaired() ----------------
+# Marks PAIRED_BY on both sides of an already-loaded window. Split out so the
+# unpaired diagnostic classifies exactly the rows this pairing left over, rather
+# than a second implementation that could drift from it.
+#
+# FOUR PASSES, NOT TWO, because the keys are dated on the observed dt_dia and
+# the CGNA's is displaced -50 minutes. A flight leaving in the first 50 minutes
+# of a day is filed on the 15th by the ODIN and the 14th by the CGNA, so after
+# each pass the leftovers are retried against the CGNA's NEXT day. That retry is
+# a separate, named step precisely so the displacement stays visible in the
+# output instead of being folded into the match rate: it recovers 2,876 pairs on
+# 2026-01, and if a future month recovers far more or none at all, that is a
+# change in the displacement and it should be seen.
+#
+# The rotation number is recomputed at every pass, over the leftovers only.
+# Reusing the numbering from the full month would count rotations that have
+# already been paired, and the second leg of a route would look for a partner
+# that is no longer there.
+.totalbr_cgna_cascade <- function(w) {
+  a <- data.table::copy(w$a); b <- data.table::copy(w$b)
+  a[, PAIRED_BY := NA_character_]; b[, PAIRED_BY := NA_character_]
+
+  # one pass: build `key` over what is still unpaired, optionally moving the
+  # CGNA's day forward by one to absorb the displacement, and mark what matches
+  pass <- function(key, label, shift_cgna) {
+    ia <- which(is.na(a$PAIRED_BY)); ib <- which(is.na(b$PAIRED_BY))
+    if (length(ia) == 0 || length(ib) == 0) return(invisible(NULL))
+    A <- a[ia]; B <- b[ib]
+    # The shift has to move the COLUMN the key dates itself on, not the derived
+    # DAY: totalbr_cgna_key() reads dt_dia afresh, so shifting DAY alone leaves
+    # the key untouched and the pass silently recovers nothing.
+    if (shift_cgna) {
+      cn <- which(gsub("[^a-z0-9]", "", tolower(names(B))) == "dtdia")
+      if (length(cn) == 0) return(invisible(NULL))
+      B <- data.table::copy(B)
+      shifted <- as.character(as.Date(substr(
+        totalbr_cgna_norm_time(B[[cn[1]]]), 1, 10)) + 1)
+      data.table::set(B, j = cn[1], value = shifted)
+      B[, DAY := totalbr_cgna_day(B)]
+    }
+    ka <- totalbr_cgna_key(A, key); kb <- totalbr_cgna_key(B, key)
+    ok_a <- !is.na(ka) & !duplicated(ka)
+    ok_b <- !is.na(kb) & !duplicated(kb)
+    a$PAIRED_BY[ia[ok_a & ka %in% kb[ok_b]]] <<- label
+    b$PAIRED_BY[ib[ok_b & kb %in% ka[ok_a]]] <<- label
+  }
+
+  pass("reg_seq", "registration",        FALSE)
+  pass("reg_seq", "registration +-1d",   TRUE)
+  pass("cs_seq",  "callsign",            FALSE)
+  pass("cs_seq",  "callsign +-1d",       TRUE)
+  list(a = a, b = b)
+}
+
+TOTALBR_CGNA_STEPS <- c("registration", "registration +-1d",
+                        "callsign", "callsign +-1d")
+
+totalbr_cgna_pair <- function(year, month = NULL, from = NULL, to = NULL,
+                              detail = FALSE, quiet = FALSE) {
+  w <- totalbr_cgna_window(year, from, to, month, key = "reg_seq", quiet = quiet)
+  ab <- .totalbr_cgna_cascade(w); a <- ab$a; b <- ab$b
+
+  n <- function(d, v) sum(d$PAIRED_BY %in% v)
+  cnt <- function(d) vapply(TOTALBR_CGNA_STEPS, function(x) n(d, x), integer(1))
+  out <- tibble::tibble(
+    STEP = c(TOTALBR_CGNA_STEPS, "unpaired", "TOTAL"),
+    ODIN = c(cnt(a), sum(is.na(a$PAIRED_BY)), nrow(a)),
+    CGNA = c(cnt(b), sum(is.na(b$PAIRED_BY)), nrow(b)))
+  out$ODIN_PCT <- round(100 * out$ODIN / nrow(a), 1)
+  out$CGNA_PCT <- round(100 * out$CGNA / nrow(b), 1)
+
+  if (!quiet) {
+    paired <- n(a, TOTALBR_CGNA_STEPS)
+    message(sprintf("Paired %s of %s ODIN flight(s) (%.1f%%): %s on the airframe, %s on the callsign, %s of them only on the CGNA's adjacent day.",
+                    format(paired, big.mark = ","), format(nrow(a), big.mark = ","),
+                    100 * paired / nrow(a),
+                    format(n(a, c("registration", "registration +-1d")), big.mark = ","),
+                    format(n(a, c("callsign", "callsign +-1d")), big.mark = ","),
+                    format(n(a, c("registration +-1d", "callsign +-1d")), big.mark = ",")))
+  }
+  if (detail) return(a[])
+  out
+}
+
+# =============================================================================
+# totalbr_cgna_unpaired(year, month) -- WHAT THE CASCADE COULD NOT PAIR, AND WHY
+#
+# The cascade pairs 91.5% of ODIN's 2026-01 rows, and the remaining 15,367 ODIN
+# / 13,812 CGNA rows are the question this answers. The first thing to rule out
+# is the KEY -- an 8.5% residual that is really a keying artefact would be
+# repaired by a different key, not investigated as data. It is not:
+#
+#   * NOT THE WINDOW EDGES. The unpaired share is flat at ~8.3% on every day of
+#     the month, 2026-01-01 and 2026-01-31 included. A boundary effect would
+#     pile up at the ends.
+#   * NOT THE MISSING CALLSIGN. co_indicativo is populated on 100% of unpaired
+#     rows on both sides, so the callsign pass was attempted on all of them.
+#   * NOT THE DAY DISPLACEMENT. The cascade already retries the CGNA's adjacent
+#     day, and that pass is reported separately: it recovers 2,876 pairs, and
+#     what is left over here is what survived it.
+#   * NOT THE FILED TIME. Dating the keys on dh_eobt instead reaches the same
+#     91.5% (164,518 against 164,469, 49 apart in 180,000), so the residual is
+#     not something a planned-time key would have caught.
+#
+# So the residual is the data. It splits three ways, and the split is almost
+# perfectly one-directional -- which is the finding:
+#
+#   "extra rotation"  15,260 of ODIN's 15,367 unpaired rows -- 99.3% of them --
+#                     are on a route-day the CGNA ALSO reports, but are
+#                     rotations it does not carry. The CGNA is reporting a
+#                     subset: PRMES SBPS-SD49 on 2026-01-01 is ten rotations in
+#                     the ODIN (04:45, 08:20, 16:00, 17:40, 18:10, 19:10, 19:40,
+#                     20:00, 20:25, 21:15) and three in the CGNA (03:55, 07:30,
+#                     15:10) -- and those three are the first three of the ten,
+#                     each 50 minutes earlier, which is the padded window again.
+#                     Only 6,312 of the 15,260 carry a registration.
+#
+#   "one side only"   13,671 CGNA rows against 36 ODIN ones: flights on a
+#                     route-day the other source does not report at all. This is
+#                     the CGNA's side of the ledger, and it is a different
+#                     population rather than a shortfall -- these depart the
+#                     general-aviation and secondary fields (SBJR, SBJD, SBBI,
+#                     SBYS, SBNV, SBBH, SBSJ, and ZZZZ) that the ODIN does not
+#                     appear to cover.
+#
+#   "duplicate record" 71 ODIN and 3 CGNA rows repeat a route-day down to the
+#                     observed minute of an ALREADY-PAIRED row on their own
+#                     side. A real but negligible count.
+#
+# SO THE TWO SOURCES DISAGREE IN TWO SEPARATE DIRECTIONS: the ODIN sees more
+# rotations of the flights they both know, and the CGNA sees aerodromes the ODIN
+# does not. Neither is a subset of the other.
+#
+# AN EARLIER VERSION OF THIS FUNCTION REPORTED THIS WRONG, and the reason is
+# worth keeping. It dated the route-day on dh_eobt, whose 1970 sentinel collapses
+# every sentinel-bearing flight of a route onto the single day "1970-01-01":
+# eight distinct CMP745 MPTO-SANT flights, spread from the 1st to the 18th of
+# January, read as eight repeats of one. That produced 2,212 "duplicates" and
+# 7,231 ODIN-only rows, of which 30% and 98% respectively were nothing but the
+# sentinel. Dating on the observed dt_dia, as the pairing keys do, is what these
+# numbers rest on now.
+#
+#   totalbr_cgna_unpaired(2026, month = 1)               # the classification
+#   totalbr_cgna_unpaired(2026, month = 1, detail = TRUE) # the rows, with REASON
+# =============================================================================
+totalbr_cgna_unpaired <- function(year, month = NULL, from = NULL, to = NULL,
+                                  detail = FALSE, quiet = FALSE) {
+  w  <- totalbr_cgna_window(year, from, to, month, key = "reg_seq", quiet = quiet)
+  ab <- .totalbr_cgna_cascade(w); a <- ab$a; b <- ab$b
+
+  # The pairing key WITHOUT the rotation number: it answers "does the other
+  # source report this route on this day at all", which is what separates a
+  # surplus rotation from a flight the other side never saw.
+  # Dated on the observed dt_dia, like the keys that did the pairing -- see the
+  # note in totalbr_cgna_key(). Dating this on dh_eobt was tried and was wrong:
+  # its 1970 sentinel collapses every sentinel-bearing flight of a route onto
+  # the single day "1970-01-01", so eight distinct CMP745 MPTO-SANT flights
+  # spread across January read as eight repeats of one, and the first version of
+  # this classification duly called them duplicates.
+  route_day <- function(d) {
+    paste(totalbr_cgna_norm(totalbr_cgna_col(d, "co_indicativo")),
+          totalbr_cgna_norm(totalbr_cgna_col(d, "co_addep")),
+          totalbr_cgna_norm(totalbr_cgna_col(d, "co_addes")),
+          totalbr_cgna_day(d), sep = "|")
+  }
+  # ... and the same plus the observed start to the minute, which is what tells
+  # a repeat of one flight from a genuinely different rotation of the same route
+  minute_sig <- function(d, rd) paste(rd, substr(
+    totalbr_cgna_norm_time(totalbr_cgna_col(d, "dh_inicio")), 1, 16))
+
+  # The -50-minute displacement applies here exactly as it does in the cascade:
+  # a CGNA flight just after midnight is filed on the previous day, so asking
+  # only "is this route-day on the other side" would report its ODIN partner as
+  # a rotation the CGNA does not carry. The other side's route-days are
+  # therefore taken on their own day AND on the next one.
+  shift_day <- function(rd) {
+    p <- data.table::tstrsplit(rd, "|", fixed = TRUE)
+    paste(p[[1]], p[[2]], p[[3]], as.character(as.Date(p[[4]]) + 1), sep = "|")
+  }
+  rd_a <- route_day(a); rd_b <- route_day(b)
+  seen_by_b <- c(rd_b, shift_day(rd_b))
+  seen_by_a <- c(rd_a, shift_day(rd_a))
+  classify <- function(d, rd, rd_other, paired_sig) {
+    un <- is.na(d$PAIRED_BY)
+    r  <- rep(NA_character_, nrow(d))
+    shared <- un & rd %in% rd_other
+    r[un & !shared] <- "one side only"
+    if (any(shared)) {
+      sig <- minute_sig(d, rd)
+      r[shared] <- data.table::fifelse(
+        sig[shared] %in% paired_sig, "duplicate record", "extra rotation")
+    }
+    r
+  }
+  sig_pa <- minute_sig(a, rd_a)[!is.na(a$PAIRED_BY)]
+  sig_pb <- minute_sig(b, rd_b)[!is.na(b$PAIRED_BY)]
+  a[, REASON := classify(a, rd_a, seen_by_b, sig_pa)]
+  b[, REASON := classify(b, rd_b, seen_by_a, sig_pb)]
+
+  if (detail) return(a[!is.na(REASON)][])
+
+  lv  <- c("duplicate record", "extra rotation", "one side only")
+  cnt <- function(d) vapply(lv, function(x) sum(d$REASON %in% x), integer(1))
+  out <- tibble::tibble(REASON = c(lv, "TOTAL UNPAIRED"),
+                        ODIN = c(cnt(a), sum(!is.na(a$REASON))),
+                        CGNA = c(cnt(b), sum(!is.na(b$REASON))))
+  out$ODIN_PCT <- round(100 * out$ODIN / nrow(a), 1)
+  out$CGNA_PCT <- round(100 * out$CGNA / nrow(b), 1)
+  out
+}
+
+# =============================================================================
+# totalbr_cgna_field_diffs(year) -- same flight, different values
+#
+# Paired on the key, then compared column by column. summary_only = TRUE gives
+# one row per column (how often it disagrees); FALSE gives the flights.
+# =============================================================================
+totalbr_cgna_field_diffs <- function(year, cols = TOTALBR_CGNA_CMP_COLS,
+                                     summary_only = TRUE, key = "reg_seq",
+                                     from = NULL, to = NULL, month = NULL) {
+  w <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
+  # one row per key on each side: a key that repeats within a file is a
+  # duplicate, reported by the summary, and pairing on it here would multiply
+  # the rows instead of comparing them
+  a <- w$a[!duplicated(KEY) & !is.na(KEY)]
+  b <- w$b[!duplicated(KEY) & !is.na(KEY)]
+  common <- intersect(a$KEY, b$KEY)
+  a <- a[KEY %in% common][order(KEY)]
+  b <- b[KEY %in% common][order(KEY)]
+  if (nrow(a) == 0) {
+    message("No flight is present on both sides under key '", key, "'.")
+    return(data.table::data.table())
+  }
+
+  time_like <- function(nm) grepl("^dh_|^dt_", nm)
+  res <- lapply(cols, function(cl) {
+    va <- totalbr_cgna_col(a, cl); vb <- totalbr_cgna_col(b, cl)
+    if (all(is.na(va)) && all(is.na(vb)))
+      return(data.table::data.table(COLUMN = cl, DIFF = NA_integer_,
+                                    PCT = NA_real_, NOTE = "absent both sides"))
+    na <- if (time_like(cl)) totalbr_cgna_norm_time(va) else totalbr_cgna_norm(va)
+    nb <- if (time_like(cl)) totalbr_cgna_norm_time(vb) else totalbr_cgna_norm(vb)
+    dif <- !(is.na(na) & is.na(nb)) & (is.na(na) | is.na(nb) | na != nb)
+    data.table::data.table(
+      COLUMN = cl, DIFF = sum(dif), PCT = round(100 * mean(dif), 2),
+      NOTE = if (all(is.na(va))) "absent from ODIN"
+             else if (all(is.na(vb))) "absent from CGNA" else "")
+  })
+  summ <- data.table::rbindlist(res)[order(-DIFF)]
+  if (summary_only) return(summ[])
+
+  keep <- summ[!is.na(DIFF) & DIFF > 0, COLUMN]
+  if (length(keep) == 0) return(data.table::data.table())
+  out <- data.table::data.table(KEY = a$KEY)
+  for (cl in keep) {
+    out[[paste0(cl, "_ODIN")]] <- totalbr_cgna_col(a, cl)
+    out[[paste0(cl, "_CGNA")]] <- totalbr_cgna_col(b, cl)
+  }
+  differs <- Reduce(`|`, lapply(keep, function(cl) {
+    va <- out[[paste0(cl, "_ODIN")]]; vb <- out[[paste0(cl, "_CGNA")]]
+    na <- if (time_like(cl)) totalbr_cgna_norm_time(va) else totalbr_cgna_norm(va)
+    nb <- if (time_like(cl)) totalbr_cgna_norm_time(vb) else totalbr_cgna_norm(vb)
+    !(is.na(na) & is.na(nb)) & (is.na(na) | is.na(nb) | na != nb)
+  }))
+  out[differs][]
+}
+
+# ---- rows one side only, in time order --------------------------------------
+totalbr_cgna_examples <- function(year, n = 10, key = "reg_seq",
+                                  from = NULL, to = NULL, month = NULL) {
+  w <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
+  pick <- function(d, label) {
+    cols <- intersect(c("co_indicativo", "co_addep", "co_addes", "co_matricula",
+                        "dh_eobt", "dh_inicio", "dh_fim", "dt_dia", "pk"),
+                      names(d))
+    x <- utils::head(d[order(DAY)], n)[, c(cols, "DAY"), with = FALSE]
+    x[, SOURCE := label][]
+  }
+  rbind(pick(w$a[!KEY %in% w$b$KEY], "ODIN"),
+        pick(w$b[!KEY %in% w$a$KEY], "CGNA"), fill = TRUE)[]
+}
+
+# =============================================================================
+# totalbr_cgna_daily(year) -- rows per day on each side
+#
+# One row per calendar day present in either file:
+#   ODIN / CGNA   rows on each side that day
+#   RATIO         ODIN / CGNA, so a constant factor is visible at a glance
+#   FLAG          "cgna missing" (the day is absent from the CGNA file),
+#                 "odin missing", or "" when both have it
+#
+# This is the truncation test, and the first thing to run. A downloader that
+# keeps only the first page of a paginated answer produces the SAME count on
+# almost every day; a source that genuinely reports less produces a count that
+# moves with traffic.
+# =============================================================================
+totalbr_cgna_daily <- function(year, month = NULL,
+                               paths = totalbr_cgna_paths(year, month)) {
+  count_by_day <- function(path, what) {
+    if (!file.exists(path)) {
+      message("Not found (treated as empty): ", path); return(NULL)
+    }
+    message("Reading ", what, ": ", path)
+    d <- totalbr_cgna_read(path)
+    data.table::data.table(DAY = totalbr_cgna_day(d))[!is.na(DAY)]
+  }
+  a <- count_by_day(paths$odin, "ODIN")
+  b <- count_by_day(paths$cgna, "CGNA")
+
+  agg <- function(d) if (is.null(d))
+    data.table::data.table(DAY = character(0), N = integer(0))
+    else d[, .(N = .N), by = DAY]
+
+  ta <- agg(a); tb <- agg(b)
+  days <- sort(union(ta$DAY, tb$DAY))
+  out <- data.table::data.table(
+    DAY  = days,
+    ODIN = ta$N[match(days, ta$DAY)],
+    CGNA = tb$N[match(days, tb$DAY)]
+  )
+  out[is.na(ODIN), ODIN := 0L][is.na(CGNA), CGNA := 0L]
+  out[, RATIO := round(ODIN / pmax(CGNA, 1), 2)]
+  out[, FLAG := data.table::fifelse(CGNA == 0L, "cgna missing",
+               data.table::fifelse(ODIN == 0L, "odin missing", ""))]
+
+  # The page-limit signature, said out loud rather than left to be spotted in a
+  # 31-row table: one count repeating across many days is not what traffic does.
+  nz <- out[CGNA > 0L, CGNA]
+  if (length(nz) >= 5) {
+    top <- sort(table(nz), decreasing = TRUE)[1]
+    if (as.integer(top) >= max(3L, ceiling(0.3 * length(nz))))
+      message(sprintf(
+        "NOTE: %d of %d CGNA day(s) hold exactly %s row(s). A repeated count is the\n",
+        as.integer(top), length(nz), names(top)),
+        "      signature of a page limit, not of traffic -- check whether every\n",
+        "      page of the envelope is being fetched.")
+  }
+  out[]
+}
+
+# =============================================================================
+# totalbr_cgna_scope(year, by) -- WHERE the extra rows are, not how many
+#
+# When the daily profile rules truncation out, the difference is scope. This
+# counts each side by aerodrome or by another categorical column, so a source
+# that simply does not carry (say) general aviation, or only the IFR movements,
+# shows up as a category present on one side and empty on the other.
+# =============================================================================
+# The categorical columns are the ones the files ACTUALLY carry. "co_tipo_voo"
+# and "co_empresa" stood here first and exist on neither side -- the flight type
+# is li_tipovoo -- so every call naming one stopped on "neither side carries a
+# column named like it" instead of counting anything.
+totalbr_cgna_scope <- function(year, by = c("addep", "addes", "li_tipovoo",
+                                            "co_modelo", "li_regravoo"),
+                               from = NULL, to = NULL, month = NULL,
+                               key = "reg_seq", n = 25) {
+  by <- match.arg(by)
+  w  <- totalbr_cgna_window(year, from, to, month, key = key, quiet = TRUE)
+  # THE LIST COLUMNS ARE SEPARATED DIFFERENTLY BY THE TWO SOURCES. The ODIN
+  # writes li_tipovoo as "S|S|S" and the CGNA as "S,S,S", so without this every
+  # multi-element group is reported as present on one side and empty on the
+  # other -- 31,844 "ODIN only" against 31,403 "CGNA only" for the same value.
+  # The separator is formatting; the elements are the data.
+  grab <- function(d) {
+    v <- totalbr_cgna_norm(totalbr_cgna_col(
+      d, if (by %in% c("addep", "addes")) paste0("co_", by) else by))
+    gsub("[|,]", ",", v)
+  }
+  va <- grab(w$a); vb <- grab(w$b)
+  if (all(is.na(va)) && all(is.na(vb)))
+    stop("Neither side carries a column named like '", by, "'.")
+  ta <- table(va, useNA = "ifany"); tb <- table(vb, useNA = "ifany")
+  lv <- union(names(ta), names(tb))
+  out <- data.table::data.table(GROUP = lv,
+                                ODIN  = as.integer(ta[lv]),
+                                CGNA  = as.integer(tb[lv]))
+  out[is.na(ODIN), ODIN := 0L][is.na(CGNA), CGNA := 0L]
+  out[, ONLY := data.table::fifelse(CGNA == 0L, "ODIN only",
+              data.table::fifelse(ODIN == 0L, "CGNA only", ""))]
+  utils::head(out[order(-(ODIN + CGNA))], n)[]
+}
