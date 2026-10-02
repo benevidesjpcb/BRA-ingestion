@@ -98,10 +98,11 @@ the [documentation](https://documenter.getpostman.com/view/7201070/SzKQyg3H) lis
 | `rotaer` | the aerodromes of the ROTAER — a paged list, or one aerodrome in full with `icaoCode` | yes |
 | `geiloc` | location indicators: aerodromes, heliports, helidecks, TMAs, FIRs, with their status | yes |
 | `waypoints` | waypoints, with coordinates and effective date | yes |
-| `routesp` | routes | not yet |
+| `routesp` | preferential routes of the amendment in force, filterable by airspace level, type, origin and destination | yes |
+| `pub` | the AIP package: `type=AIXM` lists the AIXM elements of the airspace, `type=AIP` the AIP documents — a **listing with a download link** per element, not the data itself | yes |
 | `notam`, `infotemp` | NOTAM and temporary aerodrome information | not yet |
 | `met`, `sol` | METAR/TAF, and sunrise/sunset tables | not yet |
-| `cartas`, `checklist`, `pub`, `suplementos` | charts and AIP documents | not yet |
+| `cartas`, `checklist`, `suplementos` | charts and AIP supplements | not yet |
 
 ### Check the endpoint first
 
@@ -118,6 +119,8 @@ aisweb_check("geiloc", name = "cong", type = "ad", feature = "airport")         
 aisweb_check("rotaer", rowstart = 0, rowend = 5)   # the first five aerodromes of the list
 aisweb_check("rotaer", icaoCode = "SBGR")          # one aerodrome, in full
 aisweb_check("waypoints")
+aisweb_check("routesp")                            # preferential routes in force
+aisweb_check("pub", type = "AIXM")                 # the AIXM listing; `type` is required
 ```
 
 It matters more here than elsewhere, because **a refusal is an HTTP 200**. Asked without a
@@ -135,6 +138,8 @@ is written.
 download_aisweb_rotaer()        # -> data-raw/aisweb/aisweb_rotaer.csv      (every page)
 download_aisweb_waypoints()     # -> data-raw/aisweb/aisweb_waypoints.csv   (every page)
 download_aisweb_geiloc()        # -> data-raw/aisweb/aisweb_geiloc.csv      (AD, HP and HD)
+download_aisweb_routes()        # -> data-raw/aisweb/aisweb_routes.csv
+download_aisweb_pub("AIXM")     # -> data-raw/aisweb/aisweb_pub_aixm.csv    (a listing of links)
 
 # filters go through as the API documents them
 download_aisweb_rotaer(uf = "SP", type = "AD")

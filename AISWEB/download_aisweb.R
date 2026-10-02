@@ -11,6 +11,8 @@
 #   download_aisweb_rotaer()                   # every aerodrome in the ROTAER
 #   download_aisweb_geiloc()                   # location indicators: AD, HP, HD
 #   download_aisweb_waypoints()                # every waypoint
+#   download_aisweb_routes()                   # the preferential routes in force
+#   download_aisweb_pub("AIXM")                # the listing of AIXM elements
 #   download_aisweb_aerodromes(c("SBGR", "SBSP"))   # the detail, with runways
 #
 # The files land in data-raw/aisweb/, one per area:
@@ -344,6 +346,22 @@ aisweb_walk <- function(area, ..., page_size = AISWEB_PAGE_SIZE, max_pages = 200
 
 download_aisweb_rotaer    <- function(...) download_aisweb("rotaer", ...)
 download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
+
+# Preferential routes (area=routesp). With no parameter, every route of the
+# amendment in force. Filters as documented: level = "L"/"H" (lower / upper
+# airspace), type = "PREF"/"ALT"/"SWAP"/"OPC", adep, ades, route, rmk; and
+# amdt = "yyyy-mm-dd" with full = 1 for the whole of another amendment
+# (full = 0, the default, returns only what that amendment changed).
+download_aisweb_routes <- function(...) download_aisweb("routesp", ..., name = "routes")
+
+# The AIP package (area=pub). `type` is REQUIRED and is "AIXM" or "AIP". What
+# comes back is not the data but a LISTING of it: id, type, name, and `file`, a
+# link to download each element. dt = "yyyy-mm-dd" restricts it to what was
+# updated since that date; without it, what is in force.
+download_aisweb_pub <- function(type = c("AIXM", "AIP"), ...) {
+  type <- match.arg(type)
+  download_aisweb("pub", type = type, ..., name = paste0("pub_", tolower(type)))
+}
 
 # geiloc answers only to a filter, and `type` is the one that covers the table:
 # AD aerodrome, HP heliport, HD helideck -- the three types the ROTAER carries.
