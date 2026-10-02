@@ -174,8 +174,8 @@ in `geiloc`, only 52 `geiloc` codes are missing from the ROTAER — so `geiloc` 
 
 Two things were checked and neither picks the current one out. Every row is `Ativo`, so
 `status` does not separate them. And although the ROTAER's `id` is documented as a version
-identifier, it is not the same identifier: none of `SBAC`'s five `geiloc` ids exists in the
-ROTAER. `geiloc` carries no date either.
+identifier, it is not the same identifier: **not one** of the 8,620 `geiloc` ids exists in
+the ROTAER. `geiloc` carries no date either.
 
 So the file is kept as the API returns it, one row per version, and it is **not**
 deduplicated by code — that would keep one version at random and present it as the current
@@ -198,6 +198,9 @@ download_aisweb_aerodromes(c("SBGR", "SBSP", "SBGL", "SBRJ", "SBBR", "SBCF",
 # -> data-raw/aisweb/aisweb_aerodromes.csv   one row per aerodrome
 # -> data-raw/aisweb/aisweb_runways.csv      one row per runway, keyed on AeroCode
 ```
+
+For the twelve study airports that is 12 aerodromes and **19 runways**: two each at SBGR,
+SBSP, SBGL, SBRJ, SBBR, SBCT and SBSV, one each at SBCF, SBKP, SBPA, SBRF and SBFZ.
 
 ## Checking What Arrived
 

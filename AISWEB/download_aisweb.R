@@ -354,7 +354,7 @@ download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
 # WHAT COMES BACK IS ONE ROW PER VERSION OF AN INDICATOR, NOT PER INDICATOR:
 # 8620 rows over some 6175 codes, SBAE eight times. Nothing in the answer says
 # which version is current -- every row is "Ativo", there is no date, and the id
-# is not the ROTAER's version id. So rows are dropped only when the ID repeats,
+# is not the ROTAER's version id (0 of 8620 match). So rows are dropped only when the ID repeats,
 # never when the code does: keeping one version per code would be choosing at
 # random and calling it the current one. The ROTAER is the list of what exists.
 download_aisweb_geiloc <- function(type = c("ad", "hp", "hd"), ...,
