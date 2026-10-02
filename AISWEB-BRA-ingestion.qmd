@@ -1,0 +1,219 @@
+# Brazil AISWEB Ingestion
+
+```{r}
+#| label: setup
+#| include: false
+
+# Libraries, project paths and analysis parameters. `include: false` keeps the
+# rendered document free of the package startup banners.
+source(here::here("_chapter-setup.R"))
+source(here::here("AISWEB", "download_aisweb.R"))
+```
+
+This note documents the ingestion of **AISWEB**, the aeronautical information service the
+ICA/DECEA publishes: the aerodromes of the ROTAER, the location indicators (GEILOC),
+waypoints, routes, NOTAM and charts. It follows the same shape as the other ingestion notes
+— get the data, check what arrived, inventory it — with one difference that changes how the
+download works.
+
+Every other source in this project is a **feed of movements**, walked day by day. AISWEB is
+**reference data**: it describes the things movements happen *at* — which aerodromes exist,
+where they are, which runways they have. It changes with the AIRAC amendment, not with the
+clock. So there is no day to resume at: an area is fetched whole, its file is replaced, and
+the date it was fetched on is written into the file (`AISWEB_FETCHED`), because that is the
+only thing that says how old the picture is.
+
+It is here because the movement tables lean on it. `adpartida`, `addestino` and `pista` in
+`dstaxi`, and the aerodrome codes of TOTALBR, are only as good as the list they are checked
+against, and today that list is `data-raw/airports.csv`, a public database. The ROTAER is
+the authority's own.
+
+::: {.callout-important}
+## Prerequisites to run this document
+The AISWEB files are **not** shipped with the repository, and the API needs a credential — a
+key and a pass, sent by e-mail to whoever is granted access. Put both in `.Renviron` with
+the chunk below, restart R, then run the download chunk. Until data exists, the tables
+below render with a short notice instead of failing.
+:::
+
+## The credential, and where it lives
+
+`.Renviron` is the one file a clone cannot bring you: it holds the secrets, so it is
+git-ignored and has to be created on each machine. AISWEB adds two lines to it — and unlike
+the CGNA, which takes one token, **both** are sent on every call:
+
+| Variable | What it is |
+| --- | --- |
+| `AISWEB_API_KEY` | the API key |
+| `AISWEB_API_PASS` | the API pass — the second half of the same credential |
+| `AISWEB_URL` | optional; the endpoint, if it ever moves from `https://api.decea.mil.br/aisweb/` |
+
+```{r}
+#| label: setup-bra-aisweb-env
+#| eval: false
+
+source(here::here("setup_renviron.R"))
+
+setup_renviron()                 # adds the AISWEB lines; leaves what is there alone
+set_token("AISWEB_API_KEY")      # prompts for the key and writes it there
+set_token("AISWEB_API_PASS")     # the same, for the pass
+env_status()                     # what is set right now; secrets shown only as a length
+```
+
+`set_token()` prompts at the console on purpose: a credential typed at a prompt does not
+land in `.Rhistory`, in a script, or in a commit. Never write either value into this
+document. And R reads `.Renviron` **once, at startup** — restart R after writing them, or
+the session will still see them empty.
+
+```{r}
+#| label: check-bra-aisweb-env
+
+# is this session able to download? (never prints a credential)
+shown <- function(v) {
+  if (nzchar(Sys.getenv(v))) paste0("set (", nchar(Sys.getenv(v)), " chars)")
+  else "not set in this session"
+}
+tibble::tibble(
+  `.Renviron`       = if (file.exists(here::here(".Renviron"))) "present" else "missing",
+  `AISWEB_API_KEY`  = shown("AISWEB_API_KEY"),
+  `AISWEB_API_PASS` = shown("AISWEB_API_PASS"),
+  `endpoint`        = AISWEB_URL
+) |>
+  knitr::kable()
+```
+
+## Getting the Source Data
+
+There is **one endpoint**, and the area is a parameter of it. Every call is a `GET` on
+
+```
+https://api.decea.mil.br/aisweb/?apiKey=…&apiPass=…&area=<area>&…
+```
+
+and what comes back is **XML**, not the JSON the ODIN and CGNA APIs return. The areas, as
+the [documentation](https://documenter.getpostman.com/view/7201070/SzKQyg3H) lists them:
+
+| `area` | What it returns | Downloaded here |
+| --- | --- | --- |
+| `rotaer` | the aerodromes of the ROTAER — a paged list, or one aerodrome in full with `icaoCode` | yes |
+| `geiloc` | location indicators: aerodromes, heliports, helidecks, TMAs, FIRs, with their status | yes |
+| `waypoints` | waypoints, with coordinates and effective date | yes |
+| `routesp` | routes | not yet |
+| `notam`, `infotemp` | NOTAM and temporary aerodrome information | not yet |
+| `met`, `sol` | METAR/TAF, and sunrise/sunset tables | not yet |
+| `cartas`, `checklist`, `pub`, `suplementos` | charts and AIP documents | not yet |
+
+### Check the endpoint first
+
+One request, printed in full: the query with the credential redacted, the status **and how
+long it took**, the start of the raw body, the columns found and the first row. Run it
+before a download, and again whenever one comes back empty.
+
+```{r}
+#| label: check-bra-aisweb-endpoint
+#| eval: false
+
+aisweb_check("geiloc", name = "SBGR")              # one location indicator
+aisweb_check("rotaer", rowstart = 0, rowend = 5)   # the first five aerodromes of the list
+aisweb_check("rotaer", icaoCode = "SBGR")          # one aerodrome, in full
+aisweb_check("waypoints")
+```
+
+It matters more here than elsewhere, because **a refusal is an HTTP 200**. Asked without a
+valid credential, the endpoint answers `200` with an HTML page reading *Erro nos parâmetros
+obrigatórios* — the status code says nothing. An answer counts only if it parses as XML
+rooted at `<aisweb>`; anything else is reported with the text the server sent, and nothing
+is written.
+
+### Download
+
+```{r}
+#| label: download-bra-aisweb-data
+#| eval: false
+
+download_aisweb_geiloc()        # -> data-raw/aisweb/aisweb_geiloc.csv
+download_aisweb_rotaer()        # -> data-raw/aisweb/aisweb_rotaer.csv     (every page)
+download_aisweb_waypoints()     # -> data-raw/aisweb/aisweb_waypoints.csv
+
+# filters go through as the API documents them
+download_aisweb_rotaer(uf = "SP", type = "AD")
+```
+
+The ROTAER list is **paged** by `rowstart` and `rowend`, and the documentation does not say
+what they mean. Its one example asks `rowstart=3000&rowend=50` and receives 50 aerodromes
+under `total="50"` — so `rowend` behaves as a page *size*, and `total` as the rows in that
+answer rather than in the ROTAER. That is an inference from a single example, and the
+download does not depend on it being right: it advances by the rows it actually received,
+stops on a short or empty page, and stops if a page brings back nothing it has not already
+seen. A page that fails writes **nothing** — a ROTAER short of its last pages would read as
+a complete one.
+
+### The aerodrome in full, and its runways
+
+The list carries the identity of an aerodrome. The detail — coordinates, elevation, FIR,
+operator, and the **runways** — is one call per aerodrome, and it comes out as two files
+because it is two grains:
+
+```{r}
+#| label: download-bra-aisweb-aerodromes
+#| eval: false
+
+# the study airports; any vector of ICAO codes works
+download_aisweb_aerodromes(c("SBGR", "SBSP", "SBGL", "SBRJ", "SBBR", "SBCF",
+                             "SBKP", "SBPA", "SBCT", "SBSV", "SBRF", "SBFZ"))
+# -> data-raw/aisweb/aisweb_aerodromes.csv   one row per aerodrome
+# -> data-raw/aisweb/aisweb_runways.csv      one row per runway, keyed on AeroCode
+```
+
+## Checking What Arrived
+
+```{r}
+#| label: check-bra-aisweb-data
+
+aisweb_files <- list.files(AISWEB_OUT_DIR, pattern = "^aisweb_.*\\.csv$", full.names = TRUE)
+
+if (length(aisweb_files) == 0) {
+  cat("No AISWEB file in data-raw/aisweb/ yet. Set the credential and run the",
+      "download chunk above.")
+} else {
+  purrr::map_dfr(aisweb_files, function(f) {
+    d <- cgna_read_csv(f)
+    tibble::tibble(
+      FILE    = basename(f),
+      ROWS    = nrow(d),
+      COLUMNS = ncol(d),
+      FETCHED = if ("AISWEB_FETCHED" %in% names(d)) max(d$AISWEB_FETCHED, na.rm = TRUE) else NA,
+      SIZE_MB = round(file.size(f) / 1024^2, 2)
+    )
+  }) |>
+    knitr::kable()
+}
+```
+
+## What the Columns Mean
+
+The names are the API's own, kept as they arrive.
+
+**`aisweb_rotaer.csv`** — one row per aerodrome of the list.
+
+| Column | Meaning |
+| --- | --- |
+| `ciad_id` | numeric identifier of the aerodrome in the AISWEB database |
+| `id` | identifier of this *version* of the aerodrome — each update creates a new one |
+| `type` | `AD` aerodrome, or heliport / helideck |
+| `AeroCode` | the ICAO location indicator |
+| `ciad` | the aerodrome's business identifier (`SP0831`) |
+| `name`, `city`, `uf` | name, municipality, state |
+| `dt` | date the record was published or updated |
+
+**`aisweb_geiloc.csv`** — `id`, `type`, `IcaoCode`, `name`, `status` (`Ativo` or not).
+
+**`aisweb_aerodromes.csv`** — the list's fields plus `status`, `lat`, `lng` (decimal),
+`latRotaer`, `lngRotaer` (as printed in the ROTAER), `altM`, `altFt`, `fir`, `jur`, `utc`,
+`typeUtil` (`PUB`/`PRIV`), `cat`, the operator (`org_name`, `org_type`, `org_military`) and
+`runways_count`.
+
+**`aisweb_runways.csv`** — `AeroCode`, `ident` (`17R/35L`), `type`, `surface`, `length` and
+`width` in metres, `surface_c` (the PCN string) and `thr`, the two thresholds.
+
+Every file also carries `AISWEB_FETCHED`, the date of the download.

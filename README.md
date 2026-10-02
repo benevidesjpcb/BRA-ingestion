@@ -262,6 +262,7 @@ percentile; it is the volume/denominator dataset.
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
 | `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dstaxi/dsTaxiYYYY.csv` | yes |
+| `AISWEB/download_aisweb.R` | Downloads reference data from the **AISWEB** API (ICA/DECEA): the ROTAER aerodrome list, GEILOC location indicators, waypoints, and aerodrome detail with runways, into `data-raw/aisweb/`. Needs `AISWEB_API_KEY` and `AISWEB_API_PASS`; documented in `AISWEB-BRA-ingestion.qmd` | yes |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table from **ODIN**, one file per year | yes |
 | `TOTALBR/download_totalbr_cgna.R` | Downloads the same table from the **CGNA** (`/apiv1/voossisceab`), day by day, into `totalbr_YYYYcgna.csv` | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |

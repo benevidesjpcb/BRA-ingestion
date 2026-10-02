@@ -9,6 +9,7 @@
 #   source(here::here("setup_renviron.R"))
 #   setup_renviron()        # write/update .Renviron with all known variables
 #   set_token()             # paste the TATIC token, without it going anywhere else
+#   set_token("AISWEB_API_KEY"); set_token("AISWEB_API_PASS")   # the AISWEB pair
 #   env_status()            # what is set right now (never prints a token)
 #
 # .Renviron is git-ignored and stays that way: it is the one file in this
@@ -67,6 +68,16 @@ RENVIRON_VARS <- list(
        note = c("Rows per page for that endpoint. 1000 is its documented",
                 "MAXIMUM and anything higher is clamped; its own default is 1,",
                 "which would fetch a day one row at a time.")),
+  list(name = "AISWEB_API_KEY", value = "",
+       note = c("AISWEB API key (ICA/DECEA aeronautical information). REQUIRED",
+                "for download_aisweb(). It arrives by e-mail with the pass below.",
+                "Paste it after the '=' with no quotes and no spaces.")),
+  list(name = "AISWEB_API_PASS", value = "",
+       note = c("AISWEB API pass - the second half of the same credential. Both",
+                "are sent on every call; one without the other is refused.")),
+  list(name = "AISWEB_URL", value = "",
+       note = c("Optional: the AISWEB endpoint. Defaults to",
+                "https://api.decea.mil.br/aisweb/; set it only if that moves.")),
   list(name = "BRA_REPORT_DATA", value = "",
        note = c("Optional: data directory of the sibling report project that",
                 "receives the combined analytic CSVs. Defaults to data/."))
@@ -179,7 +190,9 @@ set_token <- function(name = "TATIC_TOKEN", path = renviron_path()) {
 env_status <- function(quiet = FALSE) {
   out <- do.call(rbind, lapply(RENVIRON_VARS, function(v) {
     val <- Sys.getenv(v$name, unset = "")
-    secret <- grepl("TOKEN", v$name)
+    # every credential, not only the ones called TOKEN: the AISWEB pair is a KEY
+    # and a PASS, and a proxy USERPWD can carry a password
+    secret <- grepl("TOKEN|KEY|PASS|PWD", v$name)
     data.frame(
       VARIABLE = v$name,
       SET      = nzchar(val),
