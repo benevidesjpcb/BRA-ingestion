@@ -292,7 +292,22 @@ download_aisweb <- function(area, ..., name = area, page_size = AISWEB_PAGE_SIZE
 # The walk itself: every page of one question, as a data.frame, or NULL when a
 # page failed or nothing came back. Kept apart from the writing so that several
 # questions can be put into ONE file (see download_aisweb_geiloc()).
-aisweb_walk <- function(area, ..., page_size = AISWEB_PAGE_SIZE, max_pages = 2000L) {
+#
+# paged = FALSE is for the areas MEASURED not to be paged -- geiloc and pub
+# return the whole answer whatever rowstart says. One call, no second request
+# to find that out again, and no warning about a first page that is in fact
+# the whole table. It is not a default: an area nobody has measured is walked.
+aisweb_walk <- function(area, ..., page_size = AISWEB_PAGE_SIZE, max_pages = 2000L,
+                        paged = TRUE) {
+  if (!paged) {
+    message(sprintf("AISWEB %s (not paged: one call) ...", area))
+    r <- aisweb_fetch(area, ...)
+    if (!r$ok) { message("  FAILED: ", r$error); return(NULL) }
+    rows <- aisweb_rows(r$doc)
+    message(sprintf("  %d row(s)  %.1fs", nrow(rows), r$secs))
+    if (nrow(rows) == 0) { message("  no record."); return(NULL) }
+    return(rows)
+  }
   message(sprintf("AISWEB %s, asking %d row(s) per page ...", area, page_size))
   pages <- list(); seen <- character(0); start <- 0L; total <- NA_integer_
   for (p in seq_len(max_pages)) {
@@ -366,7 +381,7 @@ download_aisweb_routes <- function(...) download_aisweb("routesp", ..., name = "
 # 00:00:00'}.
 aisweb_pub <- function(type = c("AIXM", "AIP"), ...) {
   type <- match.arg(type)
-  d <- aisweb_walk("pub", type = type, ...)
+  d <- aisweb_walk("pub", type = type, ..., paged = FALSE)
   if (is.null(d)) return(NULL)
   if ("file" %in% names(d)) d$file <- sub("\">.*$", "", d$file)
   if ("amdt" %in% names(d)) d$amdt <- gsub("^\\{ts '|'\\}$", "", d$amdt)
@@ -450,7 +465,7 @@ download_aisweb_geiloc <- function(type = c("ad", "hp", "hd"), ...,
                                    out_dir = AISWEB_OUT_DIR) {
   parts <- list()
   for (t in type) {
-    d <- aisweb_walk("geiloc", type = t, ...)
+    d <- aisweb_walk("geiloc", type = t, ..., paged = FALSE)
     if (is.null(d)) {
       message(sprintf("geiloc type=%s gave nothing; aisweb_geiloc.csv not written.", t))
       return(invisible(NULL))
