@@ -311,8 +311,18 @@ aisweb_walk <- function(area, ..., page_size = AISWEB_PAGE_SIZE, max_pages = 200
     id  <- if ("id" %in% names(rows)) rows$id else do.call(paste, c(rows, sep = "|"))
     new <- !(id %in% seen)
     if (!any(new)) {
-      message("  this page repeats rows already held: rowstart is not advancing ",
-              "the answer, so this area cannot be walked past its first page.")
+      # Two different things produce a repeated page, and only one is a problem.
+      # An area that is NOT PAGED ignores rowend as well as rowstart: asked for
+      # 500 it returns everything (geiloc: 6607 aerodromes), and the first answer
+      # was already the whole table. An area that caps its page and ignores
+      # rowstart returns the same capped page for ever, and what is held is only
+      # the beginning.
+      if (length(seen) > page_size)
+        message("  the same rows again, and more of them than a page: this area ",
+                "is not paged, the first answer was the whole of it.")
+      else
+        message("  this page repeats rows already held: rowstart is not advancing ",
+                "the answer. What is held may be only the first page.")
       break
     }
     pages[[length(pages) + 1L]] <- rows[new, , drop = FALSE]
@@ -328,8 +338,7 @@ aisweb_walk <- function(area, ..., page_size = AISWEB_PAGE_SIZE, max_pages = 200
     message(sprintf("  NOTE: the API reports total=%d and %d row(s) were received.",
                     total, nrow(all)))
   else if (is.na(total))
-    message("  The answer carries no total, so this count cannot be checked ",
-            "against the API's own.")
+    message("  The answer carries no total to check this count against.")
   all
 }
 

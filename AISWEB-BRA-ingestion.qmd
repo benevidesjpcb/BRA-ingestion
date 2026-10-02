@@ -154,9 +154,15 @@ received, and stopping only on an empty page, on a page that brings nothing new,
 `total` is reached. A page that fails writes **nothing** — a table short of its last pages
 would read as a complete one.
 
-`geiloc` is the exception to "fetch the area whole": asked with no filter it returns nothing,
+Measured on the first full download: the ROTAER holds **6,123** aerodromes and `waypoints`
+**6,785**, both matching the API's own `total`.
+
+`geiloc` is the exception twice over. It is **not paged** — asked for 500 rows it returns
+everything, 6,607 aerodromes in one answer, and carries no `total`. And asked with no filter it returns nothing,
 so it is asked once per `type` — `ad` aerodrome, `hp` heliport, `hd` helideck, the three the
-ROTAER carries — and the answers are written into one file.
+ROTAER carries — and the answers are written into one file: 8,620 indicators (6,607 `AD`,
+1,998 `HP`, 15 `HD`). That is more than the ROTAER's 6,123, and the difference has not been
+explained yet.
 
 ### The aerodrome in full, and its runways
 
