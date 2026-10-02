@@ -9,7 +9,7 @@
 #   source(here::here("AISWEB", "download_aisweb.R"))
 #   aisweb_check("geiloc", name = "cong", type = "ad", feature = "airport")      # START HERE -- one request, shown
 #   download_aisweb_rotaer()                   # every aerodrome in the ROTAER
-#   download_aisweb_geiloc(type = "ad")        # location indicators; needs a filter
+#   download_aisweb_geiloc()                   # location indicators: AD, HP, HD
 #   download_aisweb_waypoints()                # every waypoint
 #   download_aisweb_aerodromes(c("SBGR", "SBSP"))   # the detail, with runways
 #
@@ -274,7 +274,7 @@ aisweb_check <- function(area, ..., base_url = AISWEB_URL) {
 #   download_aisweb_rotaer()                      # the whole ROTAER
 #   download_aisweb_rotaer(uf = "SP", type = "AD")   # filters, as documented
 #   download_aisweb_waypoints()
-#   download_aisweb_geiloc(type = "ad")           # geiloc answers only to a filter
+#   download_aisweb_geiloc()                      # AD, HP and HD, in one file
 #
 # See the header for the stopping rule. Nothing is written when a page fails: a
 # table short of its last pages would read as a complete one, and a file left
@@ -282,15 +282,24 @@ aisweb_check <- function(area, ..., base_url = AISWEB_URL) {
 # =============================================================================
 download_aisweb <- function(area, ..., name = area, page_size = AISWEB_PAGE_SIZE,
                             max_pages = 2000L, out_dir = AISWEB_OUT_DIR) {
+  all <- aisweb_walk(area, ..., page_size = page_size, max_pages = max_pages)
+  if (is.null(all)) return(invisible(NULL))
+  .aisweb_write(all, name, out_dir)
+}
+
+# The walk itself: every page of one question, as a data.frame, or NULL when a
+# page failed or nothing came back. Kept apart from the writing so that several
+# questions can be put into ONE file (see download_aisweb_geiloc()).
+aisweb_walk <- function(area, ..., page_size = AISWEB_PAGE_SIZE, max_pages = 2000L) {
   message(sprintf("AISWEB %s, asking %d row(s) per page ...", area, page_size))
   pages <- list(); seen <- character(0); start <- 0L; total <- NA_integer_
   for (p in seq_len(max_pages)) {
     r <- aisweb_fetch(area, rowstart = start, rowend = page_size, ...)
     if (!r$ok) {
       message(sprintf("  page %d (rowstart %d) FAILED: %s", p, start, r$error))
-      message("  Nothing written: a table short of its last pages would read as ",
+      message("  Nothing kept: a table short of its last pages would read as ",
               "a complete one.")
-      return(invisible(NULL))
+      return(NULL)
     }
     rows <- aisweb_rows(r$doc)
     meta <- aisweb_meta(r$doc)
@@ -312,7 +321,7 @@ download_aisweb <- function(area, ..., name = area, page_size = AISWEB_PAGE_SIZE
     if (!is.na(total) && length(seen) >= total) break
   }
   all <- cgna_rbind_fill(pages)
-  if (is.null(all)) { message("  nothing to write."); return(invisible(NULL)) }
+  if (is.null(all)) { message("  no record."); return(NULL) }
 
   # the API's own count against what is about to be stored
   if (!is.na(total) && nrow(all) != total)
@@ -321,12 +330,32 @@ download_aisweb <- function(area, ..., name = area, page_size = AISWEB_PAGE_SIZE
   else if (is.na(total))
     message("  The answer carries no total, so this count cannot be checked ",
             "against the API's own.")
-  .aisweb_write(all, name, out_dir)
+  all
 }
 
 download_aisweb_rotaer    <- function(...) download_aisweb("rotaer", ...)
 download_aisweb_waypoints <- function(...) download_aisweb("waypoints", ...)
-download_aisweb_geiloc    <- function(...) download_aisweb("geiloc", ...)
+
+# geiloc answers only to a filter, and `type` is the one that covers the table:
+# AD aerodrome, HP heliport, HD helideck -- the three types the ROTAER carries.
+# Each type is a question of its own, and they all go into ONE file: written
+# type by type under the same name, the last would replace the others. If any
+# type fails nothing is written, for the same reason a short table is not.
+download_aisweb_geiloc <- function(type = c("ad", "hp", "hd"), ...,
+                                   out_dir = AISWEB_OUT_DIR) {
+  parts <- list()
+  for (t in type) {
+    d <- aisweb_walk("geiloc", type = t, ...)
+    if (is.null(d)) {
+      message(sprintf("geiloc type=%s gave nothing; aisweb_geiloc.csv not written.", t))
+      return(invisible(NULL))
+    }
+    parts[[length(parts) + 1L]] <- d
+  }
+  all <- cgna_rbind_fill(parts)
+  if ("id" %in% names(all)) all <- all[!duplicated(all$id), , drop = FALSE]
+  .aisweb_write(all, "geiloc", out_dir)
+}
 
 # =============================================================================
 # download_aisweb_aerodromes(icao) -- the detail of each aerodrome, and its runways

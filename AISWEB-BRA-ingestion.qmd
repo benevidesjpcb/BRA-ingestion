@@ -134,7 +134,7 @@ is written.
 
 download_aisweb_rotaer()        # -> data-raw/aisweb/aisweb_rotaer.csv      (every page)
 download_aisweb_waypoints()     # -> data-raw/aisweb/aisweb_waypoints.csv   (every page)
-download_aisweb_geiloc(type = "ad")   # -> data-raw/aisweb/aisweb_geiloc.csv; needs a filter
+download_aisweb_geiloc()        # -> data-raw/aisweb/aisweb_geiloc.csv      (AD, HP and HD)
 
 # filters go through as the API documents them
 download_aisweb_rotaer(uf = "SP", type = "AD")
@@ -155,7 +155,8 @@ received, and stopping only on an empty page, on a page that brings nothing new,
 would read as a complete one.
 
 `geiloc` is the exception to "fetch the area whole": asked with no filter it returns nothing,
-so it is downloaded per filter (`download_aisweb_geiloc(type = "ad")`).
+so it is asked once per `type` — `ad` aerodrome, `hp` heliport, `hd` helideck, the three the
+ROTAER carries — and the answers are written into one file.
 
 ### The aerodrome in full, and its runways
 
