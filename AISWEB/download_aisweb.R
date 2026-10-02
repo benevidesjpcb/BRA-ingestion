@@ -218,6 +218,18 @@ aisweb_check <- function(area, ..., base_url = AISWEB_URL) {
     message("NOT AN ANSWER: ", r$error)
     return(invisible(r))
   }
+  # The aerodrome detail is not a table: its fields sit directly under <aisweb>.
+  # Read as one, the first nested element (the operator) would be taken for the
+  # wrapper and the answer shown as a single cell -- "GRU Airport" and nothing
+  # else. It is shown as what it is: one aerodrome, and its runways.
+  if (!inherits(xml2::xml_find_first(r$doc, "./AeroCode"), "xml_missing")) {
+    a <- aisweb_aerodrome(r$doc); w <- aisweb_runways(r$doc)
+    message(sprintf("Aerodrome: %d field(s), %d runway(s)", ncol(a),
+                    if (is.null(w)) 0L else nrow(w)))
+    print(t(a[1, , drop = FALSE]))
+    if (!is.null(w)) { message("\nRunways:"); print(w, row.names = FALSE) }
+    return(invisible(r))
+  }
   meta <- aisweb_meta(r$doc)
   if (length(meta))
     message("Wrapper  : ", paste0(names(meta), "=", meta, collapse = "  "))
