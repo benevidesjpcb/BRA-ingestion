@@ -22,7 +22,7 @@ There is **one folder per dataset**, plus one shared engine:
 | Folder | What it is |
 | --- | --- |
 | `ODIN/` | **Shared, not a dataset.** `download_odin.R` is the download engine for the whole ICEA/DECEA API: one month per request window, resumable, pagination over a total order, JSON array columns flattened. Three thin wrappers supply only what differs — `TAXI/download_taxi.R`, `TOTALBR/download_totalbr.R` and `KPI08/download_kpi08.R`. Nothing here belongs to one dataset. |
-| `TAXI/` | Taxi time (`dstaxi` via ODIN): download, source comparison, the metric's standalone validation, and the dashboard build |
+| `TAXI/` | Taxi time (`dstaxi`) from **two APIs** — ODIN (`download_taxi.R`) and the CGNA (`download_taxi_cgna.R`) — plus source comparison, the metric's standalone validation, and the dashboard build |
 | `KPI08/` | ASMA (`kpi08` via ODIN): download, golden validation, the PBWG export, the dashboard build |
 | `TOTALBR/` | The national movement table: download from **both APIs that serve it** (`total_brasil` via ODIN, `voossisceab` via the CGNA), duplicate measurement, the two-stage pipeline, and the source comparisons |
 | `CGNA/` | **Shared, not a dataset.** `cgna_common.R` is the plumbing every CGNA downloader needs and none owns: the proxy, the CSV conventions, the JSON flattening. There is no shared *engine* here, because the CGNA endpoints do not share a contract — `/apiv1/tatic` wants `YYYYMMDD` and returns a bare array, `/apiv1/voossisceab` refuses `YYYYMMDD` and returns `{"count": N, "data": [...]}`. |
@@ -262,6 +262,7 @@ percentile; it is the volume/denominator dataset.
 | Path | Role | Tracked in git? |
 | --- | --- | --- |
 | `TAXI/download_taxi.R` | Downloads the taxi source from the ODIN API into `data-raw/dstaxi/dsTaxiYYYY.csv` | yes |
+| `TAXI/download_taxi_cgna.R` | Downloads the same `dstaxi` table from the **CGNA** API (`apiv1/dstaxi`, token-authenticated, one day per call) into `data-raw/dstaxi/dsTaxiYYYYcgna.csv`, months under `parts/`. Not TATIC — a different endpoint of the same portal. Kept under its own name so the two sources can be compared instead of assumed equal | yes |
 | `TOTALBR/download_totalbr.R` | Downloads the `total_brasil` table from **ODIN**, one file per year | yes |
 | `TOTALBR/download_totalbr_cgna.R` | Downloads the same table from the **CGNA** (`/apiv1/voossisceab`), day by day, into `totalbr_YYYYcgna.csv` | yes |
 | `TOTALBR/totalbr_sources.R` | Reads the parquet archive and the CSVs as one dataset; day counts, coverage, missing years | yes |

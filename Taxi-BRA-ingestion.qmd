@@ -141,6 +141,92 @@ The zip route still works and needs no API: set `BRA_TAXI_ZIP` to an archive hol
 `dsTaxiYYYY.csv` files, and the preparation reads the members directly without unpacking
 anything into the project tree.
 
+### The same table from the CGNA {#sec-taxi-cgna}
+
+`dstaxi` is served by **two** APIs. ODIN is the one everything above uses; the CGNA serves
+the same table at `apiv1/dstaxi`, token-authenticated, and `TAXI/download_taxi_cgna.R`
+downloads it into `data-raw/dstaxi/dsTaxi<year>cgna.csv`, months under `parts/`.
+
+Three differences from the ODIN download, all of them in the fetching and none in the
+result:
+
+- **one day per call**, walked day by day. The dates go as `YYYY-MM-DD` here and as
+  `YYYYMMDD` in the TATIC endpoint of the same portal — the same token, a different
+  format.
+- **the day is cut locally**, on `dh_bimtra`. Whether `dataf` is inclusive is
+  undocumented, so the wide bound is requested and the answer trimmed to the day: the
+  API's semantics then cannot produce a duplicate or a hole either way.
+- **the token** is `TATIC_TOKEN` in `.Renviron`, shared with the TATIC download. Do not
+  confuse the two datasets: TATIC (`API_TATIC/`) is the CGNA's milestone feed, a different
+  table with a different meaning. This is `dstaxi` itself.
+
+The file name carries `cgna` so the two sources sit in the same folder without ever being
+mistaken for one another: the inventory below matches `^dsTaxi20\d{2}\.csv$`, so a CGNA
+year is never picked up as if it were the ODIN download. Whether the two agree movement by
+movement is a question to be measured rather than assumed, which is the whole reason for
+keeping them apart.
+
+```{r}
+#| label: download-bra-taxi-data-cgna
+#| eval: false
+
+source(here::here("TAXI", "download_taxi_cgna.R"))
+
+download_taxi_cgna(2026)                                  # a whole year
+download_taxi_cgna(2026, from = "20260310", to = "20260310")   # one day, to inspect
+```
+
+The answer is **paginated**, in an envelope carrying `page`, `per_page` (1000), `total` and
+`total_pages`; the downloader walks every page and checks what it stored against the
+`total` the API itself reported. This is worth knowing because keeping only the first page
+fails silently: it caps each day at 1000 rows, and a whole year comes back the size of a
+busy month with nothing in the output saying so.
+
+`box` (the stand) **is** populated here, so a CGNA year is not limited to cross-checking:
+the PBWG reference key `(ICAO, PHASE, STND, RWY)` can be built from it.
+
+Whether the two sources actually agree is measured, not assumed —
+`TAXI/compare_taxi_cgna.R` pairs them movement by movement, with `taxi_cgna_daily()` for
+the per-day profile that separates a truncation from a coverage gap from a scope
+difference.
+
+Run it **after each download**, on the months just fetched. The per-day profile comes
+first: a total cannot tell a source that reports less from a download that stopped early,
+and a ratio far from 1.00 on a handful of days is the only thing that shows the difference.
+
+```{r}
+#| label: compare-bra-taxi-data-cgna
+#| eval: false
+
+source(here::here("TAXI", "compare_taxi_cgna.R"))
+
+# 1. the per-day profile -- START HERE. Only the CGNA month parts exist while a
+#    year is being filled in, so compare the PARTS (month = 4), not the merged years.
+taxi_cgna_daily(2026, month = 4)
+
+# 2. the summary over the days both files hold
+compare_taxi_cgna(2026, month = 4)
+
+# 3. which columns disagree on the movements both sources report
+taxi_cgna_field_diffs(2026, month = 4)
+```
+
+Reading the profile: a day whose CGNA count is a fraction of the ODIN one is a **truncated
+day** — the download stopped inside it. The resume logic skips any day already recorded,
+truncated or not, so re-running does not repair it; refetch that day alone with `force`,
+which rewrites those days and leaves the rest of the month untouched:
+
+```{r}
+#| label: refetch-bra-taxi-data-cgna
+#| eval: false
+
+download_taxi_cgna(2026, from = "20260429", to = "20260430", force = TRUE)
+```
+
+A day **absent** from the CGNA file needs no `force` — the next run picks it up. And a day
+that comes back at the same short count on a second fetch is not truncated at all: the
+source has no more, and that is a finding about the source, not a download to repeat.
+
 ```{r}
 #| label: check-bra-taxi-data
 
