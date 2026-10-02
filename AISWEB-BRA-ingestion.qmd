@@ -259,3 +259,35 @@ waypoint came into effect).
 `width` in metres, `surface_c` (the PCN string) and `thr`, the two thresholds.
 
 Every file also carries `AISWEB_FETCHED`, the date of the download.
+
+## Using It — The Runways the Taxi Table Reports
+
+The first use of this reference in the project: is every runway `dstaxi` reports a runway
+the ICA registers for that aerodrome? `pista` against `aisweb_runways.csv`.
+
+```{r}
+#| label: check-bra-aisweb-taxi-runways
+#| eval: false
+
+source(here::here("AISWEB", "check_taxi_runways.R"))
+
+taxi_runway_check(2026)      # one row per aerodrome: matched, unknown, the register
+taxi_runway_unknown(2026)    # the pista values the register lacks, largest first
+```
+
+Only the aerodromes in the runway file are judged — a movement anywhere else has nothing to
+be checked against, and is left out rather than counted as unknown. The aerodrome of a
+movement is where its runway is: the destination of an arrival, the origin of a departure.
+
+The register writes a runway as its two thresholds (`17R/35L`); a movement uses one of them.
+Both sides are upper-cased and a single digit is padded (`9L` is `09L`), and nothing else is
+folded: a value that differs by a letter is **reported, not forgiven**, because a helipad, a
+taxiway and a typo all look like that and telling them apart is the point.
+
+Run for Congonhas against the 2026 taxi table, 98.4% of the movements that carry a runway
+use one of the four registered thresholds. The rest is not noise spread evenly: `17P` and
+`35P` account for 1,635 of the 1,702 unmatched movements, and the remainder is a scatter of
+designators Congonhas does not have (`02R`, `11L`, `20L`, `29L`) at a handful of movements
+each. That run used the register from the API's documentation example, not a fresh
+download.
+
